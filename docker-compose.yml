@@ -1,0 +1,85 @@
+# =====================================================================
+# crypto-futures-gpt55-bot - Stack local de desarrollo
+# =====================================================================
+# Servicios:
+#   postgres : PostgreSQL 16 con volumen persistente
+#   app      : FastAPI + uvicorn (expone /health)
+#   worker   : Loop heartbeat (placeholder hasta que entre Trading Core)
+#
+# Uso:
+#   cp .env.example .env
+#   docker compose up
+#
+# Estado esperado: los 3 servicios marcan "healthy".
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cryptobot-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-cryptobot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Host 5434 para evitar conflicto si hay otro postgres en 5432.
+      # Conexion interna entre servicios siempre a postgres:5432.
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot} -d ${POSTGRES_DB:-cryptobot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    container_name: cryptobot-app
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-PAPER}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL debe estar definido en .env}
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-8000}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    container_name: cryptobot-worker
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-PAPER}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL debe estar definido en .env}
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: ${WORKER_HEARTBEAT_INTERVAL_SECONDS:-10}
+    command: ["python", "-m", "worker.run_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # El worker hace touch de /tmp/worker_alive en cada heartbeat.
+    # Si el archivo no se actualizo en los ultimos 2 minutos, el container es unhealthy.
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/worker_alive -mmin -2 2>/dev/null | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
