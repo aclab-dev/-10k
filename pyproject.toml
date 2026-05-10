@@ -2,12 +2,18 @@
 name = "crypto-futures-gpt55-bot"
 version = "0.1.0"
 description = "Bot automatico de futuros crypto con GPT-5.5 + Quant + Risk - PAPER-first, LIVE bloqueado"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "README.md"
 
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "httpx>=0.27.0",
 ]
 
 [build-system]
@@ -17,3 +23,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["backend*", "worker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
