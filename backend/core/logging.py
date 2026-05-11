@@ -5,31 +5,41 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from collections.abc import MutableMapping
 from typing import Any
 
 import structlog
 
+_MASKED = "***"
+
 _SECRET_KEYS = frozenset(
     {
         "api_key",
+        "apikey",
         "api_secret",
         "secret",
+        "secret_key",
         "password",
+        "passwd",
+        "passphrase",
         "token",
         "access_token",
         "refresh_token",
         "authorization",
+        "auth",
         "private_key",
+        "credential",
+        "credentials",
     }
 )
 
 
 def _scrub_secrets(
-    logger: Any, method: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+    logger: Any, method: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
     for key in list(event_dict):
         if key.lower() in _SECRET_KEYS:
-            event_dict[key] = "***"
+            event_dict[key] = _MASKED
     return event_dict
 
 
@@ -46,6 +56,7 @@ def configure_logging(level: str | None = None) -> None:
         format="%(message)s",
         stream=sys.stdout,
         level=log_level,
+        force=True,
     )
     logging.root.setLevel(log_level)
 

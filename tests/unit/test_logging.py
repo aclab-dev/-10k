@@ -9,8 +9,7 @@ from io import StringIO
 import pytest
 import structlog
 
-from backend.core.logging import _SECRET_KEYS, _scrub_secrets, configure_logging
-
+from backend.core.logging import _MASKED, _SECRET_KEYS, _scrub_secrets, configure_logging
 
 # ---------------------------------------------------------------------------
 # _scrub_secrets (pure unit)
@@ -20,23 +19,27 @@ from backend.core.logging import _SECRET_KEYS, _scrub_secrets, configure_logging
 class TestScrubSecrets:
     def test_masks_api_key(self) -> None:
         event: dict = {"event": "connect", "api_key": "sk-real"}
-        assert _scrub_secrets(None, "info", event)["api_key"] == "***"
+        assert _scrub_secrets(None, "info", event)["api_key"] == _MASKED
 
     def test_masks_api_secret(self) -> None:
         event: dict = {"event": "connect", "api_secret": "topsecret"}
-        assert _scrub_secrets(None, "info", event)["api_secret"] == "***"
+        assert _scrub_secrets(None, "info", event)["api_secret"] == _MASKED
 
     def test_masks_password(self) -> None:
         event: dict = {"event": "db_connect", "password": "hunter2"}
-        assert _scrub_secrets(None, "info", event)["password"] == "***"
+        assert _scrub_secrets(None, "info", event)["password"] == _MASKED
 
     def test_masks_token(self) -> None:
         event: dict = {"event": "auth", "token": "abc123"}
-        assert _scrub_secrets(None, "info", event)["token"] == "***"
+        assert _scrub_secrets(None, "info", event)["token"] == _MASKED
 
     def test_masks_secret(self) -> None:
         event: dict = {"event": "init", "secret": "shh"}
-        assert _scrub_secrets(None, "info", event)["secret"] == "***"
+        assert _scrub_secrets(None, "info", event)["secret"] == _MASKED
+
+    def test_case_insensitive_match(self) -> None:
+        event: dict = {"event": "x", "API_KEY": "leak"}
+        assert _scrub_secrets(None, "info", event)["API_KEY"] == _MASKED
 
     def test_leaves_safe_keys_intact(self) -> None:
         event: dict = {"event": "order_placed", "symbol": "BTCUSDT", "qty": 0.01}
@@ -45,12 +48,15 @@ class TestScrubSecrets:
         assert result["qty"] == 0.01
         assert result["event"] == "order_placed"
 
+    def test_empty_event_dict(self) -> None:
+        assert _scrub_secrets(None, "info", {}) == {}
+
     def test_all_secret_keys_are_masked(self) -> None:
-        event: dict = {k: "sensitive" for k in _SECRET_KEYS}
+        event: dict = dict.fromkeys(_SECRET_KEYS, "sensitive")
         event["event"] = "test"
         result = _scrub_secrets(None, "info", event)
         for key in _SECRET_KEYS:
-            assert result[key] == "***", f"Expected {key} to be masked"
+            assert result[key] == _MASKED, f"Expected {key} to be masked"
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +126,7 @@ class TestLoggingOutput:
         output = buf.getvalue()
         assert "real-secret-key" not in output
         parsed = json.loads(output.strip().splitlines()[-1])
-        assert parsed["api_key"] == "***"
+        assert parsed["api_key"] == _MASKED
         assert parsed["exchange"] == "bingx"
 
     def test_non_secret_fields_preserved_in_output(self) -> None:
@@ -130,3 +136,13 @@ class TestLoggingOutput:
         parsed = json.loads(buf.getvalue().strip().splitlines()[-1])
         assert parsed["symbol"] == "ETHUSDT"
         assert parsed["leverage"] == 5
+
+    def test_debug_filtered_when_level_info(self) -> None:
+        buf = StringIO()
+        self._reconfigure(buf, level="INFO")
+        log = structlog.get_logger("level_test")
+        log.debug("should_not_appear")
+        log.info("should_appear")
+        lines = [line for line in buf.getvalue().strip().splitlines() if line]
+        assert len(lines) == 1
+        assert json.loads(lines[0])["event"] == "should_appear"

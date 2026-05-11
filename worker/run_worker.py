@@ -5,8 +5,6 @@ Solo instancia el Orchestrator, instala signal handlers y arranca el loop.
 
 from __future__ import annotations
 
-import structlog
-
 from backend.core.logging import configure_logging
 from backend.trading_core.orchestrator import Orchestrator
 
