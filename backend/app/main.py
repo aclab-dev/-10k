@@ -4,21 +4,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
-import structlog.stdlib
 from fastapi import FastAPI
 
 from backend.api.routes_health import router as health_router
 from backend.core.config import APP_VERSION, get_settings
+from backend.core.logging import configure_logging
 
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    logger_factory=structlog.PrintLoggerFactory(),
-)
+configure_logging()
 
 _log = structlog.get_logger()
 
