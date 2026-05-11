@@ -16,7 +16,7 @@ RUN groupadd --system --gid 1001 botgroup \
 WORKDIR /app
 
 # README.md va incluido porque pyproject.toml lo referencia como readme.
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md config.yaml ./
 COPY backend ./backend
 COPY worker ./worker
 
