@@ -1,58 +1,44 @@
-"""Worker placeholder para que docker compose levante el servicio worker.
+"""Worker entry point. Toda la logica vive en backend.trading_core.
 
-Solo hace heartbeat: actualiza /tmp/worker_alive (lo lee el healthcheck)
-y loguea a stdout. La logica real (Trading Core, ciclo, kill switch)
-se incorpora en tarjetas posteriores.
+Solo instancia el Orchestrator, instala signal handlers y arranca el loop.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import signal
 import sys
-import time
-from pathlib import Path
-from types import FrameType
 
-HEARTBEAT_FILE = Path("/tmp/worker_alive")
-DEFAULT_INTERVAL_SECONDS = 10
+import structlog
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
-log = logging.getLogger("worker")
-
-_shutdown = False
+from backend.trading_core.orchestrator import Orchestrator
 
 
-def _handle_signal(signum: int, _frame: FrameType | None) -> None:
-    global _shutdown
-    log.info("received signal %s, shutting down", signum)
-    _shutdown = True
+def _configure_logging() -> None:
+    """Configura structlog para emitir JSON estructurado a stdout."""
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=logging.INFO,
+    )
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
 
 
 def main() -> None:
-    interval = int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", str(DEFAULT_INTERVAL_SECONDS)))
-    environment = os.getenv("ENVIRONMENT", "PAPER")
-
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
-
-    log.info("worker started (environment=%s, heartbeat_interval=%ss)", environment, interval)
-
-    while not _shutdown:
-        HEARTBEAT_FILE.touch(exist_ok=True)
-        log.info("heartbeat")
-        # Sleep en pasos cortos para responder rapido a SIGTERM.
-        for _ in range(interval):
-            if _shutdown:
-                break
-            time.sleep(1)
-
-    log.info("worker stopped")
+    _configure_logging()
+    orchestrator = Orchestrator()
+    orchestrator.install_signal_handlers()
+    orchestrator.run()
 
 
 if __name__ == "__main__":
