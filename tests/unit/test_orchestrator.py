@@ -17,19 +17,24 @@ def heartbeat_file(tmp_path: Path) -> Path:
     return tmp_path / "worker_alive"
 
 
-def test_default_construction_reads_env(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_default_construction_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Orchestrator() sin args debe leer la env var y armar la CycleRunner."""
     monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "25")
-    # Forzar el heartbeat file via monkeypatch del default global del modulo.
-    monkeypatch.setattr(
-        "backend.trading_core.cycle_runner.DEFAULT_HEARTBEAT_FILE",
-        tmp_path / "alive",
-    )
     orch = Orchestrator()
     assert orch.state_machine.state == BotState.ACTIVE
-    # interval_seconds esta encapsulado en CycleRunner; verificamos comportamiento.
-    assert orch.cycle_runner.shutdown_requested is False
+    # Lo que verdaderamente queremos verificar: que el env se haya parseado.
+    assert orch.cycle_runner.interval_seconds == 25
+
+
+def test_default_construction_uses_default_interval_without_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin la env var, debe caer al default declarado en cycle_runner."""
+    from backend.trading_core.cycle_runner import DEFAULT_INTERVAL_SECONDS
+
+    monkeypatch.delenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", raising=False)
+    orch = Orchestrator()
+    assert orch.cycle_runner.interval_seconds == DEFAULT_INTERVAL_SECONDS
 
 
 def test_construction_with_injected_deps(heartbeat_file: Path) -> None:

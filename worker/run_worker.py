@@ -14,7 +14,7 @@ from backend.trading_core.orchestrator import Orchestrator
 
 
 def _configure_logging() -> None:
-    """Configuracion minima de structlog: JSON friendly via stdlib root."""
+    """Configura structlog para emitir JSON estructurado a stdout."""
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
@@ -26,7 +26,7 @@ def _configure_logging() -> None:
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
-            structlog.dev.ConsoleRenderer(),
+            structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         logger_factory=structlog.PrintLoggerFactory(),

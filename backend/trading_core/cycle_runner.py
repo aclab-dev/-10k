@@ -60,6 +60,14 @@ class CycleRunner:
     def shutdown_requested(self) -> bool:
         return self._shutdown_event.is_set()
 
+    @property
+    def interval_seconds(self) -> int:
+        return self._interval_seconds
+
+    @property
+    def heartbeat_file(self) -> Path:
+        return self._heartbeat_file
+
     def run(self) -> None:
         """Loop principal. Bloquea hasta que se pida shutdown."""
         log.info(
