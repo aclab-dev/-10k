@@ -1,0 +1,159 @@
+# Configuracion consolidada del bot - Anexo A + Anexo G (PDF 01.1)
+# Este archivo es la unica fuente de defaults. No hardcodear valores en Python.
+# Overrides via env vars con prefijo BOT__ y separador __ (ej: BOT__EXECUTION__ENVIRONMENT=TESTNET).
+
+challenge:
+  mode: AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK
+  initial_balance_usdt: 100
+  max_margin_per_trade_usdt: 10
+  daily_loss_limit_percent: 10
+  total_loss_limit_percent: 50
+  all_in_enabled: false
+  automatic_full_reinvestment: false
+
+trading:
+  market: USDT_M_FUTURES
+  preferred_exchange: BINGX
+  secondary_exchange: BINANCE
+  margin_type: ISOLATED
+  position_mode: ONE_WAY
+  allowed_symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT
+  max_open_positions: 1
+  max_open_positions_allowed: 3
+
+risk:
+  max_margin_per_trade_usdt: 10
+  max_daily_loss_percent: 10
+  max_total_loss_percent: 50
+  min_confidence_paper: 0.70
+  min_confidence_testnet: 0.75
+  min_confidence_live: 0.80
+  min_net_risk_reward: 1.5
+  min_trade_quality_score: 0.70
+  stop_loss_required: true
+  take_profit_required: true
+  trailing_stop_enabled: true
+  break_even_enabled: true
+  partial_close_enabled: true
+  martingale_allowed: false
+  average_down_allowed: false
+  cross_margin_allowed: false
+  kill_switch_on_error: true
+
+leverage:
+  mode: DYNAMIC_BY_VOLATILITY
+  max_leverage_paper: 10
+  max_leverage_testnet: 5
+  max_leverage_live_initial: 3
+  max_leverage_live_absolute: 5
+  volatility_adjustment_enabled: true
+  liquidation_distance_required: true
+
+ai_and_quant:
+  gpt_role: CONTEXTUAL_MULTI_FACTOR_EVALUATOR
+  gpt_is_primary_edge: false
+  quant_signals_required: true
+  market_regime_required: true
+  volatility_assessment_required: true
+  feature_engineering_required: true
+  decision_aggregator_required: true
+  historical_replay_required_before_live: true
+  backtesting_required_before_testnet_or_live: true
+
+execution:
+  environment: PAPER
+  live_requires_env_confirmation: true
+  live_confirmation_env_var: I_UNDERSTAND_LIVE_RISK
+  live_confirmation_required_value: "YES"
+
+database:
+  engine: POSTGRESQL
+  sqlite_allowed: false
+
+storage:
+  log_all_decisions: true
+  log_blocked_decisions: true
+  log_market_snapshots: true
+  log_quant_signals: true
+  log_feature_packages: true
+  log_model_requests: true
+  log_model_responses: true
+  log_risk_validations: true
+  log_orders: true
+  log_positions: true
+  log_replays: true
+  log_backtests: true
+  log_errors: true
+
+# Anexo G - Configuracion complementaria
+setup_registry:
+  required: true
+  allow_unregistered_setups: false
+  initial_setups:
+    - breakout_pullback_v1
+    - liquidity_sweep_reversal_v1
+    - trend_continuation_v1
+    - mean_reversion_extreme_v1
+    - funding_oi_divergence_v1
+
+reconciliation:
+  enabled: true
+  run_before_new_entries: true
+  block_on_orphan_orders: true
+  block_on_untracked_positions: true
+  block_on_unconfirmed_protection: true
+  manual_balance_change_policy: UPDATE_ACCOUNT_STATE_ONLY
+
+idempotency:
+  required: true
+  require_cycle_id: true
+  require_decision_id: true
+  require_trade_plan_id: true
+  require_client_order_id: true
+  retry_policy: CHECK_EXISTING_ORDER_BEFORE_RETRY
+
+liquidation_safety:
+  enabled: true
+  min_distance_entry_to_liquidation_percent: 5.0
+  min_buffer_stop_to_liquidation_percent: 2.0
+  action_if_invalid: ADJUST_DOWN_OR_BLOCK
+  block_if_liquidation_unknown: true
+  block_if_stop_after_liquidation: true
+
+capital_management:
+  bot_withdrawals_allowed: false
+  automatic_profit_withdrawal: false
+  manual_exchange_withdrawals_allowed: true
+  balance_source_of_truth: EXCHANGE_ACCOUNT_STATE
+  recalculate_risk_on_balance_change: true
+  affect_open_positions_on_manual_withdrawal: false
+
+position_management:
+  partial_close_enabled_mvp: false
+  partial_close_enabled_future_phase: true
+  break_even_enabled: true
+  trailing_stop_enabled: true
+
+failure_policy:
+  gpt_failure_blocks_new_entries: true
+  token_budget_failure_blocks_new_entries: true
+  deterministic_position_management_without_gpt: true
+  exits_do_not_require_gpt_response: true
+  every_position_requires_confirmed_sl_tp: true
+
+backtesting_bias_guard:
+  prevent_lookahead_bias: true
+  prevent_data_leakage: true
+  require_out_of_sample: true
+  require_walk_forward: true
+  include_fees: true
+  include_slippage: true
+  include_funding: true
+  include_latency: true
+  include_partial_fills: true
+  require_regime_performance: true
