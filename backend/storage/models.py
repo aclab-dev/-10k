@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -53,7 +54,7 @@ class BotRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)  # PAPER/TESTNET/LIVE
     app_version: Mapped[str] = mapped_column(String(32), nullable=False)
-    config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -161,7 +162,7 @@ class MarketSnapshot(Base):
     bid: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     ask: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     spread: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
-    extra: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    extra: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="market_snapshots")
     quant_signals: Mapped[list[QuantSignal]] = relationship(back_populates="market_snapshot")
@@ -195,7 +196,7 @@ class QuantSignal(Base):
     funding_signal: Mapped[float | None] = mapped_column(Float, nullable=True)
     open_interest_signal: Mapped[float | None] = mapped_column(Float, nullable=True)
     composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    raw_signals: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    raw_signals: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="quant_signals")
     market_snapshot: Mapped[MarketSnapshot | None] = relationship(back_populates="quant_signals")
@@ -218,7 +219,7 @@ class MarketRegime(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     regime: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    regime_details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    regime_details: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="market_regimes")
     market_snapshot: Mapped[MarketSnapshot | None] = relationship(back_populates="market_regimes")
@@ -244,7 +245,7 @@ class VolatilityAssessment(Base):
     volatility_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     leverage_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
     liquidation_risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="volatility_assessments")
     market_snapshot: Mapped[MarketSnapshot | None] = relationship(
@@ -268,7 +269,7 @@ class FeaturePackage(Base):
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[str] = mapped_column(String(16), nullable=False)
-    features: Mapped[dict] = mapped_column(PgJSON, nullable=False)
+    features: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="feature_packages")
@@ -293,7 +294,7 @@ class ModelRequest(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_tokens_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    context: Mapped[dict] = mapped_column(PgJSON, nullable=False)
+    context: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="model_requests")
@@ -318,7 +319,7 @@ class ModelResponse(Base):
     )
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_response: Mapped[str] = mapped_column(Text, nullable=False)
-    normalized_response: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    normalized_response: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -355,7 +356,7 @@ class Decision(Base):
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
-    raw_decision: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    raw_decision: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="decisions")
     model_response: Mapped[ModelResponse | None] = relationship(back_populates="decision")
@@ -385,7 +386,7 @@ class DecisionAggregation(Base):
     volatility_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
     aggregated_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_action: Mapped[str] = mapped_column(String(16), nullable=False)
-    reasons: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    reasons: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="decision_aggregations")
     decision: Mapped[Decision | None] = relationship(back_populates="decision_aggregation")
@@ -416,7 +417,7 @@ class RiskValidation(Base):
     original_leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     adjusted_margin: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     adjusted_leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    reasons: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    reasons: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
     daily_loss_at_check: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     total_loss_at_check: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
 
@@ -603,7 +604,7 @@ class HistoricalReplayRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
     total_snapshots: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -624,10 +625,10 @@ class HistoricalReplaySnapshot(Base):
         nullable=False,
     )
     sequence_num: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    market_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
-    decision: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
-    risk_validation: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
-    outcome: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    market_snapshot: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
+    decision: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
+    risk_validation: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
+    outcome: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
     comparison_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     replay_run: Mapped[HistoricalReplayRun] = relationship(back_populates="snapshots")
@@ -650,7 +651,7 @@ class BacktestRun(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
+    config_snapshot: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     fee_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
     slippage_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
     funding_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -683,7 +684,7 @@ class BacktestResult(Base):
     avg_trade_duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_trade_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     worst_trade_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
-    details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     backtest_run: Mapped[BacktestRun] = relationship(back_populates="results")
 
@@ -704,7 +705,7 @@ class NewsContext(Base):
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)  # POSITIVE/NEGATIVE/NEUTRAL  # noqa: E501
     relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    raw_data: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    raw_data: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="news_contexts")
 
@@ -751,7 +752,7 @@ class SystemEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="INFO")
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="system_events")
 
@@ -773,7 +774,7 @@ class ErrorRecord(Base):
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
-    details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
+    details: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
     recovered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="errors")
