@@ -8,15 +8,14 @@ en SQLite automáticamente por SQLAlchemy.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
 from backend.storage.database import Base
 from backend.storage.models import (
-    AccountState,
     BacktestResult,
     BacktestRun,
     BotRun,
@@ -28,7 +27,6 @@ from backend.storage.models import (
     HistoricalReplayRun,
     HistoricalReplaySnapshot,
     KillSwitchEvent,
-    MarketRegime,
     MarketSnapshot,
     ModelRequest,
     ModelResponse,
@@ -38,11 +36,9 @@ from backend.storage.models import (
     PositionEvent,
     QuantSignal,
     RiskValidation,
-    StrategyPerformance,
     SystemEvent,
     TokenUsage,
     Trade,
-    VolatilityAssessment,
 )
 
 ALL_EXPECTED_TABLES = {
@@ -101,7 +97,7 @@ def _uid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _make_bot_run(session: Session) -> BotRun:
