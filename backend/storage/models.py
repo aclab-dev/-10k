@@ -12,7 +12,7 @@ Convenciones:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -37,7 +37,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,9 @@ class BotRun(Base):
     __tablename__ = "bot_runs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)  # PAPER/TESTNET/LIVE
     app_version: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -61,17 +63,25 @@ class BotRun(Base):
     market_snapshots: Mapped[list[MarketSnapshot]] = relationship(back_populates="bot_run")
     quant_signals: Mapped[list[QuantSignal]] = relationship(back_populates="bot_run")
     market_regimes: Mapped[list[MarketRegime]] = relationship(back_populates="bot_run")
-    volatility_assessments: Mapped[list[VolatilityAssessment]] = relationship(back_populates="bot_run")
+    volatility_assessments: Mapped[list[VolatilityAssessment]] = relationship(
+        back_populates="bot_run"
+    )
     feature_packages: Mapped[list[FeaturePackage]] = relationship(back_populates="bot_run")
     model_requests: Mapped[list[ModelRequest]] = relationship(back_populates="bot_run")
     decisions: Mapped[list[Decision]] = relationship(back_populates="bot_run")
-    decision_aggregations: Mapped[list[DecisionAggregation]] = relationship(back_populates="bot_run")
+    decision_aggregations: Mapped[list[DecisionAggregation]] = relationship(
+        back_populates="bot_run"
+    )
     risk_validations: Mapped[list[RiskValidation]] = relationship(back_populates="bot_run")
     trades: Mapped[list[Trade]] = relationship(back_populates="bot_run")
     orders: Mapped[list[Order]] = relationship(back_populates="bot_run")
     positions: Mapped[list[Position]] = relationship(back_populates="bot_run")
-    strategy_performances: Mapped[list[StrategyPerformance]] = relationship(back_populates="bot_run")
-    historical_replay_runs: Mapped[list[HistoricalReplayRun]] = relationship(back_populates="bot_run")
+    strategy_performances: Mapped[list[StrategyPerformance]] = relationship(
+        back_populates="bot_run"
+    )
+    historical_replay_runs: Mapped[list[HistoricalReplayRun]] = relationship(
+        back_populates="bot_run"
+    )
     backtest_runs: Mapped[list[BacktestRun]] = relationship(back_populates="bot_run")
     news_contexts: Mapped[list[NewsContext]] = relationship(back_populates="bot_run")
     token_usages: Mapped[list[TokenUsage]] = relationship(back_populates="bot_run")
@@ -93,7 +103,9 @@ class BotState(Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     previous_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
 
     bot_run: Mapped[BotRun] = relationship(back_populates="bot_states")
 
@@ -111,9 +123,15 @@ class AccountState(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     balance_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     equity_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
-    margin_used_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
-    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
-    realized_pnl_session: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    margin_used_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("0")
+    )
+    unrealized_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("0")
+    )
+    realized_pnl_session: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=Decimal("0")
+    )
     drawdown_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     exposure_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -148,7 +166,9 @@ class MarketSnapshot(Base):
     bot_run: Mapped[BotRun] = relationship(back_populates="market_snapshots")
     quant_signals: Mapped[list[QuantSignal]] = relationship(back_populates="market_snapshot")
     market_regimes: Mapped[list[MarketRegime]] = relationship(back_populates="market_snapshot")
-    volatility_assessments: Mapped[list[VolatilityAssessment]] = relationship(back_populates="market_snapshot")
+    volatility_assessments: Mapped[list[VolatilityAssessment]] = relationship(
+        back_populates="market_snapshot"
+    )
     feature_packages: Mapped[list[FeaturePackage]] = relationship(back_populates="market_snapshot")
 
 
@@ -227,7 +247,9 @@ class VolatilityAssessment(Base):
     details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="volatility_assessments")
-    market_snapshot: Mapped[MarketSnapshot | None] = relationship(back_populates="volatility_assessments")
+    market_snapshot: Mapped[MarketSnapshot | None] = relationship(
+        back_populates="volatility_assessments"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +298,12 @@ class ModelRequest(Base):
 
     bot_run: Mapped[BotRun] = relationship(back_populates="model_requests")
     feature_package: Mapped[FeaturePackage | None] = relationship(back_populates="model_requests")
-    model_response: Mapped[ModelResponse | None] = relationship(back_populates="model_request", uselist=False)
-    token_usage: Mapped[TokenUsage | None] = relationship(back_populates="model_request", uselist=False)
+    model_response: Mapped[ModelResponse | None] = relationship(
+        back_populates="model_request", uselist=False
+    )
+    token_usage: Mapped[TokenUsage | None] = relationship(
+        back_populates="model_request", uselist=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +327,9 @@ class ModelResponse(Base):
     is_valid_schema: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     model_request: Mapped[ModelRequest] = relationship(back_populates="model_response")
-    decision: Mapped[Decision | None] = relationship(back_populates="model_response", uselist=False)
+    decision: Mapped[Decision | None] = relationship(
+        back_populates="model_response", uselist=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +405,13 @@ class RiskValidation(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     decision_aggregation_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("decision_aggregations.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=False),
+        ForeignKey("decision_aggregations.id", ondelete="SET NULL"),
+        nullable=True,
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    result: Mapped[str] = mapped_column(String(16), nullable=False)       # APPROVE/ADJUST_DOWN/BLOCK
+    result: Mapped[str] = mapped_column(String(16), nullable=False)  # APPROVE/ADJUST_DOWN/BLOCK
     original_margin: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     original_leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     adjusted_margin: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
@@ -423,7 +453,9 @@ class Trade(Base):
     fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     funding_paid: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
@@ -454,7 +486,9 @@ class Order(Base):
     price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
@@ -491,8 +525,12 @@ class Position(Base):
     trailing_stop_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     break_even_triggered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
-    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
 
     bot_run: Mapped[BotRun] = relationship(back_populates="positions")
     trade: Mapped[Trade | None] = relationship(back_populates="position")
@@ -514,7 +552,9 @@ class PositionEvent(Base):
     old_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     new_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
 
     position: Mapped[Position] = relationship(back_populates="events")
 
@@ -557,7 +597,9 @@ class HistoricalReplayRun(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -577,7 +619,9 @@ class HistoricalReplaySnapshot(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     replay_run_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("historical_replay_runs.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=False),
+        ForeignKey("historical_replay_runs.id", ondelete="CASCADE"),
+        nullable=False,
     )
     sequence_num: Mapped[int] = mapped_column(BigInteger, nullable=False)
     market_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
@@ -600,7 +644,9 @@ class BacktestRun(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -656,7 +702,7 @@ class NewsContext(Base):
     symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)  # POSITIVE/NEGATIVE/NEUTRAL
+    sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)  # POSITIVE/NEGATIVE/NEUTRAL  # noqa: E501
     relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_data: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
 
@@ -676,7 +722,9 @@ class TokenUsage(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -697,7 +745,9 @@ class SystemEvent(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="INFO")
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -716,7 +766,9 @@ class ErrorRecord(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -737,7 +789,9 @@ class KillSwitchEvent(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
     trigger_reason: Mapped[str] = mapped_column(Text, nullable=False)
     state_before: Mapped[str] = mapped_column(String(32), nullable=False)
     action_taken: Mapped[str] = mapped_column(String(64), nullable=False)
