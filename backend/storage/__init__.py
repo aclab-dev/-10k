@@ -1,4 +1,4 @@
-from backend.storage.database import Base, SessionLocal, engine, get_db
+from backend.storage.database import Base, get_db, get_engine, get_session_factory
 from backend.storage.models import (
     AccountState,
     BacktestResult,
@@ -31,9 +31,9 @@ from backend.storage.models import (
 
 __all__ = [
     "Base",
-    "SessionLocal",
-    "engine",
     "get_db",
+    "get_engine",
+    "get_session_factory",
     "AccountState",
     "BacktestResult",
     "BacktestRun",
