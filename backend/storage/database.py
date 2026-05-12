@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
@@ -31,27 +32,31 @@ class Base(DeclarativeBase):
 
 
 _engine: Engine | None = None
+_engine_lock = threading.Lock()
 _SessionLocal: sessionmaker | None = None  # type: ignore[type-arg]
 
 
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        from backend.core.config import get_settings
+        with _engine_lock:
+            if _engine is None:
+                from backend.core.config import get_settings
 
-        _engine = create_engine(
-            get_settings().database_url,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-        )
+                settings = get_settings()
+                _engine = create_engine(
+                    settings.database_url,
+                    pool_pre_ping=True,
+                    pool_size=settings.db_pool_size,
+                    max_overflow=settings.db_max_overflow,
+                )
     return _engine
 
 
 def get_session_factory() -> sessionmaker:  # type: ignore[type-arg]
     global _SessionLocal
     if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine(), autocommit=False, autoflush=False)
+        _SessionLocal = sessionmaker(get_engine(), autocommit=False, autoflush=False)
     return _SessionLocal
 
 
@@ -59,5 +64,8 @@ def get_db() -> Generator[Session, None, None]:
     db = get_session_factory()()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

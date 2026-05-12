@@ -27,6 +27,7 @@ from backend.storage.models import (
     HistoricalReplayRun,
     HistoricalReplaySnapshot,
     KillSwitchEvent,
+    MarketRegime,
     MarketSnapshot,
     ModelRequest,
     ModelResponse,
@@ -36,9 +37,11 @@ from backend.storage.models import (
     PositionEvent,
     QuantSignal,
     RiskValidation,
+    StrategyPerformance,
     SystemEvent,
     TokenUsage,
     Trade,
+    VolatilityAssessment,
 )
 
 ALL_EXPECTED_TABLES = {
@@ -264,7 +267,7 @@ class TestDecisionChain:
         fp = FeaturePackage(
             id=_uid(), bot_run_id=run.id, market_snapshot_id=snap.id,
             symbol="BTCUSDT", timestamp=_now(), version="v1",
-            features={"x": 1}, hash=_uid(),
+            features={"x": 1}, features_hash=_uid(),
         )
         session.add(fp)
         req = ModelRequest(
@@ -494,3 +497,89 @@ class TestAuditTables:
         session.add(nc)
         session.flush()
         assert nc.sentiment == "POSITIVE"
+
+
+# ---------------------------------------------------------------------------
+# market_regimes, volatility_assessments, strategy_performance
+# ---------------------------------------------------------------------------
+
+class TestMarketRegime:
+    def test_create(self, session):
+        run = _make_bot_run(session)
+        regime = MarketRegime(
+            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
+            timestamp=_now(), regime="TRENDING", confidence=0.85,
+        )
+        session.add(regime)
+        session.flush()
+        fetched = session.get(MarketRegime, regime.id)
+        assert fetched.regime == "TRENDING"
+        assert fetched.confidence == 0.85
+
+    def test_optional_snapshot_fk(self, session):
+        run = _make_bot_run(session)
+        snap = MarketSnapshot(
+            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT", timestamp=_now(),
+            open=3000, high=3100, low=2900, close=3050, volume=500,
+        )
+        session.add(snap)
+        session.flush()
+        regime = MarketRegime(
+            id=_uid(), bot_run_id=run.id, market_snapshot_id=snap.id,
+            symbol="ETHUSDT", timestamp=_now(), regime="RANGING", confidence=0.6,
+        )
+        session.add(regime)
+        session.flush()
+        assert regime.market_snapshot_id == snap.id
+
+
+class TestVolatilityAssessment:
+    def test_create(self, session):
+        run = _make_bot_run(session)
+        va = VolatilityAssessment(
+            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
+            timestamp=_now(), atr_percent=2.5, volatility_score=0.7,
+            leverage_cap=5, liquidation_risk_score=0.3,
+        )
+        session.add(va)
+        session.flush()
+        fetched = session.get(VolatilityAssessment, va.id)
+        assert fetched.leverage_cap == 5
+        assert fetched.volatility_score == 0.7
+
+    def test_all_nullable_fields(self, session):
+        run = _make_bot_run(session)
+        va = VolatilityAssessment(
+            id=_uid(), bot_run_id=run.id, symbol="SOLUSDT", timestamp=_now(),
+        )
+        session.add(va)
+        session.flush()
+        assert va.atr is None
+        assert va.atr_percent is None
+
+
+class TestStrategyPerformance:
+    def test_create_and_aggregate(self, session):
+        run = _make_bot_run(session)
+        sp = StrategyPerformance(
+            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
+            regime="TRENDING", setup_type="BREAKOUT",
+            total_trades=50, winning_trades=30, losing_trades=20,
+            win_rate=0.6, sharpe_ratio=1.4, max_drawdown=0.08,
+        )
+        session.add(sp)
+        session.flush()
+        fetched = session.get(StrategyPerformance, sp.id)
+        assert fetched.win_rate == 0.6
+        assert fetched.total_trades == 50
+
+    def test_optional_period(self, session):
+        run = _make_bot_run(session)
+        sp = StrategyPerformance(
+            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
+            total_trades=0, winning_trades=0, losing_trades=0,
+        )
+        session.add(sp)
+        session.flush()
+        assert sp.period_start is None
+        assert sp.period_end is None

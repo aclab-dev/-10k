@@ -270,7 +270,7 @@ class FeaturePackage(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[str] = mapped_column(String(16), nullable=False)
     features: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
-    hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    features_hash: Mapped[str] = mapped_column("hash", String(64), nullable=False, unique=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="feature_packages")
     market_snapshot: Mapped[MarketSnapshot | None] = relationship(back_populates="feature_packages")
@@ -529,6 +529,7 @@ class Position(Base):
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
+    # onupdate solo aplica a nivel ORM; UPDATEs SQL directos no actualizan este campo
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
     )

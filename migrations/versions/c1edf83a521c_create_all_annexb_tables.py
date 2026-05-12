@@ -9,16 +9,16 @@ Crea las 27 tablas del Anexo B (PDF §8.2).
 
 from __future__ import annotations
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision: str = "c1edf83a521c"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -504,31 +504,97 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop en orden inverso respetando FKs
+    # Drop en orden inverso respetando FKs; índices primero para evitar warnings de Alembic
+    op.drop_index("ix_kill_switch_events_bot_run_id", table_name="kill_switch_events")
     op.drop_table("kill_switch_events")
+
+    op.drop_index("ix_errors_error_type", table_name="errors")
+    op.drop_index("ix_errors_bot_run_id", table_name="errors")
     op.drop_table("errors")
+
+    op.drop_index("ix_system_events_severity", table_name="system_events")
+    op.drop_index("ix_system_events_bot_run_id", table_name="system_events")
     op.drop_table("system_events")
+
+    op.drop_index("ix_token_usage_bot_run_id", table_name="token_usage")
     op.drop_table("token_usage")
+
+    op.drop_index("ix_news_context_symbol_timestamp", table_name="news_context")
+    op.drop_index("ix_news_context_bot_run_id", table_name="news_context")
     op.drop_table("news_context")
+
+    op.drop_index("ix_backtest_results_backtest_run_id", table_name="backtest_results")
     op.drop_table("backtest_results")
+
+    op.drop_index("ix_backtest_runs_bot_run_id", table_name="backtest_runs")
     op.drop_table("backtest_runs")
+
+    op.drop_index("ix_historical_replay_snapshots_replay_run_id", table_name="historical_replay_snapshots")
     op.drop_table("historical_replay_snapshots")
+
+    op.drop_index("ix_historical_replay_runs_bot_run_id", table_name="historical_replay_runs")
     op.drop_table("historical_replay_runs")
+
+    op.drop_index("ix_strategy_performance_symbol", table_name="strategy_performance")
+    op.drop_index("ix_strategy_performance_bot_run_id", table_name="strategy_performance")
     op.drop_table("strategy_performance")
+
+    op.drop_index("ix_position_events_position_id", table_name="position_events")
     op.drop_table("position_events")
+
+    op.drop_index("ix_positions_symbol_status", table_name="positions")
+    op.drop_index("ix_positions_bot_run_id", table_name="positions")
     op.drop_table("positions")
+
+    op.drop_index("ix_orders_trade_id", table_name="orders")
+    op.drop_index("ix_orders_bot_run_id", table_name="orders")
     op.drop_table("orders")
+
+    op.drop_index("ix_trades_symbol_status", table_name="trades")
+    op.drop_index("ix_trades_bot_run_id", table_name="trades")
     op.drop_table("trades")
+
+    op.drop_index("ix_risk_validations_result", table_name="risk_validations")
+    op.drop_index("ix_risk_validations_bot_run_id", table_name="risk_validations")
     op.drop_table("risk_validations")
+
+    op.drop_index("ix_decision_aggregations_bot_run_id", table_name="decision_aggregations")
     op.drop_table("decision_aggregations")
+
+    op.drop_index("ix_decisions_symbol_timestamp", table_name="decisions")
+    op.drop_index("ix_decisions_bot_run_id", table_name="decisions")
     op.drop_table("decisions")
+
+    op.drop_index("ix_model_responses_model_request_id", table_name="model_responses")
     op.drop_table("model_responses")
+
+    op.drop_index("ix_model_requests_bot_run_id", table_name="model_requests")
     op.drop_table("model_requests")
+
+    op.drop_index("ix_feature_packages_hash", table_name="feature_packages")
+    op.drop_index("ix_feature_packages_bot_run_id", table_name="feature_packages")
     op.drop_table("feature_packages")
+
+    op.drop_index("ix_volatility_assessments_bot_run_id", table_name="volatility_assessments")
     op.drop_table("volatility_assessments")
+
+    op.drop_index("ix_market_regimes_symbol_timestamp", table_name="market_regimes")
+    op.drop_index("ix_market_regimes_bot_run_id", table_name="market_regimes")
     op.drop_table("market_regimes")
+
+    op.drop_index("ix_quant_signals_symbol_timestamp", table_name="quant_signals")
+    op.drop_index("ix_quant_signals_bot_run_id", table_name="quant_signals")
     op.drop_table("quant_signals")
+
+    op.drop_index("ix_market_snapshots_symbol_timestamp", table_name="market_snapshots")
+    op.drop_index("ix_market_snapshots_bot_run_id", table_name="market_snapshots")
     op.drop_table("market_snapshots")
+
+    op.drop_index("ix_accounts_state_timestamp", table_name="accounts_state")
+    op.drop_index("ix_accounts_state_bot_run_id", table_name="accounts_state")
     op.drop_table("accounts_state")
+
+    op.drop_index("ix_bot_state_bot_run_id", table_name="bot_state")
     op.drop_table("bot_state")
+
     op.drop_table("bot_runs")

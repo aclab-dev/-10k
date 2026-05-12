@@ -359,6 +359,8 @@ class AppConfig(BaseModel):
     database_url: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
 
 
 def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
@@ -401,6 +403,10 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         data["app_host"] = env
     if env := os.environ.get("APP_PORT"):
         data["app_port"] = int(env)
+    if env := os.environ.get("DB_POOL_SIZE"):
+        data["db_pool_size"] = int(env)
+    if env := os.environ.get("DB_MAX_OVERFLOW"):
+        data["db_max_overflow"] = int(env)
 
     return data
 
@@ -446,6 +452,8 @@ class Settings(BaseModel):
     database_url: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 8000
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
 
 
 def get_settings() -> Settings:
@@ -456,4 +464,6 @@ def get_settings() -> Settings:
         database_url=cfg.database_url,
         app_host=cfg.app_host,
         app_port=cfg.app_port,
+        db_pool_size=cfg.db_pool_size,
+        db_max_overflow=cfg.db_max_overflow,
     )
