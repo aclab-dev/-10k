@@ -2,16 +2,18 @@
 
 Convenciones:
 - id: UUID generado en Python (server_default=gen_random_uuid() en la migración).
-- created_at/updated_at: timestamps UTC sin tz (TIMESTAMP).
+- created_at/updated_at: timestamps UTC con timezone (TIMESTAMPTZ en Postgres).
 - PgJSON para payloads variables; columnas explícitas para los campos que se consultan.
 - FKs con ondelete="SET NULL" en referencias opcionales; "CASCADE" en relaciones
   padre-hijo donde borrar el padre invalida el hijo.
+- Numeric(20, 8) para valores monetarios y precios; Float para scores/ratios/porcentajes.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -20,6 +22,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
 )
@@ -34,7 +37,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +47,8 @@ class BotRun(Base):
     __tablename__ = "bot_runs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)  # PAPER/TESTNET/LIVE
     app_version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
@@ -90,7 +93,7 @@ class BotState(Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     previous_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="bot_states")
 
@@ -105,12 +108,12 @@ class AccountState(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    balance_usdt: Mapped[float] = mapped_column(Float, nullable=False)
-    equity_usdt: Mapped[float] = mapped_column(Float, nullable=False)
-    margin_used_usdt: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    unrealized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    realized_pnl_session: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    balance_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    equity_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    margin_used_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
+    realized_pnl_session: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
     drawdown_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     exposure_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -129,17 +132,17 @@ class MarketSnapshot(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    open: Mapped[float] = mapped_column(Float, nullable=False)
-    high: Mapped[float] = mapped_column(Float, nullable=False)
-    low: Mapped[float] = mapped_column(Float, nullable=False)
-    close: Mapped[float] = mapped_column(Float, nullable=False)
-    volume: Mapped[float] = mapped_column(Float, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     funding_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
-    open_interest: Mapped[float | None] = mapped_column(Float, nullable=True)
-    bid: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ask: Mapped[float | None] = mapped_column(Float, nullable=True)
-    spread: Mapped[float | None] = mapped_column(Float, nullable=True)
+    open_interest: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    bid: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    ask: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    spread: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     extra: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="market_snapshots")
@@ -163,7 +166,7 @@ class QuantSignal(Base):
         UUID(as_uuid=False), ForeignKey("market_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     momentum_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     mean_reversion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     breakout_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -192,7 +195,7 @@ class MarketRegime(Base):
         UUID(as_uuid=False), ForeignKey("market_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     regime: Mapped[str] = mapped_column(String(32), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     regime_details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
@@ -215,8 +218,8 @@ class VolatilityAssessment(Base):
         UUID(as_uuid=False), ForeignKey("market_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    atr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    atr: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     atr_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     volatility_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     leverage_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -241,10 +244,10 @@ class FeaturePackage(Base):
         UUID(as_uuid=False), ForeignKey("market_snapshots.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[str] = mapped_column(String(16), nullable=False)
     features: Mapped[dict] = mapped_column(PgJSON, nullable=False)
-    hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="feature_packages")
     market_snapshot: Mapped[MarketSnapshot | None] = relationship(back_populates="feature_packages")
@@ -265,7 +268,7 @@ class ModelRequest(Base):
         UUID(as_uuid=False), ForeignKey("feature_packages.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_tokens_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context: Mapped[dict] = mapped_column(PgJSON, nullable=False)
@@ -287,7 +290,7 @@ class ModelResponse(Base):
     model_request_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("model_requests.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_response: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_response: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -315,14 +318,14 @@ class Decision(Base):
         UUID(as_uuid=False), ForeignKey("model_responses.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     action: Mapped[str] = mapped_column(String(16), nullable=False)       # OPEN/CLOSE/NO_OPERAR
     direction: Mapped[str | None] = mapped_column(String(8), nullable=True)   # LONG/SHORT
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    margin_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    margin_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_decision: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
 
@@ -347,7 +350,7 @@ class DecisionAggregation(Base):
         UUID(as_uuid=False), ForeignKey("decisions.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     quant_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     gpt_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     regime_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -377,15 +380,15 @@ class RiskValidation(Base):
         UUID(as_uuid=False), ForeignKey("decision_aggregations.id", ondelete="SET NULL"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     result: Mapped[str] = mapped_column(String(16), nullable=False)       # APPROVE/ADJUST_DOWN/BLOCK
-    original_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    original_margin: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     original_leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    adjusted_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adjusted_margin: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     adjusted_leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reasons: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
-    daily_loss_at_check: Mapped[float | None] = mapped_column(Float, nullable=True)
-    total_loss_at_check: Mapped[float | None] = mapped_column(Float, nullable=True)
+    daily_loss_at_check: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    total_loss_at_check: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="risk_validations")
     decision_aggregation: Mapped[DecisionAggregation | None] = relationship(
@@ -410,18 +413,18 @@ class Trade(Base):
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)     # LONG/SHORT
-    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    margin_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    margin_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     leverage: Mapped[int] = mapped_column(Integer, nullable=False)
-    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
-    gross_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    net_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    fee: Mapped[float | None] = mapped_column(Float, nullable=True)
-    funding_paid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    gross_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    net_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    funding_paid: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
-    opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     close_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="trades")
@@ -447,14 +450,14 @@ class Order(Base):
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
     order_type: Mapped[str] = mapped_column(String(16), nullable=False)   # MARKET/LIMIT/STOP
     side: Mapped[str] = mapped_column(String(8), nullable=False)          # BUY/SELL
-    quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
-    filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    fee: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     is_simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="orders")
@@ -477,19 +480,19 @@ class Position(Base):
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
-    quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
-    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    unrealized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    margin_usdt: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    margin_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     leverage: Mapped[int] = mapped_column(Integer, nullable=False)
-    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     trailing_stop_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     break_even_triggered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
-    opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now, onupdate=_now)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="positions")
     trade: Mapped[Trade | None] = relationship(back_populates="position")
@@ -508,10 +511,10 @@ class PositionEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     # SL_UPDATE / TP_UPDATE / TRAILING / PARTIAL_CLOSE / CLOSE / INVALIDATION
-    old_value: Mapped[float | None] = mapped_column(Float, nullable=True)
-    new_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    old_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    new_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
 
     position: Mapped[Position] = relationship(back_populates="events")
 
@@ -533,12 +536,12 @@ class StrategyPerformance(Base):
     winning_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     losing_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    total_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    total_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     sharpe_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_drawdown: Mapped[float | None] = mapped_column(Float, nullable=True)
-    period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="strategy_performances")
 
@@ -554,10 +557,10 @@ class HistoricalReplayRun(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="RUNNING")
     total_snapshots: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -597,10 +600,10 @@ class BacktestRun(Base):
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     config_snapshot: Mapped[dict] = mapped_column(PgJSON, nullable=False)
     fee_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
     slippage_model: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -625,15 +628,15 @@ class BacktestResult(Base):
     winning_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     losing_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
-    total_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    gross_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    total_fees: Mapped[float | None] = mapped_column(Float, nullable=True)
-    total_funding: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    gross_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    total_fees: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    total_funding: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     sharpe_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_drawdown: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_trade_duration_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
-    best_trade_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    worst_trade_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_trade_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    worst_trade_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     details: Mapped[dict | None] = mapped_column(PgJSON, nullable=True)
 
     backtest_run: Mapped[BacktestRun] = relationship(back_populates="results")
@@ -649,7 +652,7 @@ class NewsContext(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -673,12 +676,12 @@ class TokenUsage(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="token_usages")
     model_request: Mapped[ModelRequest | None] = relationship(back_populates="token_usage")
@@ -694,7 +697,7 @@ class SystemEvent(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="INFO")
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -713,7 +716,7 @@ class ErrorRecord(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     module: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -734,7 +737,7 @@ class KillSwitchEvent(Base):
     bot_run_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("bot_runs.id", ondelete="CASCADE"), nullable=False
     )
-    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_now)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
     trigger_reason: Mapped[str] = mapped_column(Text, nullable=False)
     state_before: Mapped[str] = mapped_column(String(32), nullable=False)
     action_taken: Mapped[str] = mapped_column(String(64), nullable=False)

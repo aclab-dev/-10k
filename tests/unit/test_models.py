@@ -8,7 +8,7 @@ en SQLite automáticamente por SQLAlchemy.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
@@ -101,7 +101,7 @@ def _uid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 def _make_bot_run(session: Session) -> BotRun:
@@ -206,23 +206,23 @@ class TestMarketSnapshot:
             bot_run_id=run.id,
             symbol="BTCUSDT",
             timestamp=_now(),
-            open=60000.0,
-            high=61000.0,
-            low=59000.0,
-            close=60500.0,
-            volume=1000.0,
+            open=60000,
+            high=61000,
+            low=59000,
+            close=60500,
+            volume=1000,
         )
         session.add(snap)
         session.flush()
         fetched = session.get(MarketSnapshot, snap.id)
         assert fetched.symbol == "BTCUSDT"
-        assert fetched.close == 60500.0
+        assert fetched.close == 60500
 
     def test_optional_fields_nullable(self, session):
         run = _make_bot_run(session)
         snap = MarketSnapshot(
             id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
-            timestamp=_now(), open=3000.0, high=3100.0, low=2900.0, close=3050.0, volume=500.0,
+            timestamp=_now(), open=3000, high=3100, low=2900, close=3050, volume=500,
         )
         session.add(snap)
         session.flush()
@@ -262,13 +262,13 @@ class TestDecisionChain:
         run = _make_bot_run(session)
         snap = MarketSnapshot(
             id=_uid(), bot_run_id=run.id, symbol="BTCUSDT", timestamp=_now(),
-            open=60000.0, high=61000.0, low=59000.0, close=60500.0, volume=1000.0,
+            open=60000, high=61000, low=59000, close=60500, volume=1000,
         )
         session.add(snap)
         fp = FeaturePackage(
             id=_uid(), bot_run_id=run.id, market_snapshot_id=snap.id,
             symbol="BTCUSDT", timestamp=_now(), version="v1",
-            features={"x": 1}, hash="abc123",
+            features={"x": 1}, hash=_uid(),
         )
         session.add(fp)
         req = ModelRequest(
@@ -287,7 +287,7 @@ class TestDecisionChain:
             id=_uid(), bot_run_id=run.id, model_response_id=resp.id,
             symbol="BTCUSDT", timestamp=_now(),
             action="OPEN", direction="LONG", confidence=0.82,
-            margin_usdt=10.0, leverage=3,
+            margin_usdt=10, leverage=3,
         )
         session.add(dec)
         session.flush()
@@ -339,7 +339,7 @@ class TestTradeLifecycle:
         trade = Trade(
             id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
             environment="PAPER", direction="LONG",
-            margin_usdt=10.0, leverage=3, opened_at=_now(),
+            margin_usdt=10, leverage=3, opened_at=_now(),
         )
         session.add(trade)
         session.flush()
@@ -347,7 +347,7 @@ class TestTradeLifecycle:
         order = Order(
             id=_uid(), bot_run_id=run.id, trade_id=trade.id,
             symbol="BTCUSDT", environment="PAPER",
-            order_type="MARKET", side="BUY", quantity=0.001,
+            order_type="MARKET", side="BUY", quantity="0.001",
             is_simulated=True, created_at=_now(),
         )
         session.add(order)
@@ -355,7 +355,7 @@ class TestTradeLifecycle:
         pos = Position(
             id=_uid(), bot_run_id=run.id, trade_id=trade.id,
             symbol="BTCUSDT", environment="PAPER", direction="LONG",
-            quantity=0.001, entry_price=60000.0, margin_usdt=10.0,
+            quantity="0.001", entry_price=60000, margin_usdt=10,
             leverage=3, opened_at=_now(), updated_at=_now(),
         )
         session.add(pos)
@@ -363,7 +363,7 @@ class TestTradeLifecycle:
 
         event = PositionEvent(
             id=_uid(), position_id=pos.id,
-            event_type="SL_UPDATE", old_value=58000.0, new_value=59000.0,
+            event_type="SL_UPDATE", old_value=58000, new_value=59000,
             created_at=_now(),
         )
         session.add(event)
@@ -378,14 +378,14 @@ class TestTradeLifecycle:
         trade = Trade(
             id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
             environment="PAPER", direction="SHORT",
-            margin_usdt=5.0, leverage=2, opened_at=_now(),
+            margin_usdt=5, leverage=2, opened_at=_now(),
         )
         session.add(trade)
         session.flush()
         order = Order(
             id=_uid(), bot_run_id=run.id, trade_id=trade.id,
             symbol="ETHUSDT", environment="PAPER",
-            order_type="MARKET", side="SELL", quantity=0.01,
+            order_type="MARKET", side="SELL", quantity="0.01",
             created_at=_now(),
         )
         session.add(order)
@@ -410,7 +410,7 @@ class TestBacktestAndReplay:
         result = BacktestResult(
             id=_uid(), backtest_run_id=bt.id,
             total_trades=100, winning_trades=55, losing_trades=45,
-            win_rate=0.55, total_pnl=12.5,
+            win_rate=0.55, total_pnl=12,
         )
         session.add(result)
         session.flush()
@@ -427,7 +427,7 @@ class TestBacktestAndReplay:
         session.flush()
         snap = HistoricalReplaySnapshot(
             id=_uid(), replay_run_id=rr.id, sequence_num=1,
-            market_snapshot={"close": 60000.0},
+            market_snapshot={"close": 60000},
         )
         session.add(snap)
         session.flush()
