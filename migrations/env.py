@@ -22,7 +22,11 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    return get_settings().database_url
+    url = get_settings().database_url
+    # Alembic uses a sync engine; swap async driver if present.
+    return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://").replace(
+        "postgresql+aiopg://", "postgresql+psycopg2://"
+    )
 
 
 def run_migrations_offline() -> None:
