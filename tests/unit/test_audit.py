@@ -92,6 +92,16 @@ class TestAuditContext:
         ctx = structlog.contextvars.get_contextvars()
         assert "correlation_id" not in ctx
 
+    def test_nested_context_restores_outer_id(self):
+        outer = _cid()
+        inner = _cid()
+        with audit_context(outer):
+            with audit_context(inner) as returned_inner:
+                assert returned_inner == inner
+                assert structlog.contextvars.get_contextvars()["correlation_id"] == inner
+            assert structlog.contextvars.get_contextvars()["correlation_id"] == outer
+        assert "correlation_id" not in structlog.contextvars.get_contextvars()
+
 
 # ---------------------------------------------------------------------------
 # audit_decision
@@ -164,6 +174,18 @@ class TestAuditDecision:
         )
         assert dec.id is not None
 
+    def test_timestamp_defaults_to_now_when_not_provided(self, session, bot_run):
+        before = datetime.now(UTC)
+        dec = audit_decision(
+            session,
+            bot_run_id=bot_run.id,
+            correlation_id=_cid(),
+            symbol="BTC-USDT",
+            action="OPEN",
+        )
+        after = datetime.now(UTC)
+        assert before <= dec.timestamp <= after
+
 
 # ---------------------------------------------------------------------------
 # audit_snapshot
@@ -176,7 +198,7 @@ class TestAuditSnapshot:
             correlation_id=_cid(),
             symbol="BTC-USDT",
             timestamp=datetime.now(UTC),
-            open=Decimal("60000"),
+            open_price=Decimal("60000"),
             high=Decimal("61000"),
             low=Decimal("59000"),
             close=Decimal("60500"),
@@ -193,7 +215,7 @@ class TestAuditSnapshot:
         snap = self._snap(
             session,
             bot_run,
-            open=Decimal("100"),
+            open_price=Decimal("100"),
             high=Decimal("110"),
             low=Decimal("90"),
             close=Decimal("105"),

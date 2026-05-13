@@ -50,13 +50,19 @@ def audit_context(correlation_id: str | None = None) -> Iterator[str]:
 
     Generates a UUID v4 if none is provided. Yields the active id so callers
     can forward it to audit_* helpers.
+
+    Safe to nest: the previous correlation_id (if any) is restored on exit.
     """
     cid = correlation_id or str(uuid.uuid4())
+    previous = structlog.contextvars.get_contextvars().get("correlation_id")
     structlog.contextvars.bind_contextvars(correlation_id=cid)
     try:
         yield cid
     finally:
-        structlog.contextvars.unbind_contextvars("correlation_id")
+        if previous is None:
+            structlog.contextvars.unbind_contextvars("correlation_id")
+        else:
+            structlog.contextvars.bind_contextvars(correlation_id=previous)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +132,7 @@ def audit_snapshot(
     correlation_id: str,
     symbol: str,
     timestamp: datetime,
-    open: Decimal,
+    open_price: Decimal,
     high: Decimal,
     low: Decimal,
     close: Decimal,
@@ -149,7 +155,7 @@ def audit_snapshot(
         bot_run_id=bot_run_id,
         symbol=symbol,
         timestamp=timestamp,
-        open=open,
+        open=open_price,
         high=high,
         low=low,
         close=close,

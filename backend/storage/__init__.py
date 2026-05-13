@@ -1,3 +1,4 @@
+from backend.storage.audit import audit_context, audit_decision, audit_error, audit_snapshot
 from backend.storage.database import Base, get_db, get_engine, get_session_factory
 from backend.storage.models import (
     AccountState,
@@ -30,6 +31,10 @@ from backend.storage.models import (
 )
 
 __all__ = [
+    "audit_context",
+    "audit_decision",
+    "audit_error",
+    "audit_snapshot",
     "Base",
     "get_db",
     "get_engine",
