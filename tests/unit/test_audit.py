@@ -19,7 +19,6 @@ from backend.storage.audit import audit_context, audit_decision, audit_error, au
 from backend.storage.database import Base
 from backend.storage.models import BotRun, Decision, ErrorRecord, MarketSnapshot
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -193,17 +192,17 @@ class TestAuditDecision:
 
 class TestAuditSnapshot:
     def _snap(self, session: Session, bot_run: BotRun, **kwargs: Any) -> MarketSnapshot:
-        defaults: dict[str, Any] = dict(
-            bot_run_id=bot_run.id,
-            correlation_id=_cid(),
-            symbol="BTC-USDT",
-            timestamp=datetime.now(UTC),
-            open_price=Decimal("60000"),
-            high=Decimal("61000"),
-            low=Decimal("59000"),
-            close=Decimal("60500"),
-            volume=Decimal("1500"),
-        )
+        defaults: dict[str, Any] = {
+            "bot_run_id": bot_run.id,
+            "correlation_id": _cid(),
+            "symbol": "BTC-USDT",
+            "timestamp": datetime.now(UTC),
+            "open_price": Decimal("60000"),
+            "high": Decimal("61000"),
+            "low": Decimal("59000"),
+            "close": Decimal("60500"),
+            "volume": Decimal("1500"),
+        }
         defaults.update(kwargs)
         return audit_snapshot(session, **defaults)
 

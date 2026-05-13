@@ -12,7 +12,7 @@ Correlation IDs are also stored in the JSON payload of each record under
 
 Usage::
 
-    from backend.storage.audit import audit_context, audit_decision, audit_error
+    from backend.storage.audit import audit_context, audit_decision, audit_error, audit_snapshot
 
     with audit_context() as cid:
         snap = audit_snapshot(db, bot_run_id=run_id, correlation_id=cid, ...)
@@ -21,12 +21,14 @@ Usage::
 
 from __future__ import annotations
 
+import copy
 import traceback as _traceback
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Iterator
+from typing import Any
 
 import structlog
 from sqlalchemy.orm import Session
@@ -91,7 +93,7 @@ def audit_decision(
 
     *correlation_id* is stored in ``raw_decision._meta.correlation_id``.
     """
-    payload: dict[str, Any] = dict(raw_decision or {})
+    payload: dict[str, Any] = copy.deepcopy(raw_decision) if raw_decision else {}
     payload.setdefault("_meta", {})["correlation_id"] = correlation_id
 
     record = Decision(
@@ -148,7 +150,7 @@ def audit_snapshot(
 
     *correlation_id* is stored in ``extra._meta.correlation_id``.
     """
-    meta: dict[str, Any] = dict(extra or {})
+    meta: dict[str, Any] = copy.deepcopy(extra) if extra else {}
     meta.setdefault("_meta", {})["correlation_id"] = correlation_id
 
     record = MarketSnapshot(
@@ -203,7 +205,7 @@ def audit_error(
         tb = "".join(_traceback.format_exception(type(exc), exc, exc.__traceback__))
         error_type = type(exc).__name__
 
-    extra: dict[str, Any] = dict(details or {})
+    extra: dict[str, Any] = copy.deepcopy(details) if details else {}
     extra.setdefault("_meta", {})["correlation_id"] = correlation_id
 
     record = ErrorRecord(
@@ -227,6 +229,6 @@ def audit_error(
         error_type=error_type,
         message=message,
         recovered=recovered,
-        exc_info=exc,
+        exc_info=exc if exc is not None else False,
     )
     return record
