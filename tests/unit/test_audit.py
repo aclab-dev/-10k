@@ -11,17 +11,23 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-import structlog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from backend.storage.audit import audit_context, audit_decision, audit_error, audit_snapshot
+from backend.storage.audit import (
+    _correlation_id,
+    audit_context,
+    audit_decision,
+    audit_error,
+    audit_snapshot,
+)
 from backend.storage.database import Base
 from backend.storage.models import BotRun, Decision, ErrorRecord, MarketSnapshot
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def engine():
@@ -60,6 +66,7 @@ def _cid() -> str:
 # audit_context
 # ---------------------------------------------------------------------------
 
+
 class TestAuditContext:
     def test_yields_provided_id(self):
         cid = _cid()
@@ -70,26 +77,23 @@ class TestAuditContext:
         with audit_context() as cid:
             assert len(cid) == 36  # UUID v4 string
 
-    def test_binds_to_structlog_contextvars(self):
+    def test_sets_correlation_id_contextvar(self):
         cid = _cid()
         with audit_context(cid):
-            ctx = structlog.contextvars.get_contextvars()
-            assert ctx.get("correlation_id") == cid
+            assert _correlation_id.get() == cid
 
-    def test_unbinds_after_context_exits(self):
+    def test_resets_after_context_exits(self):
         cid = _cid()
         with audit_context(cid):
             pass
-        ctx = structlog.contextvars.get_contextvars()
-        assert "correlation_id" not in ctx
+        assert _correlation_id.get() is None
 
-    def test_unbinds_even_on_exception(self):
+    def test_resets_even_on_exception(self):
         cid = _cid()
         with pytest.raises(ValueError):
             with audit_context(cid):
                 raise ValueError("boom")
-        ctx = structlog.contextvars.get_contextvars()
-        assert "correlation_id" not in ctx
+        assert _correlation_id.get() is None
 
     def test_nested_context_restores_outer_id(self):
         outer = _cid()
@@ -97,14 +101,15 @@ class TestAuditContext:
         with audit_context(outer):
             with audit_context(inner) as returned_inner:
                 assert returned_inner == inner
-                assert structlog.contextvars.get_contextvars()["correlation_id"] == inner
-            assert structlog.contextvars.get_contextvars()["correlation_id"] == outer
-        assert "correlation_id" not in structlog.contextvars.get_contextvars()
+                assert _correlation_id.get() == inner
+            assert _correlation_id.get() == outer
+        assert _correlation_id.get() is None
 
 
 # ---------------------------------------------------------------------------
 # audit_decision
 # ---------------------------------------------------------------------------
+
 
 class TestAuditDecision:
     def test_returns_decision_instance(self, session, bot_run):
@@ -190,6 +195,7 @@ class TestAuditDecision:
 # audit_snapshot
 # ---------------------------------------------------------------------------
 
+
 class TestAuditSnapshot:
     def _snap(self, session: Session, bot_run: BotRun, **kwargs: Any) -> MarketSnapshot:
         defaults: dict[str, Any] = {
@@ -248,6 +254,7 @@ class TestAuditSnapshot:
 # ---------------------------------------------------------------------------
 # audit_error
 # ---------------------------------------------------------------------------
+
 
 class TestAuditError:
     def test_returns_error_record_instance(self, session, bot_run):
@@ -319,3 +326,53 @@ class TestAuditError:
         )
         assert rec.traceback is None
         assert rec.error_type is None
+
+
+# ---------------------------------------------------------------------------
+# ContextVar fallback en helpers
+# ---------------------------------------------------------------------------
+
+
+class TestContextVarFallback:
+    """Los helpers leen correlation_id del ContextVar si no se pasa explícitamente."""
+
+    def test_decision_reads_from_contextvar(self, session, bot_run):
+        with audit_context() as cid:
+            dec = audit_decision(session, bot_run_id=bot_run.id, symbol="BTC-USDT", action="OPEN")
+        assert dec.raw_decision["_meta"]["correlation_id"] == cid
+
+    def test_decision_explicit_overrides_contextvar(self, session, bot_run):
+        explicit = _cid()
+        with audit_context():
+            dec = audit_decision(
+                session,
+                bot_run_id=bot_run.id,
+                symbol="BTC-USDT",
+                action="OPEN",
+                correlation_id=explicit,
+            )
+        assert dec.raw_decision["_meta"]["correlation_id"] == explicit
+
+    def test_decision_generates_uuid_outside_context(self, session, bot_run):
+        dec = audit_decision(session, bot_run_id=bot_run.id, symbol="BTC-USDT", action="OPEN")
+        assert len(dec.raw_decision["_meta"]["correlation_id"]) == 36
+
+    def test_snapshot_reads_from_contextvar(self, session, bot_run):
+        with audit_context() as cid:
+            snap = audit_snapshot(
+                session,
+                bot_run_id=bot_run.id,
+                symbol="BTC-USDT",
+                timestamp=datetime.now(UTC),
+                open_price=Decimal("60000"),
+                high=Decimal("61000"),
+                low=Decimal("59000"),
+                close=Decimal("60500"),
+                volume=Decimal("1500"),
+            )
+        assert snap.extra["_meta"]["correlation_id"] == cid
+
+    def test_error_reads_from_contextvar(self, session, bot_run):
+        with audit_context() as cid:
+            rec = audit_error(session, bot_run_id=bot_run.id, message="test")
+        assert rec.details["_meta"]["correlation_id"] == cid
