@@ -229,6 +229,6 @@ def audit_error(
         error_type=error_type,
         message=message,
         recovered=recovered,
-        exc_info=exc if exc is not None else False,
+        exc_info=exc is not None,
     )
     return record
