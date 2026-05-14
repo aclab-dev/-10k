@@ -5,8 +5,10 @@ Three public functions cover the event kinds required by F3-DoD:
   audit_snapshot  → market_snapshots table
   audit_error     → errors table
 
-Use audit_context() to bind a correlation_id to structlog contextvars so
-every log line inside the block — not just audit calls — carries the same id.
+Use audit_context() to set a correlation_id for the block's duration via a
+stdlib ContextVar. This guarantees async-safe isolation: each asyncio coroutine
+carries its own copy, so concurrent coroutines cannot cross-contaminate IDs.
+
 Correlation IDs are also stored in the JSON payload of each record under
 ``_meta.correlation_id`` for DB-level queries.
 
@@ -15,8 +17,11 @@ Usage::
     from backend.storage.audit import audit_context, audit_decision, audit_error, audit_snapshot
 
     with audit_context() as cid:
-        snap = audit_snapshot(db, bot_run_id=run_id, correlation_id=cid, ...)
-        dec  = audit_decision(db, bot_run_id=run_id, correlation_id=cid, ...)
+        snap = audit_snapshot(db, bot_run_id=run_id, ...)
+        dec  = audit_decision(db, bot_run_id=run_id, ...)
+
+Helpers read correlation_id from the ContextVar automatically when inside
+an audit_context block; pass it explicitly to override.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import traceback as _traceback
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -37,6 +43,10 @@ from backend.storage.models import Decision, ErrorRecord, MarketSnapshot
 
 _log = structlog.get_logger(__name__)
 
+# Async-safe: asyncio creates a copy of the context per coroutine, so
+# setting this ContextVar in one coroutine never leaks into another.
+_correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -46,36 +56,35 @@ def _now() -> datetime:
 # Context manager
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def audit_context(correlation_id: str | None = None) -> Iterator[str]:
-    """Bind *correlation_id* to structlog contextvars for the block's duration.
+    """Set *correlation_id* as the active correlation ID for the block's duration.
 
-    Generates a UUID v4 if none is provided. Yields the active id so callers
-    can forward it to audit_* helpers.
+    Uses a stdlib ContextVar with token-based reset — safe to nest and
+    async-safe: each coroutine carries its own copy of the context.
 
-    Safe to nest: the previous correlation_id (if any) is restored on exit.
+    Generates a UUID v4 if *correlation_id* is not provided. Yields the
+    active id so callers can forward it to audit_* helpers explicitly.
     """
     cid = correlation_id or str(uuid.uuid4())
-    previous = structlog.contextvars.get_contextvars().get("correlation_id")
-    structlog.contextvars.bind_contextvars(correlation_id=cid)
+    token = _correlation_id.set(cid)
     try:
         yield cid
     finally:
-        if previous is None:
-            structlog.contextvars.unbind_contextvars("correlation_id")
-        else:
-            structlog.contextvars.bind_contextvars(correlation_id=previous)
+        _correlation_id.reset(token)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def audit_decision(
     session: Session,
     *,
     bot_run_id: str,
-    correlation_id: str,
+    correlation_id: str | None = None,
     symbol: str,
     action: str,
     timestamp: datetime | None = None,
@@ -91,10 +100,13 @@ def audit_decision(
 ) -> Decision:
     """Persist a decision event and emit a structured log.
 
-    *correlation_id* is stored in ``raw_decision._meta.correlation_id``.
+    *correlation_id* defaults to the value set by the enclosing audit_context;
+    falls back to a fresh UUID if called outside one.
+    It is stored in ``raw_decision._meta.correlation_id``.
     """
+    cid = correlation_id or _correlation_id.get() or str(uuid.uuid4())
     payload: dict[str, Any] = copy.deepcopy(raw_decision) if raw_decision else {}
-    payload.setdefault("_meta", {})["correlation_id"] = correlation_id
+    payload.setdefault("_meta", {})["correlation_id"] = cid
 
     record = Decision(
         bot_run_id=bot_run_id,
@@ -118,7 +130,7 @@ def audit_decision(
         "audit.decision",
         decision_id=record.id,
         bot_run_id=bot_run_id,
-        correlation_id=correlation_id,
+        correlation_id=cid,
         symbol=symbol,
         action=action,
         direction=direction,
@@ -131,7 +143,7 @@ def audit_snapshot(
     session: Session,
     *,
     bot_run_id: str,
-    correlation_id: str,
+    correlation_id: str | None = None,
     symbol: str,
     timestamp: datetime,
     open_price: Decimal,
@@ -148,10 +160,13 @@ def audit_snapshot(
 ) -> MarketSnapshot:
     """Persist a market snapshot and emit a structured log.
 
-    *correlation_id* is stored in ``extra._meta.correlation_id``.
+    *correlation_id* defaults to the value set by the enclosing audit_context;
+    falls back to a fresh UUID if called outside one.
+    It is stored in ``extra._meta.correlation_id``.
     """
+    cid = correlation_id or _correlation_id.get() or str(uuid.uuid4())
     meta: dict[str, Any] = copy.deepcopy(extra) if extra else {}
-    meta.setdefault("_meta", {})["correlation_id"] = correlation_id
+    meta.setdefault("_meta", {})["correlation_id"] = cid
 
     record = MarketSnapshot(
         bot_run_id=bot_run_id,
@@ -176,7 +191,7 @@ def audit_snapshot(
         "audit.snapshot",
         snapshot_id=record.id,
         bot_run_id=bot_run_id,
-        correlation_id=correlation_id,
+        correlation_id=cid,
         symbol=symbol,
         close=str(close),
     )
@@ -187,7 +202,7 @@ def audit_error(
     session: Session,
     *,
     bot_run_id: str,
-    correlation_id: str,
+    correlation_id: str | None = None,
     message: str,
     exc: BaseException | None = None,
     module: str | None = None,
@@ -196,9 +211,12 @@ def audit_error(
 ) -> ErrorRecord:
     """Persist an error record and emit a structured log.
 
-    *correlation_id* is stored in ``details._meta.correlation_id``.
+    *correlation_id* defaults to the value set by the enclosing audit_context;
+    falls back to a fresh UUID if called outside one.
+    It is stored in ``details._meta.correlation_id``.
     If *exc* is provided, its type name and full traceback are extracted.
     """
+    cid = correlation_id or _correlation_id.get() or str(uuid.uuid4())
     tb: str | None = None
     error_type: str | None = None
     if exc is not None:
@@ -206,7 +224,7 @@ def audit_error(
         error_type = type(exc).__name__
 
     extra: dict[str, Any] = copy.deepcopy(details) if details else {}
-    extra.setdefault("_meta", {})["correlation_id"] = correlation_id
+    extra.setdefault("_meta", {})["correlation_id"] = cid
 
     record = ErrorRecord(
         bot_run_id=bot_run_id,
@@ -224,7 +242,7 @@ def audit_error(
         "audit.error",
         error_id=record.id,
         bot_run_id=bot_run_id,
-        correlation_id=correlation_id,
+        correlation_id=cid,
         module=module,
         error_type=error_type,
         message=message,
