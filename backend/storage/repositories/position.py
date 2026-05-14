@@ -16,11 +16,11 @@ class PositionRepository(BaseRepository[Position]):
         return session.get(Position, position_id)
 
     def get_open_positions(self, session: Session, bot_run_id: str) -> list[Position]:
-        return session.scalars(
+        return list(session.scalars(
             select(Position).where(
                 Position.bot_run_id == bot_run_id, Position.status == "OPEN"
             )
-        ).all()
+        ))
 
     def get_by_symbol(
         self, session: Session, bot_run_id: str, symbol: str

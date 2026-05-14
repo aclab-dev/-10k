@@ -16,16 +16,14 @@ class OrderRepository(BaseRepository[Order]):
         return session.get(Order, order_id)
 
     def get_by_trade_id(self, session: Session, trade_id: str) -> list[Order]:
-        return session.scalars(
-            select(Order).where(Order.trade_id == trade_id)
-        ).all()
+        return list(session.scalars(select(Order).where(Order.trade_id == trade_id)))
 
     def get_pending_orders(self, session: Session, bot_run_id: str) -> list[Order]:
-        return session.scalars(
+        return list(session.scalars(
             select(Order).where(
                 Order.bot_run_id == bot_run_id, Order.status == "PENDING"
             )
-        ).all()
+        ))
 
     def fill_order(
         self,
