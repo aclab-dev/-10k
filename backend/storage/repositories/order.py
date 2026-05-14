@@ -1,32 +1,31 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.storage.models import Order
+from backend.storage.repositories.base import BaseRepository
 
 
-class OrderRepository:
-    def create(self, session: Session, **kwargs: Any) -> Order:
-        order = Order(**kwargs)
-        session.add(order)
-        session.flush()
-        return order
+class OrderRepository(BaseRepository[Order]):
+    _model = Order
 
     def get_by_id(self, session: Session, order_id: str) -> Order | None:
         return session.get(Order, order_id)
 
     def get_by_trade_id(self, session: Session, trade_id: str) -> list[Order]:
-        return session.query(Order).filter(Order.trade_id == trade_id).all()
+        return session.execute(
+            select(Order).where(Order.trade_id == trade_id)
+        ).scalars().all()  # type: ignore[return-value]
 
     def get_pending_orders(self, session: Session, bot_run_id: str) -> list[Order]:
-        return (
-            session.query(Order)
-            .filter(Order.bot_run_id == bot_run_id, Order.status == "PENDING")
-            .all()
-        )
+        return session.execute(
+            select(Order).where(
+                Order.bot_run_id == bot_run_id, Order.status == "PENDING"
+            )
+        ).scalars().all()  # type: ignore[return-value]
 
     def fill_order(
         self,

@@ -1,36 +1,29 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.storage.models import Trade
+from backend.storage.repositories.base import BaseRepository
 
 
-class TradeRepository:
-    def create(self, session: Session, **kwargs: Any) -> Trade:
-        trade = Trade(**kwargs)
-        session.add(trade)
-        session.flush()
-        return trade
+class TradeRepository(BaseRepository[Trade]):
+    _model = Trade
 
     def get_by_id(self, session: Session, trade_id: str) -> Trade | None:
         return session.get(Trade, trade_id)
 
     def get_open_trades(self, session: Session, bot_run_id: str) -> list[Trade]:
-        return (
-            session.query(Trade)
-            .filter(Trade.bot_run_id == bot_run_id, Trade.status == "OPEN")
-            .all()
-        )
+        return session.execute(
+            select(Trade).where(Trade.bot_run_id == bot_run_id, Trade.status == "OPEN")
+        ).scalars().all()  # type: ignore[return-value]
 
     def get_by_symbol(self, session: Session, bot_run_id: str, symbol: str) -> list[Trade]:
-        return (
-            session.query(Trade)
-            .filter(Trade.bot_run_id == bot_run_id, Trade.symbol == symbol)
-            .all()
-        )
+        return session.execute(
+            select(Trade).where(Trade.bot_run_id == bot_run_id, Trade.symbol == symbol)
+        ).scalars().all()  # type: ignore[return-value]
 
     def close_trade(
         self,

@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
-
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.storage.models import BotRun
+from backend.storage.repositories.base import BaseRepository
 
 
-class BotRunRepository:
-    def create(self, session: Session, **kwargs: Any) -> BotRun:
-        run = BotRun(**kwargs)
-        session.add(run)
-        session.flush()
-        return run
+class BotRunRepository(BaseRepository[BotRun]):
+    _model = BotRun
 
     def get_by_id(self, session: Session, run_id: str) -> BotRun | None:
         return session.get(BotRun, run_id)
 
     def get_active_runs(self, session: Session) -> list[BotRun]:
-        return session.query(BotRun).filter(BotRun.status == "RUNNING").all()
+        return session.execute(
+            select(BotRun).where(BotRun.status == "RUNNING")
+        ).scalars().all()  # type: ignore[return-value]
 
     def mark_finished(self, session: Session, run_id: str, status: str) -> BotRun | None:
         run = session.get(BotRun, run_id)

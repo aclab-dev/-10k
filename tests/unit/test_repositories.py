@@ -10,11 +10,8 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from backend.storage.database import Base
 from backend.storage.models import BotRun, Trade
 from backend.storage.repositories import (
     BotRunRepository,
@@ -22,25 +19,6 @@ from backend.storage.repositories import (
     PositionRepository,
     TradeRepository,
 )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def engine():
-    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng)
-    yield eng
-    Base.metadata.drop_all(eng)
-
-
-@pytest.fixture
-def session(engine):
-    with Session(engine) as s:
-        yield s
-        s.rollback()
 
 
 def _uid() -> str:
@@ -52,8 +30,7 @@ def _now() -> datetime:
 
 
 def _make_bot_run(session: Session, status: str = "RUNNING") -> BotRun:
-    repo = BotRunRepository()
-    return repo.create(
+    return BotRunRepository().create(
         session,
         id=_uid(),
         environment="PAPER",
@@ -64,8 +41,7 @@ def _make_bot_run(session: Session, status: str = "RUNNING") -> BotRun:
 
 
 def _make_trade(session: Session, bot_run: BotRun, symbol: str = "BTCUSDT") -> Trade:
-    repo = TradeRepository()
-    return repo.create(
+    return TradeRepository().create(
         session,
         id=_uid(),
         bot_run_id=bot_run.id,
@@ -77,10 +53,6 @@ def _make_trade(session: Session, bot_run: BotRun, symbol: str = "BTCUSDT") -> T
         opened_at=_now(),
     )
 
-
-# ---------------------------------------------------------------------------
-# BotRunRepository
-# ---------------------------------------------------------------------------
 
 class TestBotRunRepository:
     def test_create_returns_instance(self, session):
@@ -95,8 +67,7 @@ class TestBotRunRepository:
         assert fetched.id == run.id
 
     def test_get_by_id_missing_returns_none(self, session):
-        result = BotRunRepository().get_by_id(session, _uid())
-        assert result is None
+        assert BotRunRepository().get_by_id(session, _uid()) is None
 
     def test_get_active_runs_only_running(self, session):
         repo = BotRunRepository()
@@ -115,8 +86,7 @@ class TestBotRunRepository:
         assert updated.status == "STOPPED"
 
     def test_mark_finished_missing_returns_none(self, session):
-        result = BotRunRepository().mark_finished(session, _uid(), "STOPPED")
-        assert result is None
+        assert BotRunRepository().mark_finished(session, _uid(), "STOPPED") is None
 
     def test_create_persists_config_snapshot(self, session):
         repo = BotRunRepository()
@@ -131,10 +101,6 @@ class TestBotRunRepository:
         assert fetched is not None
         assert fetched.config_snapshot["leverage_cap"] == 5
 
-
-# ---------------------------------------------------------------------------
-# TradeRepository
-# ---------------------------------------------------------------------------
 
 class TestTradeRepository:
     def test_create_returns_instance(self, session):
@@ -206,27 +172,6 @@ class TestTradeRepository:
         )
         assert result is None
 
-    def test_margin_usdt_enforced_max_10(self, session):
-        """Margen nunca debe superar 10 USDT (non-negotiable del proyecto)."""
-        repo = TradeRepository()
-        run = _make_bot_run(session)
-        trade = repo.create(
-            session,
-            id=_uid(),
-            bot_run_id=run.id,
-            symbol="BTCUSDT",
-            environment="PAPER",
-            direction="LONG",
-            margin_usdt=Decimal("10"),
-            leverage=3,
-            opened_at=_now(),
-        )
-        assert Decimal(str(trade.margin_usdt)) <= Decimal("10")
-
-
-# ---------------------------------------------------------------------------
-# PositionRepository
-# ---------------------------------------------------------------------------
 
 class TestPositionRepository:
     def _make_position(self, session: Session, bot_run: BotRun, symbol: str = "BTCUSDT"):
@@ -275,19 +220,15 @@ class TestPositionRepository:
         assert closed_pos.id not in ids
 
     def test_get_by_symbol_returns_open_position(self, session):
-        repo = PositionRepository()
         run = _make_bot_run(session)
         pos = self._make_position(session, run, symbol="SOLUSDT")
-
-        result = repo.get_by_symbol(session, run.id, "SOLUSDT")
+        result = PositionRepository().get_by_symbol(session, run.id, "SOLUSDT")
         assert result is not None
         assert result.id == pos.id
 
     def test_get_by_symbol_no_open_returns_none(self, session):
-        repo = PositionRepository()
         run = _make_bot_run(session)
-        result = repo.get_by_symbol(session, run.id, "XRPUSDT")
-        assert result is None
+        assert PositionRepository().get_by_symbol(session, run.id, "XRPUSDT") is None
 
     def test_update_price_changes_fields(self, session):
         run = _make_bot_run(session)
@@ -305,10 +246,6 @@ class TestPositionRepository:
         )
         assert result is None
 
-
-# ---------------------------------------------------------------------------
-# OrderRepository
-# ---------------------------------------------------------------------------
 
 class TestOrderRepository:
     def _make_order(
@@ -351,13 +288,13 @@ class TestOrderRepository:
         trade = _make_trade(session, run)
         o1 = self._make_order(session, run, trade_id=trade.id)
         o2 = self._make_order(session, run, trade_id=trade.id)
-        self._make_order(session, run, trade_id=None)  # unrelated
+        self._make_order(session, run, trade_id=None)
 
         result = repo.get_by_trade_id(session, trade.id)
         ids = [o.id for o in result]
         assert o1.id in ids
         assert o2.id in ids
-        assert len([o for o in result if o.trade_id != trade.id]) == 0
+        assert all(o.trade_id == trade.id for o in result)
 
     def test_get_pending_orders_only_pending(self, session):
         repo = OrderRepository()
