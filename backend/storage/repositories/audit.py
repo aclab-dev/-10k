@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.storage.models import ErrorRecord, KillSwitchEvent, SystemEvent, TokenUsage
 from backend.storage.repositories.base import BaseRepository
@@ -90,8 +90,6 @@ class TokenUsageRepository(BaseRepository[TokenUsage]):
 
     def total_tokens_for_run(self, bot_run_id: str) -> int:
         """Suma total de tokens consumidos en el run."""
-        from sqlalchemy import func
-
         stmt = select(func.sum(TokenUsage.total_tokens)).where(
             TokenUsage.bot_run_id == bot_run_id
         )

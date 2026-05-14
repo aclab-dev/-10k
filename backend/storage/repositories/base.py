@@ -53,6 +53,13 @@ class BaseRepository[T: Base]:
     def list_by_bot_run(
         self, bot_run_id: str, *, limit: int = 100, offset: int = 0
     ) -> list[T]:
+        """Lista registros filtrados por bot_run_id.
+
+        Requiere que el modelo tenga columna `bot_run_id`. Los repos cuyo
+        modelo no tiene esa columna directa (PositionEventRepository,
+        ModelResponseRepository, etc.) deben sobrescribir este método con
+        el JOIN correspondiente.
+        """
         stmt = (
             select(self.model)
             .where(self.model.bot_run_id == bot_run_id)  # type: ignore[attr-defined]

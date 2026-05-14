@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from backend.storage.models import AccountState, BotRun, BotState
@@ -17,12 +19,9 @@ class BotRunRepository(BaseRepository[BotRun]):
         return self._session.scalars(stmt).first()
 
     def close(self, bot_run: BotRun, status: str = "STOPPED") -> BotRun:
-        from datetime import UTC, datetime
-
         bot_run.status = status
         bot_run.ended_at = datetime.now(UTC)
-        self._session.flush()
-        return bot_run
+        return self.save(bot_run)
 
 
 class BotStateRepository(BaseRepository[BotState]):

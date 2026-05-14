@@ -30,6 +30,8 @@ from backend.storage.models import (
     KillSwitchEvent,
     MarketRegime,
     MarketSnapshot,
+    ModelRequest,
+    ModelResponse,
     Order,
     Position,
     PositionEvent,
@@ -55,6 +57,8 @@ from backend.storage.repositories import (
     KillSwitchEventRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
+    ModelRequestRepository,
+    ModelResponseRepository,
     OrderRepository,
     PositionEventRepository,
     PositionRepository,
@@ -306,6 +310,100 @@ class TestFeaturePackageRepository:
     def test_get_by_hash_missing(self, session: Session) -> None:
         repo = FeaturePackageRepository(session)
         assert repo.get_by_hash("nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
+# ModelRequestRepository / ModelResponseRepository
+# ---------------------------------------------------------------------------
+
+class TestModelRequestRepository:
+    def _model_request(self, session: Session, run: BotRun, hash_: str) -> ModelRequest:
+        req = ModelRequest(
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            model="gpt-4",
+            context={"test": True},
+            request_hash=hash_,
+        )
+        session.add(req)
+        session.flush()
+        return req
+
+    def test_get_by_hash(self, session: Session) -> None:
+        run = _bot_run(session)
+        h = _uid()
+        self._model_request(session, run, h)
+
+        repo = ModelRequestRepository(session)
+        found = repo.get_by_hash(h)
+        assert found is not None
+        assert found.request_hash == h
+
+    def test_get_by_hash_missing(self, session: Session) -> None:
+        repo = ModelRequestRepository(session)
+        assert repo.get_by_hash("nonexistent") is None
+
+    def test_list_by_bot_run(self, session: Session) -> None:
+        run = _bot_run(session)
+        self._model_request(session, run, _uid())
+        self._model_request(session, run, _uid())
+
+        repo = ModelRequestRepository(session)
+        results = repo.list_by_bot_run(run.id)
+        assert len(results) == 2
+
+
+class TestModelResponseRepository:
+    def _request_and_response(
+        self, session: Session, run: BotRun
+    ) -> tuple[ModelRequest, ModelResponse]:
+        req = ModelRequest(
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            model="gpt-4",
+            context={},
+            request_hash=_uid(),
+        )
+        session.add(req)
+        session.flush()
+
+        resp = ModelResponse(
+            model_request_id=req.id,
+            timestamp=_now(),
+            raw_response='{"decision": "NO_OPERAR"}',
+            model="gpt-4",
+            is_valid_schema=True,
+        )
+        session.add(resp)
+        session.flush()
+        return req, resp
+
+    def test_get_by_request_id(self, session: Session) -> None:
+        run = _bot_run(session)
+        req, resp = self._request_and_response(session, run)
+
+        repo = ModelResponseRepository(session)
+        found = repo.get_by_request_id(req.id)
+        assert found is not None
+        assert found.id == resp.id
+
+    def test_get_by_request_id_missing(self, session: Session) -> None:
+        repo = ModelResponseRepository(session)
+        assert repo.get_by_request_id(_uid()) is None
+
+    def test_list_by_bot_run_uses_join(self, session: Session) -> None:
+        """list_by_bot_run hace JOIN via model_requests; verificar aislamiento por run."""
+        run_a = _bot_run(session)
+        run_b = _bot_run(session)
+        self._request_and_response(session, run_a)
+        self._request_and_response(session, run_a)
+        self._request_and_response(session, run_b)
+
+        repo = ModelResponseRepository(session)
+        assert len(repo.list_by_bot_run(run_a.id)) == 2
+        assert len(repo.list_by_bot_run(run_b.id)) == 1
 
 
 # ---------------------------------------------------------------------------
