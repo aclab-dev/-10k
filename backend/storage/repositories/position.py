@@ -16,22 +16,22 @@ class PositionRepository(BaseRepository[Position]):
         return session.get(Position, position_id)
 
     def get_open_positions(self, session: Session, bot_run_id: str) -> list[Position]:
-        return session.execute(
+        return session.scalars(
             select(Position).where(
                 Position.bot_run_id == bot_run_id, Position.status == "OPEN"
             )
-        ).scalars().all()  # type: ignore[return-value]
+        ).all()
 
     def get_by_symbol(
         self, session: Session, bot_run_id: str, symbol: str
     ) -> Position | None:
-        return session.execute(
+        return session.scalars(
             select(Position).where(
                 Position.bot_run_id == bot_run_id,
                 Position.symbol == symbol,
                 Position.status == "OPEN",
             )
-        ).scalars().first()
+        ).first()
 
     def update_price(
         self,

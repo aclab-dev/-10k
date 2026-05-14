@@ -14,9 +14,9 @@ class BotRunRepository(BaseRepository[BotRun]):
         return session.get(BotRun, run_id)
 
     def get_active_runs(self, session: Session) -> list[BotRun]:
-        return session.execute(
+        return session.scalars(
             select(BotRun).where(BotRun.status == "RUNNING")
-        ).scalars().all()  # type: ignore[return-value]
+        ).all()
 
     def mark_finished(self, session: Session, run_id: str, status: str) -> BotRun | None:
         run = session.get(BotRun, run_id)

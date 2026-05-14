@@ -249,7 +249,11 @@ class TestPositionRepository:
 
 class TestOrderRepository:
     def _make_order(
-        self, session: Session, bot_run: BotRun, trade_id: str | None = None, status: str = "PENDING"
+        self,
+        session: Session,
+        bot_run: BotRun,
+        trade_id: str | None = None,
+        status: str = "PENDING",
     ):
         return OrderRepository().create(
             session,

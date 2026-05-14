@@ -16,14 +16,14 @@ class TradeRepository(BaseRepository[Trade]):
         return session.get(Trade, trade_id)
 
     def get_open_trades(self, session: Session, bot_run_id: str) -> list[Trade]:
-        return session.execute(
+        return session.scalars(
             select(Trade).where(Trade.bot_run_id == bot_run_id, Trade.status == "OPEN")
-        ).scalars().all()  # type: ignore[return-value]
+        ).all()
 
     def get_by_symbol(self, session: Session, bot_run_id: str, symbol: str) -> list[Trade]:
-        return session.execute(
+        return session.scalars(
             select(Trade).where(Trade.bot_run_id == bot_run_id, Trade.symbol == symbol)
-        ).scalars().all()  # type: ignore[return-value]
+        ).all()
 
     def close_trade(
         self,
