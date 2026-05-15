@@ -19,6 +19,8 @@ WORKDIR /app
 COPY pyproject.toml README.md config.yaml ./
 COPY backend ./backend
 COPY worker ./worker
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
