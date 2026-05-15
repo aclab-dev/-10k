@@ -2,22 +2,26 @@
 
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.core.config import Settings, get_settings
 from backend.storage.database import get_db
 
 router = APIRouter()
+_log = structlog.get_logger()
 
 
 def _db_reachable(db: Session) -> bool:
     try:
         db.execute(text("SELECT 1"))
         return True
-    except Exception:
+    except SQLAlchemyError as exc:
+        _log.warning("health.db_unreachable", exc_info=exc)
         return False
 
 
