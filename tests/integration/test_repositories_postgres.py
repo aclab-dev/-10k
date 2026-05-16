@@ -9,6 +9,7 @@ Ejecutar con: pytest -m integration
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -132,7 +133,6 @@ class TestBotRunRepositoryPostgres:
         assert run.ended_at is not None
 
     def test_get_by_id_missing(self, pg_session: Session) -> None:
-        import uuid
         repo = BotRunRepository(pg_session)
         assert repo.get_by_id(str(uuid.uuid4())) is None
 
@@ -168,16 +168,15 @@ class TestDecisionConstraints:
             pg_session.flush()
 
     def test_missing_bot_run_fk_raises(self, pg_session: Session) -> None:
-        """bot_run_id es NOT NULL y FK — Postgres lo rechaza."""
-        import uuid
+        """bot_run_id FK inexistente — Postgres lo rechaza con FK violation."""
         decision = Decision(
-            bot_run_id=str(uuid.uuid4()),  # FK inexistente
+            bot_run_id=str(uuid.uuid4()),
             symbol="BTCUSDT",
             timestamp=_now(),
             action="NO_OPERAR",
         )
         pg_session.add(decision)
-        with pytest.raises(IntegrityError):
+        with pytest.raises(IntegrityError, match="foreign key"):
             pg_session.flush()
 
 

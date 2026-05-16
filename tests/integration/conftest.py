@@ -8,7 +8,7 @@ el overhead de arranque.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.postgres import PostgresContainer
 
@@ -42,30 +42,3 @@ def pg_session(pg_session_factory) -> Session:
     with pg_session_factory() as session:
         yield session
         session.rollback()
-
-
-@pytest.fixture
-def clean_pg_session(pg_engine) -> Session:
-    """Sesión que trunca todas las tablas del Anexo B después del test.
-
-    Usar cuando el rollback no es suficiente (ej. tests que hacen commit
-    explícito para verificar constraints diferidos).
-    """
-    with Session(pg_engine) as session:
-        yield session
-        # Truncar en orden inverso a las FK para evitar violaciones
-        session.execute(text(
-            "TRUNCATE TABLE "
-            "historical_replay_snapshots, historical_replay_runs, "
-            "backtest_results, backtest_runs, "
-            "token_usage, news_context, kill_switch_events, "
-            "system_events, errors, "
-            "position_events, positions, orders, trades, "
-            "risk_validations, decision_aggregations, decisions, "
-            "model_responses, model_requests, "
-            "feature_packages, volatility_assessments, "
-            "market_regimes, quant_signals, market_snapshots, "
-            "accounts_state, bot_state, bot_runs "
-            "CASCADE"
-        ))
-        session.commit()
