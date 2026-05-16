@@ -36,3 +36,6 @@ jobs:
 
       - name: Tests (unit only)
         run: uv run pytest -m "not integration"
+
+      - name: Integration tests (Postgres real)
+        run: uv run pytest -m integration -v
