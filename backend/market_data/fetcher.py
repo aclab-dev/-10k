@@ -10,7 +10,7 @@ from __future__ import annotations
 import random
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 from backend.core.config import Environment
 from backend.market_data.schemas import (
@@ -26,6 +26,8 @@ from backend.market_data.schemas import (
 # Parámetros de simulación por símbolo
 # ---------------------------------------------------------------------------
 
+# Precios de referencia aproximados a mayo 2026. No representan valor real;
+# el ruido gaussiano genera variación suficiente para simulación PAPER.
 _BASE_PRICES: dict[str, Decimal] = {
     "BTCUSDT": Decimal("65000"),
     "ETHUSDT": Decimal("3200"),
@@ -112,19 +114,21 @@ class MockDataFetcher(DataFetcher):
         seed: int | None = None,
         spread_bps: float = 2.0,
         volatility_pct: float = 0.3,
-        simulated_latency_ms: int = 35,
+        reported_latency_ms: int = 35,
     ) -> None:
         """
         Args:
             seed: Semilla para reproducibilidad en backtesting/replay.
             spread_bps: Spread bid-ask en basis points (1 bp = 0.01%).
             volatility_pct: Amplitud del ruido de precio en %.
-            simulated_latency_ms: Latencia simulada en ms.
+            reported_latency_ms: Valor de latency_ms incluido en el snapshot.
+                No introduce delay real; es metadata para que el pipeline
+                downstream lo trate igual que un fetch real.
         """
         self._rng = random.Random(seed)
         self._spread_bps = spread_bps
         self._volatility_pct = volatility_pct
-        self._simulated_latency_ms = simulated_latency_ms
+        self._reported_latency_ms = reported_latency_ms
 
     async def fetch_snapshot(
         self,
@@ -133,6 +137,8 @@ class MockDataFetcher(DataFetcher):
         open_positions_count: int = 0,
         active_orders_count: int = 0,
     ) -> MarketSnapshot:
+        if symbol not in _BASE_PRICES:
+            raise ValueError(f"Symbol {symbol!r} not supported by MockDataFetcher")
         now = datetime.now(UTC)
         tick = _TICK_SIZES[symbol]
         base = _BASE_PRICES[symbol]
@@ -170,7 +176,7 @@ class MockDataFetcher(DataFetcher):
             account_balance_usdt=account_balance_usdt,
             open_positions_count=open_positions_count,
             active_orders_count=active_orders_count,
-            latency_ms=self._simulated_latency_ms,
+            latency_ms=self._reported_latency_ms,
             exchange_server_time=now,
             local_time=now,
             clock_skew_ms=0,
@@ -194,8 +200,9 @@ class MockDataFetcher(DataFetcher):
         half_spread = last_price * Decimal(str(self._spread_bps / 2 / 10000))
         half_spread = max(half_spread, tick)
 
-        bid = self._round_to_tick(last_price - half_spread, tick)
-        ask = self._round_to_tick(last_price + half_spread, tick)
+        # bid redondea hacia abajo, ask hacia arriba: garantiza spread ≥ spread_bps
+        bid = self._round_to_tick(last_price - half_spread, tick, rounding=ROUND_DOWN)
+        ask = self._round_to_tick(last_price + half_spread, tick, rounding=ROUND_UP)
 
         # last_price debe quedar en [bid, ask]; ajustamos si el redondeo lo sacó
         if last_price <= bid:
@@ -253,5 +260,5 @@ class MockDataFetcher(DataFetcher):
         return self._round_to_tick(Decimal(str(raw)), tick)
 
     @staticmethod
-    def _round_to_tick(value: Decimal, tick: Decimal) -> Decimal:
-        return (value / tick).quantize(Decimal("1"), rounding=ROUND_DOWN) * tick
+    def _round_to_tick(value: Decimal, tick: Decimal, rounding: str = ROUND_DOWN) -> Decimal:
+        return (value / tick).quantize(Decimal("1"), rounding=rounding) * tick

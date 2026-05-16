@@ -120,16 +120,28 @@ class TestMockFetcherPriceCoherence:
         assert snap.spread_absolute > 0
         assert snap.spread_percent > 0
 
-    async def test_candle_ohlc_coherent(self) -> None:
-        snap = await _fetch()
-        for tf_name in ("tf_5m", "tf_15m", "tf_1h", "tf_4h"):
-            candle = getattr(snap.candles, tf_name)
-            assert candle.low <= candle.open <= candle.high, tf_name
-            assert candle.low <= candle.close <= candle.high, tf_name
-            assert candle.volume >= 0, tf_name
+    @pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
+    async def test_candle_ohlc_coherent(self, symbol: str) -> None:
+        for seed in range(5):
+            fetcher = MockDataFetcher(seed=seed)
+            snap = await fetcher.fetch_snapshot(symbol, account_balance_usdt=_BALANCE)
+            for tf_name in ("tf_5m", "tf_15m", "tf_1h", "tf_4h"):
+                candle = getattr(snap.candles, tf_name)
+                assert candle.low <= candle.open <= candle.high, f"{symbol} seed={seed} {tf_name}"
+                assert candle.low <= candle.close <= candle.high, f"{symbol} seed={seed} {tf_name}"
+                assert candle.volume > 0, f"{symbol} seed={seed} {tf_name}"
 
-    async def test_latency_within_bounds(self) -> None:
-        snap = await _fetch(simulated_latency_ms=50)
+    @pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
+    async def test_candle_low_positive(self, symbol: str) -> None:
+        for seed in range(5):
+            fetcher = MockDataFetcher(seed=seed)
+            snap = await fetcher.fetch_snapshot(symbol, account_balance_usdt=_BALANCE)
+            for tf_name in ("tf_5m", "tf_15m", "tf_1h", "tf_4h"):
+                candle = getattr(snap.candles, tf_name)
+                assert candle.low > 0, f"{symbol} seed={seed} {tf_name}: low={candle.low}"
+
+    async def test_latency_reported(self) -> None:
+        snap = await _fetch(reported_latency_ms=50)
         assert snap.latency_ms == 50
 
     async def test_clock_skew_is_zero(self) -> None:
@@ -163,6 +175,11 @@ class TestMockFetcherReproducibility:
         snap_a = await fetcher_a.fetch_snapshot("BTCUSDT", account_balance_usdt=_BALANCE)
         snap_b = await fetcher_b.fetch_snapshot("BTCUSDT", account_balance_usdt=_BALANCE)
         assert snap_a.last_price != snap_b.last_price
+
+    async def test_invalid_symbol_raises(self) -> None:
+        fetcher = MockDataFetcher(seed=0)
+        with pytest.raises(ValueError, match="not supported"):
+            await fetcher.fetch_snapshot("DOGEUSDT", account_balance_usdt=_BALANCE)
 
     async def test_no_seed_produces_varying_prices(self) -> None:
         prices = set()
