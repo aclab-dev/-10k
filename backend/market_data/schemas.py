@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -76,8 +76,6 @@ class CandleData(BaseModel):
             raise ValueError(
                 f"close={self.close} fuera del rango [low={self.low}, high={self.high}]"
             )
-        if self.low > self.high:
-            raise ValueError(f"low={self.low} > high={self.high}")
         if self.volume < 0:
             raise ValueError("volume no puede ser negativo")
         return self
@@ -114,7 +112,7 @@ class MarketSnapshot(BaseModel):
     exchange: Exchange
     environment: Environment
     symbol: str
-    market: str = "FUTURES"
+    market: Literal["FUTURES"] = "FUTURES"
 
     # Precios spot
     last_price: Decimal = Field(gt=0)
@@ -199,8 +197,12 @@ class MarketSnapshot(BaseModel):
                 f" con ask-bid={expected_spread}"
             )
 
-        if self.last_price <= 0:
-            raise ValueError("last_price debe ser positivo")
+        expected_spread_pct = self.spread_absolute / self.bid * 100
+        if abs(self.spread_percent - expected_spread_pct) > Decimal("0.01"):
+            raise ValueError(
+                f"spread_percent={self.spread_percent} inconsistente con"
+                f" spread_absolute/bid*100={expected_spread_pct:.4f}"
+            )
 
         if self.spread_percent > _MAX_SPREAD_PERCENT:
             raise ValueError(
@@ -213,13 +215,6 @@ class MarketSnapshot(BaseModel):
                 f"last_price={self.last_price} debe estar entre bid={self.bid} y ask={self.ask}"
             )
 
-        return self
-
-    @model_validator(mode="after")
-    def coherence_consistent_with_status(self) -> MarketSnapshot:
-        """Si hay incoherencia detectada, el status debe reflejarlo."""
-        if self.coherence_status == CoherenceStatus.INVALID:
-            pass
         return self
 
     # ------------------------------------------------------------------
@@ -262,6 +257,7 @@ class MarketSnapshot(BaseModel):
             "open": self.candles.tf_5m.open,
             "high": self.candles.tf_5m.high,
             "low": self.candles.tf_5m.low,
+            # close = last_price (precio actual, no el cierre de la vela 5m)
             "close": self.last_price,
             "volume": self.volume,
             "funding_rate": self.funding_rate,

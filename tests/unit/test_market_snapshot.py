@@ -186,6 +186,27 @@ class TestMarketSnapshotPriceCoherence:
                 last_price=Decimal("50005"),
             )
 
+    def test_spread_percent_inconsistent_with_absolute_raises(self) -> None:
+        with pytest.raises(ValueError, match="spread_percent"):
+            _snapshot(
+                bid=Decimal("50000"),
+                ask=Decimal("50010"),
+                spread_absolute=Decimal("10"),
+                last_price=Decimal("50005"),
+                spread_percent=Decimal("0.05"),
+            )
+
+    def test_spread_percent_consistent_with_absolute_accepted(self) -> None:
+        # bid=50000, spread=10 → spread_percent = 10/50000*100 = 0.02
+        s = _snapshot(
+            bid=Decimal("50000"),
+            ask=Decimal("50010"),
+            spread_absolute=Decimal("10"),
+            last_price=Decimal("50005"),
+            spread_percent=Decimal("0.02"),
+        )
+        assert s.spread_percent == Decimal("0.02")
+
     def test_excessive_spread_percent_raises(self) -> None:
         with pytest.raises(ValueError, match="spread_percent"):
             _snapshot(spread_percent=Decimal("10.0"))
