@@ -44,7 +44,12 @@ class SnapshotRejectedError(Exception):
 def evaluate_freshness(
     snapshot: MarketSnapshot, now: datetime | None = None
 ) -> DataFreshnessStatus:
-    """Devuelve el estado de frescura según la edad de timestamp_utc."""
+    """Devuelve el estado de frescura según la edad de timestamp_utc.
+
+    Nota: si timestamp_utc está en el futuro (clock skew del exchange), age_s
+    será negativo y el snapshot se clasificará como FRESH sin aviso adicional.
+    El campo clock_skew_ms del snapshot puede usarse para detectar este caso.
+    """
     _now = now if now is not None else datetime.now(UTC)
     age_s = (_now - snapshot.timestamp_utc).total_seconds()
 
@@ -71,18 +76,22 @@ def _check_gaps(candles: Candles) -> list[str]:
     return issues
 
 
-def _check_price_coherence(snapshot: MarketSnapshot) -> list[str]:
-    """Verifica que last_price no se desvíe más del umbral respecto al close de la vela 5m."""
-    issues: list[str] = []
+def _check_price_coherence(snapshot: MarketSnapshot) -> tuple[list[str], list[str]]:
+    """Verifica integridad y coherencia del precio respecto al close de la vela 5m.
+
+    Returns:
+        (invalid_issues, warning_issues) — close <= 0 es INVALID; desviación excesiva es WARNING.
+    """
     close_5m = snapshot.candles.tf_5m.close
-    if close_5m > 0:
-        deviation_pct = abs(snapshot.last_price - close_5m) / close_5m * 100
-        if deviation_pct > _MAX_LAST_PRICE_VS_5M_CLOSE_PCT:
-            issues.append(
-                f"last_price={snapshot.last_price} se desvía {deviation_pct:.2f}% "
-                f"del close_5m={close_5m} (máx={_MAX_LAST_PRICE_VS_5M_CLOSE_PCT}%)"
-            )
-    return issues
+    if close_5m <= 0:
+        return [f"tf_5m: close={close_5m} inválido (≤ 0)"], []
+    deviation_pct = abs(snapshot.last_price - close_5m) / close_5m * 100
+    if deviation_pct > _MAX_LAST_PRICE_VS_5M_CLOSE_PCT:
+        return [], [
+            f"last_price={snapshot.last_price} se desvía {deviation_pct:.2f}% "
+            f"del close_5m={close_5m} (máx={_MAX_LAST_PRICE_VS_5M_CLOSE_PCT}%)"
+        ]
+    return [], []
 
 
 def evaluate_coherence(snapshot: MarketSnapshot) -> tuple[CoherenceStatus, list[str]]:
@@ -93,13 +102,14 @@ def evaluate_coherence(snapshot: MarketSnapshot) -> tuple[CoherenceStatus, list[
         (status, issues) — issues está vacío si status es OK.
     """
     gap_issues = _check_gaps(snapshot.candles)
-    price_issues = _check_price_coherence(snapshot)
-    all_issues = gap_issues + price_issues
+    price_invalid, price_warnings = _check_price_coherence(snapshot)
+    invalid_issues = gap_issues + price_invalid
+    all_issues = invalid_issues + price_warnings
 
     if not all_issues:
         return CoherenceStatus.OK, []
 
-    if gap_issues:
+    if invalid_issues:
         return CoherenceStatus.INVALID, all_issues
 
     return CoherenceStatus.WARNING, all_issues
@@ -129,16 +139,18 @@ def validate_snapshot(
     freshness = evaluate_freshness(snapshot, now=now)
     coherence, issues = evaluate_coherence(snapshot)
 
-    if freshness == DataFreshnessStatus.EXPIRED:
-        raise SnapshotRejectedError(
-            snapshot_id=snapshot.snapshot_id,
-            reason=f"timestamp expirado (age > {_EXPIRED_AGE_S}s)",
-        )
+    expired = freshness == DataFreshnessStatus.EXPIRED
+    invalid = coherence == CoherenceStatus.INVALID
 
-    if coherence == CoherenceStatus.INVALID:
+    if expired or invalid:
+        reasons: list[str] = []
+        if expired:
+            reasons.append(f"timestamp expirado (age > {_EXPIRED_AGE_S}s)")
+        if invalid:
+            reasons.append(f"datos incoherentes: {'; '.join(issues)}")
         raise SnapshotRejectedError(
             snapshot_id=snapshot.snapshot_id,
-            reason=f"datos incoherentes: {'; '.join(issues)}",
+            reason=" | ".join(reasons),
         )
 
     return snapshot

@@ -112,6 +112,16 @@ class TestEvaluateFreshness:
         snap = _snapshot(timestamp_utc=_BASE_NOW - timedelta(seconds=31))
         assert evaluate_freshness(snap, now=_BASE_NOW) == DataFreshnessStatus.EXPIRED
 
+    def test_boundary_exact_10s_is_fresh(self) -> None:
+        # age_s=10: 10 > 10 es False → FRESH (el umbral es estricto)
+        snap = _snapshot(timestamp_utc=_BASE_NOW - timedelta(seconds=10))
+        assert evaluate_freshness(snap, now=_BASE_NOW) == DataFreshnessStatus.FRESH
+
+    def test_boundary_exact_30s_is_stale(self) -> None:
+        # age_s=30: 30 > 30 es False → no EXPIRED; 30 > 10 es True → STALE
+        snap = _snapshot(timestamp_utc=_BASE_NOW - timedelta(seconds=30))
+        assert evaluate_freshness(snap, now=_BASE_NOW) == DataFreshnessStatus.STALE
+
     def test_zero_age_is_fresh(self) -> None:
         snap = _snapshot(timestamp_utc=_BASE_NOW)
         assert evaluate_freshness(snap, now=_BASE_NOW) == DataFreshnessStatus.FRESH
@@ -209,6 +219,16 @@ class TestEvaluateCoherencePrices:
         status, issues = evaluate_coherence(snap)
         assert status == CoherenceStatus.INVALID
 
+    def test_zero_close_5m_is_invalid(self) -> None:
+        snap = _snapshot(
+            candles=_candles(
+                tf_5m=_candle(open="0", high="0", low="0", close="0")
+            )
+        )
+        status, issues = evaluate_coherence(snap)
+        assert status == CoherenceStatus.INVALID
+        assert any("≤ 0" in i for i in issues)
+
 
 # ---------------------------------------------------------------------------
 # validate_snapshot — gate
@@ -255,4 +275,15 @@ class TestValidateSnapshot:
         snap = _snapshot(candles=_candles(tf_5m=_candle(n_candles=1)))
         with pytest.raises(SnapshotRejectedError) as exc_info:
             validate_snapshot(snap, now=_BASE_NOW)
-        assert exc_info.value.reason
+        assert "incoherentes" in exc_info.value.reason
+        assert "gap" in exc_info.value.reason
+
+    def test_expired_and_invalid_reports_both_reasons(self) -> None:
+        snap = _snapshot(
+            timestamp_utc=_BASE_NOW - timedelta(seconds=35),
+            candles=_candles(tf_5m=_candle(n_candles=1)),
+        )
+        with pytest.raises(SnapshotRejectedError) as exc_info:
+            validate_snapshot(snap, now=_BASE_NOW)
+        assert "expirado" in exc_info.value.reason
+        assert "incoherentes" in exc_info.value.reason
