@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
+from backend.market_data import schemas as market_schemas
 from backend.storage.models import (
     FeaturePackage,
     MarketRegime,
@@ -18,6 +19,13 @@ from backend.storage.repositories.base import BaseRepository
 
 class MarketSnapshotRepository(BaseRepository[MarketSnapshot]):
     model = MarketSnapshot
+
+    def save_snapshot(
+        self, snapshot: market_schemas.MarketSnapshot, bot_run_id: str
+    ) -> MarketSnapshot:
+        """Persiste un snapshot Pydantic validado como registro ORM."""
+        orm = MarketSnapshot(**snapshot.to_db_kwargs(bot_run_id))
+        return self.save(orm)
 
     def get_latest_by_symbol(self, bot_run_id: str, symbol: str) -> MarketSnapshot | None:
         stmt = (

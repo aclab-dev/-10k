@@ -226,6 +226,63 @@ class TestMarketSnapshotRepository:
         repo = MarketSnapshotRepository(session)
         assert repo.get_latest_by_symbol(run.id, "BTCUSDT") is None
 
+    def test_save_snapshot_persists_record(self, session: Session) -> None:
+        from backend.core.config import Environment
+        from backend.market_data.schemas import (
+            CandleData, Candles, CoherenceStatus, DataFreshnessStatus,
+            Exchange, MarketSnapshot as MarketSnapshotSchema,
+        )
+
+        run = _bot_run(session)
+        candle = CandleData(
+            open=Decimal("50000"), high=Decimal("50100"),
+            low=Decimal("49900"), close=Decimal("50010"),
+            volume=Decimal("100"), n_candles=10,
+        )
+        pydantic_snap = MarketSnapshotSchema(
+            timestamp_utc=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+            exchange=Exchange.BINGX,
+            environment=Environment.PAPER,
+            symbol="BTCUSDT",
+            last_price=Decimal("50005"),
+            bid=Decimal("50000"),
+            ask=Decimal("50010"),
+            spread_absolute=Decimal("10"),
+            spread_percent=Decimal("0.02"),
+            candles=Candles(tf_5m=candle, tf_15m=candle, tf_1h=candle, tf_4h=candle),
+            volume=Decimal("1000"),
+            account_balance_usdt=Decimal("500"),
+            open_positions_count=0,
+            active_orders_count=0,
+            latency_ms=50,
+            exchange_server_time=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+            local_time=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+            clock_skew_ms=10,
+            data_freshness_status=DataFreshnessStatus.FRESH,
+            coherence_status=CoherenceStatus.OK,
+        )
+
+        repo = MarketSnapshotRepository(session)
+        orm = repo.save_snapshot(pydantic_snap, run.id)
+
+        assert orm.id == pydantic_snap.snapshot_id
+        assert orm.symbol == "BTCUSDT"
+        assert orm.bot_run_id == run.id
+        assert orm.close == Decimal("50005")
+        assert "candles" in orm.extra
+
+    def test_list_by_symbol_since_filters(self, session: Session) -> None:
+        run = _bot_run(session)
+        t1 = datetime(2026, 1, 1, tzinfo=UTC)
+        t2 = datetime(2026, 1, 2, tzinfo=UTC)
+        t3 = datetime(2026, 1, 3, tzinfo=UTC)
+        for ts in (t1, t2, t3):
+            self._snap(session, run, "BTCUSDT", ts)
+
+        repo = MarketSnapshotRepository(session)
+        results = repo.list_by_symbol(run.id, "BTCUSDT", since=t2)
+        assert len(results) == 2
+
 
 # ---------------------------------------------------------------------------
 # QuantSignalRepository
