@@ -98,6 +98,21 @@ def _snapshot(
 
 
 class TestMomentumSignalRange:
+    def test_zero_open_candle_does_not_raise(self) -> None:
+        # CandleData con open=0 es un edge case degenerado; el guard en _roc
+        # lo trata como ROC=0 para ese TF.
+        zero_open = CandleData(
+            open=Decimal("0"),
+            high=Decimal("100"),
+            low=Decimal("0"),
+            close=Decimal("0"),
+            volume=Decimal("500"),
+            n_candles=1,
+        )
+        snap = _snapshot(tf_5m=zero_open)
+        result = calculate_momentum(snap)
+        assert -1.0 <= result.signal <= 1.0
+
     def test_signal_within_bounds_flat_market(self) -> None:
         result = calculate_momentum(_snapshot())
         assert -1.0 <= result.signal <= 1.0

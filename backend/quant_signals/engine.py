@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from backend.market_data.schemas import MarketSnapshot
-from backend.quant_signals.momentum import calculate_momentum
+from backend.quant_signals.momentum import MOMENTUM_TIMEFRAMES, calculate_momentum
 from backend.quant_signals.schemas import QuantSignalsPackage
 
 
@@ -19,7 +19,7 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
         snapshot_id=snapshot.snapshot_id,
         timestamp_utc=snapshot.timestamp_utc,
         symbol=snapshot.symbol,
-        timeframes_used=["5m", "15m", "1h", "4h"],
+        timeframes_used=list(MOMENTUM_TIMEFRAMES),
         momentum_signal=momentum_result.signal,
         raw_feature_refs={"momentum": momentum_result.rationale},
     )

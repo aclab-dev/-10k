@@ -1,8 +1,11 @@
-"""Señal momentum multi-timeframe (épica F5, tarjeta 47).
+"""Señal momentum multi-timeframe (épica F5).
 
-Calcula la señal de momentum basada en Rate of Change (ROC) por timeframe,
-normalizado via tanh con umbrales calibrados por TF y agregado con pesos
-que priorizan los timeframes más largos.
+Calcula la señal de momentum basada en ROC intra-vela por timeframe:
+  roc = (close - open) / open
+
+Nota: este ROC mide el movimiento dentro de la vela actual, no el ROC clásico
+entre cierres de velas consecutivas. Se normaliza via tanh con umbrales
+calibrados por TF y se agrega con pesos que priorizan los TFs más largos.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ _TF_ROC_THRESHOLD: Final[dict[str, float]] = {
     "4h": 0.020,  # 2.0%
 }
 
-_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
+MOMENTUM_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
 
 
 @dataclass(frozen=True)
@@ -70,12 +73,12 @@ def calculate_momentum(snapshot: MarketSnapshot) -> MomentumResult:
     per_tf_roc: dict[str, float] = {}
     per_tf_normalized: dict[str, float] = {}
 
-    for tf in _TIMEFRAMES:
+    for tf in MOMENTUM_TIMEFRAMES:
         roc = _roc(candles_by_tf[tf])
         per_tf_roc[tf] = roc
         per_tf_normalized[tf] = math.tanh(roc / _TF_ROC_THRESHOLD[tf])
 
-    raw_signal = sum(_TF_WEIGHTS[tf] * per_tf_normalized[tf] for tf in _TIMEFRAMES)
+    raw_signal = sum(_TF_WEIGHTS[tf] * per_tf_normalized[tf] for tf in MOMENTUM_TIMEFRAMES)
     # Clip defensivo: la suma ponderada está teóricamente en [-1, 1] pero
     # la aritmética float puede producir valores marginalmente fuera del rango.
     signal = max(-1.0, min(1.0, raw_signal))
@@ -89,7 +92,7 @@ def calculate_momentum(snapshot: MarketSnapshot) -> MomentumResult:
                 "weight": _TF_WEIGHTS[tf],
                 "threshold": _TF_ROC_THRESHOLD[tf],
             }
-            for tf in _TIMEFRAMES
+            for tf in MOMENTUM_TIMEFRAMES
         },
         "signal": signal,
     }
