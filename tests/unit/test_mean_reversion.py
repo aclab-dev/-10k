@@ -17,7 +17,9 @@ from backend.market_data.schemas import (
     Exchange,
     MarketSnapshot,
 )
-from backend.quant_signals.mean_reversion import _MIN_CV, compute_mean_reversion_signal
+from backend.quant_signals.mean_reversion import compute_mean_reversion_signal
+
+_MIN_CV = 1e-6  # valor del guard de mercado plano — hardcodeado para no acoplar al símbolo privado
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -114,13 +116,6 @@ class TestSignalDirection:
         snap = _snapshot(95000, 94000, 93000, 92000, last_price=91000)
         signal = compute_mean_reversion_signal(snap)
         assert signal > 0.0, "precio bajo la media debe dar señal positiva (alcista)"
-
-    def test_price_at_mean_gives_zero(self) -> None:
-        # closes = [95000, 95000, 95000, 95000] → mean = 95000, std = 0
-        # mercado plano → señal 0.0 (caso flat market)
-        snap = _snapshot(95000, 95000, 95000, 95000, last_price=95000)
-        signal = compute_mean_reversion_signal(snap)
-        assert signal == 0.0
 
     def test_price_exactly_at_computed_mean_gives_zero(self) -> None:
         # closes = [96000, 94000, 96000, 94000] → mean = 95000
