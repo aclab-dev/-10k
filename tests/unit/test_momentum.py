@@ -31,13 +31,15 @@ def _now() -> datetime:
 
 def _candle(open_price: float, close_price: float, n_candles: int = 10) -> CandleData:
     """Construye una CandleData válida con open y close dados."""
-    high = Decimal(str(max(open_price, close_price) * 1.001))
-    low = Decimal(str(min(open_price, close_price) * 0.999))
+    d_open = Decimal(str(open_price))
+    d_close = Decimal(str(close_price))
+    high = max(d_open, d_close) * Decimal("1.001")
+    low = min(d_open, d_close) * Decimal("0.999")
     return CandleData(
-        open=Decimal(str(open_price)),
+        open=d_open,
         high=high,
         low=low,
-        close=Decimal(str(close_price)),
+        close=d_close,
         volume=Decimal("500"),
         n_candles=n_candles,
     )
@@ -260,7 +262,7 @@ class TestMomentumDeterminism:
 
     def test_result_is_immutable(self) -> None:
         result = calculate_momentum(_snapshot())
-        with pytest.raises((AttributeError, TypeError)):
+        with pytest.raises(AttributeError):
             result.signal = 0.5  # type: ignore[misc]
 
 

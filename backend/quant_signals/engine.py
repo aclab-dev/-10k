@@ -10,8 +10,8 @@ from backend.quant_signals.schemas import QuantSignalsPackage
 def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
     """Calcula las señales cuantitativas disponibles para un MarketSnapshot.
 
-    Señales aún no implementadas quedan en None (el contrato lo permite).
-    Se irán completando a medida que se cierren las tarjetas 48-52.
+    Las señales aún no implementadas quedan en None: el contrato
+    QuantSignalsPackage lo permite y los módulos downstream deben tolerarlo.
     """
     momentum_result = calculate_momentum(snapshot)
 
