@@ -194,9 +194,7 @@ class TestEvaluateCoherencePrices:
     def test_warning_when_last_price_diverges_from_5m_close(self) -> None:
         # last_price=50005, 5m close=48000 → deviation ≈ 4.18% > 2%
         snap = _snapshot(
-            candles=_candles(
-                tf_5m=_candle(open="48000", high="48500", low="47500", close="48000")
-            )
+            candles=_candles(tf_5m=_candle(open="48000", high="48500", low="47500", close="48000"))
         )
         status, issues = evaluate_coherence(snap)
         assert status == CoherenceStatus.WARNING
@@ -211,20 +209,14 @@ class TestEvaluateCoherencePrices:
     def test_gap_takes_priority_over_price_warning(self) -> None:
         snap = _snapshot(
             candles=_candles(
-                tf_5m=_candle(
-                    open="48000", high="48500", low="47500", close="48000", n_candles=1
-                )
+                tf_5m=_candle(open="48000", high="48500", low="47500", close="48000", n_candles=1)
             )
         )
         status, issues = evaluate_coherence(snap)
         assert status == CoherenceStatus.INVALID
 
     def test_zero_close_5m_is_invalid(self) -> None:
-        snap = _snapshot(
-            candles=_candles(
-                tf_5m=_candle(open="0", high="0", low="0", close="0")
-            )
-        )
+        snap = _snapshot(candles=_candles(tf_5m=_candle(open="0", high="0", low="0", close="0")))
         status, issues = evaluate_coherence(snap)
         assert status == CoherenceStatus.INVALID
         assert any("≤ 0" in i for i in issues)
@@ -258,9 +250,7 @@ class TestValidateSnapshot:
 
     def test_warning_coherence_is_not_rejected(self) -> None:
         snap = _snapshot(
-            candles=_candles(
-                tf_5m=_candle(open="48000", high="48500", low="47500", close="48000")
-            )
+            candles=_candles(tf_5m=_candle(open="48000", high="48500", low="47500", close="48000"))
         )
         result = validate_snapshot(snap, now=_BASE_NOW)
         assert result is snap

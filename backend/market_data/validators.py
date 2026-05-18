@@ -120,9 +120,7 @@ def evaluate_coherence(snapshot: MarketSnapshot) -> tuple[CoherenceStatus, list[
 # ---------------------------------------------------------------------------
 
 
-def validate_snapshot(
-    snapshot: MarketSnapshot, now: datetime | None = None
-) -> MarketSnapshot:
+def validate_snapshot(snapshot: MarketSnapshot, now: datetime | None = None) -> MarketSnapshot:
     """
     Puerta de validación completa. Rechaza snapshots EXPIRED o con coherencia INVALID.
 

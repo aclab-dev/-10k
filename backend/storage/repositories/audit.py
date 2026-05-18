@@ -90,15 +90,11 @@ class TokenUsageRepository(BaseRepository[TokenUsage]):
 
     def total_tokens_for_run(self, bot_run_id: str) -> int:
         """Suma total de tokens consumidos en el run."""
-        stmt = select(func.sum(TokenUsage.total_tokens)).where(
-            TokenUsage.bot_run_id == bot_run_id
-        )
+        stmt = select(func.sum(TokenUsage.total_tokens)).where(TokenUsage.bot_run_id == bot_run_id)
         result = self._session.scalar(stmt)
         return int(result) if result is not None else 0
 
-    def list_by_model(
-        self, bot_run_id: str, model: str, *, limit: int = 100
-    ) -> list[TokenUsage]:
+    def list_by_model(self, bot_run_id: str, model: str, *, limit: int = 100) -> list[TokenUsage]:
         stmt = (
             select(TokenUsage)
             .where(TokenUsage.bot_run_id == bot_run_id, TokenUsage.model == model)

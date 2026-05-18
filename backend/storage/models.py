@@ -328,9 +328,7 @@ class ModelResponse(Base):
     is_valid_schema: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     model_request: Mapped[ModelRequest] = relationship(back_populates="model_response")
-    decision: Mapped[Decision | None] = relationship(
-        back_populates="model_response", uselist=False
-    )
+    decision: Mapped[Decision | None] = relationship(back_populates="model_response", uselist=False)
 
 
 # ---------------------------------------------------------------------------
@@ -348,8 +346,8 @@ class Decision(Base):
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    action: Mapped[str] = mapped_column(String(16), nullable=False)       # OPEN/CLOSE/NO_OPERAR
-    direction: Mapped[str | None] = mapped_column(String(8), nullable=True)   # LONG/SHORT
+    action: Mapped[str] = mapped_column(String(16), nullable=False)  # OPEN/CLOSE/NO_OPERAR
+    direction: Mapped[str | None] = mapped_column(String(8), nullable=True)  # LONG/SHORT
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     margin_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     leverage: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -443,7 +441,7 @@ class Trade(Base):
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
-    direction: Mapped[str] = mapped_column(String(8), nullable=False)     # LONG/SHORT
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)  # LONG/SHORT
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     margin_usdt: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
@@ -481,8 +479,8 @@ class Order(Base):
     )
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
-    order_type: Mapped[str] = mapped_column(String(16), nullable=False)   # MARKET/LIMIT/STOP
-    side: Mapped[str] = mapped_column(String(8), nullable=False)          # BUY/SELL
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False)  # MARKET/LIMIT/STOP
+    side: Mapped[str] = mapped_column(String(8), nullable=False)  # BUY/SELL
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
@@ -704,7 +702,9 @@ class NewsContext(Base):
     symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)  # POSITIVE/NEGATIVE/NEUTRAL  # noqa: E501
+    sentiment: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )  # POSITIVE/NEGATIVE/NEUTRAL  # noqa: E501
     relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_data: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 

@@ -36,6 +36,7 @@ from backend.storage.repositories import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -70,20 +71,21 @@ def _trade(session: Session, bot_run: BotRun) -> Trade:
 # BotRun — constraints NOT NULL
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestBotRunConstraints:
     def test_missing_environment_raises(self, pg_session: Session) -> None:
         """environment es NOT NULL — Postgres debe rechazar la inserción."""
         run = BotRun(app_version="0.1.0", config_snapshot={}, status="RUNNING")
         pg_session.add(run)
-        with pytest.raises(IntegrityError, match="null value in column \"environment\""):
+        with pytest.raises(IntegrityError, match='null value in column "environment"'):
             pg_session.flush()
 
     def test_missing_app_version_raises(self, pg_session: Session) -> None:
         """app_version es NOT NULL."""
         run = BotRun(environment="PAPER", config_snapshot={}, status="RUNNING")
         pg_session.add(run)
-        with pytest.raises(IntegrityError, match="null value in column \"app_version\""):
+        with pytest.raises(IntegrityError, match='null value in column "app_version"'):
             pg_session.flush()
 
     def test_config_snapshot_jsonb_roundtrip(self, pg_session: Session) -> None:
@@ -95,8 +97,10 @@ class TestBotRunConstraints:
         """
         payload = {"environment": "PAPER", "leverage": 3, "symbols": ["BTCUSDT"]}
         run = BotRun(
-            environment="PAPER", app_version="0.1.0",
-            config_snapshot=payload, status="RUNNING",
+            environment="PAPER",
+            app_version="0.1.0",
+            config_snapshot=payload,
+            status="RUNNING",
         )
         pg_session.add(run)
         pg_session.flush()
@@ -107,6 +111,7 @@ class TestBotRunConstraints:
 # ---------------------------------------------------------------------------
 # BotRun — CRUD
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 class TestBotRunRepositoryPostgres:
@@ -141,6 +146,7 @@ class TestBotRunRepositoryPostgres:
 # Decision — constraints NOT NULL
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestDecisionConstraints:
     def test_missing_symbol_raises(self, pg_session: Session) -> None:
@@ -152,7 +158,7 @@ class TestDecisionConstraints:
             action="NO_OPERAR",
         )
         pg_session.add(decision)
-        with pytest.raises(IntegrityError, match="null value in column \"symbol\""):
+        with pytest.raises(IntegrityError, match='null value in column "symbol"'):
             pg_session.flush()
 
     def test_missing_action_raises(self, pg_session: Session) -> None:
@@ -164,7 +170,7 @@ class TestDecisionConstraints:
             timestamp=_now(),
         )
         pg_session.add(decision)
-        with pytest.raises(IntegrityError, match="null value in column \"action\""):
+        with pytest.raises(IntegrityError, match='null value in column "action"'):
             pg_session.flush()
 
     def test_missing_bot_run_fk_raises(self, pg_session: Session) -> None:
@@ -184,16 +190,21 @@ class TestDecisionConstraints:
 # Decision — CRUD
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestDecisionRepositoryPostgres:
     def test_list_by_symbol(self, pg_session: Session) -> None:
         repo = DecisionRepository(pg_session)
         run = _bot_run(pg_session)
         for symbol in ("BTCUSDT", "BTCUSDT", "ETHUSDT"):
-            pg_session.add(Decision(
-                bot_run_id=run.id, symbol=symbol,
-                timestamp=_now(), action="NO_OPERAR",
-            ))
+            pg_session.add(
+                Decision(
+                    bot_run_id=run.id,
+                    symbol=symbol,
+                    timestamp=_now(),
+                    action="NO_OPERAR",
+                )
+            )
         pg_session.flush()
         results = repo.list_by_symbol(run.id, "BTCUSDT")
         assert len(results) == 2
@@ -202,10 +213,14 @@ class TestDecisionRepositoryPostgres:
         repo = DecisionRepository(pg_session)
         run = _bot_run(pg_session)
         for action in ("OPEN", "OPEN", "NO_OPERAR"):
-            pg_session.add(Decision(
-                bot_run_id=run.id, symbol="BTCUSDT",
-                timestamp=_now(), action=action,
-            ))
+            pg_session.add(
+                Decision(
+                    bot_run_id=run.id,
+                    symbol="BTCUSDT",
+                    timestamp=_now(),
+                    action=action,
+                )
+            )
         pg_session.flush()
         results = repo.list_by_action(run.id, "OPEN")
         assert len(results) == 2
@@ -214,6 +229,7 @@ class TestDecisionRepositoryPostgres:
 # ---------------------------------------------------------------------------
 # Trade — constraints NOT NULL
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 class TestTradeConstraints:
@@ -227,7 +243,7 @@ class TestTradeConstraints:
             leverage=3,
         )
         pg_session.add(trade)
-        with pytest.raises(IntegrityError, match="null value in column \"symbol\""):
+        with pytest.raises(IntegrityError, match='null value in column "symbol"'):
             pg_session.flush()
 
     def test_missing_environment_raises(self, pg_session: Session) -> None:
@@ -240,7 +256,7 @@ class TestTradeConstraints:
             leverage=3,
         )
         pg_session.add(trade)
-        with pytest.raises(IntegrityError, match="null value in column \"environment\""):
+        with pytest.raises(IntegrityError, match='null value in column "environment"'):
             pg_session.flush()
 
     def test_missing_direction_raises(self, pg_session: Session) -> None:
@@ -253,7 +269,7 @@ class TestTradeConstraints:
             leverage=3,
         )
         pg_session.add(trade)
-        with pytest.raises(IntegrityError, match="null value in column \"direction\""):
+        with pytest.raises(IntegrityError, match='null value in column "direction"'):
             pg_session.flush()
 
     def test_missing_margin_usdt_raises(self, pg_session: Session) -> None:
@@ -266,7 +282,7 @@ class TestTradeConstraints:
             leverage=3,
         )
         pg_session.add(trade)
-        with pytest.raises(IntegrityError, match="null value in column \"margin_usdt\""):
+        with pytest.raises(IntegrityError, match='null value in column "margin_usdt"'):
             pg_session.flush()
 
     def test_missing_leverage_raises(self, pg_session: Session) -> None:
@@ -279,13 +295,14 @@ class TestTradeConstraints:
             margin_usdt=Decimal("10"),
         )
         pg_session.add(trade)
-        with pytest.raises(IntegrityError, match="null value in column \"leverage\""):
+        with pytest.raises(IntegrityError, match='null value in column "leverage"'):
             pg_session.flush()
 
 
 # ---------------------------------------------------------------------------
 # Trade — CRUD
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 class TestTradeRepositoryPostgres:
@@ -301,10 +318,16 @@ class TestTradeRepositoryPostgres:
         repo = TradeRepository(pg_session)
         run = _bot_run(pg_session)
         for symbol in ("BTCUSDT", "ETHUSDT"):
-            pg_session.add(Trade(
-                bot_run_id=run.id, symbol=symbol, environment="PAPER",
-                direction="LONG", margin_usdt=Decimal("5"), leverage=2,
-            ))
+            pg_session.add(
+                Trade(
+                    bot_run_id=run.id,
+                    symbol=symbol,
+                    environment="PAPER",
+                    direction="LONG",
+                    margin_usdt=Decimal("5"),
+                    leverage=2,
+                )
+            )
         pg_session.flush()
         btc = repo.list_by_symbol(run.id, "BTCUSDT")
         assert len(btc) == 1
@@ -325,6 +348,7 @@ class TestTradeRepositoryPostgres:
 # Order — constraints NOT NULL
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestOrderConstraints:
     def test_missing_symbol_raises(self, pg_session: Session) -> None:
@@ -337,7 +361,7 @@ class TestOrderConstraints:
             quantity=Decimal("0.001"),
         )
         pg_session.add(order)
-        with pytest.raises(IntegrityError, match="null value in column \"symbol\""):
+        with pytest.raises(IntegrityError, match='null value in column "symbol"'):
             pg_session.flush()
 
     def test_missing_quantity_raises(self, pg_session: Session) -> None:
@@ -350,7 +374,7 @@ class TestOrderConstraints:
             side="BUY",
         )
         pg_session.add(order)
-        with pytest.raises(IntegrityError, match="null value in column \"quantity\""):
+        with pytest.raises(IntegrityError, match='null value in column "quantity"'):
             pg_session.flush()
 
 
@@ -358,17 +382,24 @@ class TestOrderConstraints:
 # Order — CRUD
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestOrderRepositoryPostgres:
     def test_list_by_status(self, pg_session: Session) -> None:
         repo = OrderRepository(pg_session)
         run = _bot_run(pg_session)
         for status in ("PENDING", "PENDING", "FILLED"):
-            pg_session.add(Order(
-                bot_run_id=run.id, symbol="BTCUSDT", environment="PAPER",
-                order_type="MARKET", side="BUY", quantity=Decimal("0.001"),
-                status=status,
-            ))
+            pg_session.add(
+                Order(
+                    bot_run_id=run.id,
+                    symbol="BTCUSDT",
+                    environment="PAPER",
+                    order_type="MARKET",
+                    side="BUY",
+                    quantity=Decimal("0.001"),
+                    status=status,
+                )
+            )
         pg_session.flush()
         pending = repo.list_by_status(run.id, "PENDING")
         assert len(pending) == 2
@@ -377,8 +408,12 @@ class TestOrderRepositoryPostgres:
         repo = OrderRepository(pg_session)
         run = _bot_run(pg_session)
         order = Order(
-            bot_run_id=run.id, symbol="BTCUSDT", environment="PAPER",
-            order_type="MARKET", side="BUY", quantity=Decimal("0.001"),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="BUY",
+            quantity=Decimal("0.001"),
             exchange_order_id="EX-12345",
         )
         pg_session.add(order)
@@ -396,6 +431,7 @@ class TestOrderRepositoryPostgres:
 # Position — constraints NOT NULL
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestPositionConstraints:
     def test_missing_direction_raises(self, pg_session: Session) -> None:
@@ -410,7 +446,7 @@ class TestPositionConstraints:
             leverage=3,
         )
         pg_session.add(pos)
-        with pytest.raises(IntegrityError, match="null value in column \"direction\""):
+        with pytest.raises(IntegrityError, match='null value in column "direction"'):
             pg_session.flush()
 
 
@@ -418,16 +454,24 @@ class TestPositionConstraints:
 # Position — CRUD
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestPositionRepositoryPostgres:
     def test_list_open(self, pg_session: Session) -> None:
         repo = PositionRepository(pg_session)
         run = _bot_run(pg_session)
-        pg_session.add(Position(
-            bot_run_id=run.id, symbol="BTCUSDT", environment="PAPER",
-            direction="LONG", quantity=Decimal("0.001"),
-            entry_price=Decimal("50000"), margin_usdt=Decimal("10"), leverage=3,
-        ))
+        pg_session.add(
+            Position(
+                bot_run_id=run.id,
+                symbol="BTCUSDT",
+                environment="PAPER",
+                direction="LONG",
+                quantity=Decimal("0.001"),
+                entry_price=Decimal("50000"),
+                margin_usdt=Decimal("10"),
+                leverage=3,
+            )
+        )
         pg_session.flush()
         results = repo.list_open(run.id)
         assert len(results) == 1
@@ -435,11 +479,18 @@ class TestPositionRepositoryPostgres:
     def test_get_open_by_symbol(self, pg_session: Session) -> None:
         repo = PositionRepository(pg_session)
         run = _bot_run(pg_session)
-        pg_session.add(Position(
-            bot_run_id=run.id, symbol="ETHUSDT", environment="PAPER",
-            direction="SHORT", quantity=Decimal("0.01"),
-            entry_price=Decimal("2000"), margin_usdt=Decimal("10"), leverage=2,
-        ))
+        pg_session.add(
+            Position(
+                bot_run_id=run.id,
+                symbol="ETHUSDT",
+                environment="PAPER",
+                direction="SHORT",
+                quantity=Decimal("0.01"),
+                entry_price=Decimal("2000"),
+                margin_usdt=Decimal("10"),
+                leverage=2,
+            )
+        )
         pg_session.flush()
         pos = repo.get_open_by_symbol(run.id, "ETHUSDT")
         assert pos is not None

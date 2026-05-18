@@ -95,6 +95,7 @@ def session(engine):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _uid() -> str:
     return str(uuid.uuid4())
 
@@ -120,6 +121,7 @@ def _make_bot_run(session: Session) -> BotRun:
 # Estructura
 # ---------------------------------------------------------------------------
 
+
 class TestTableCoverage:
     def test_all_27_tables_registered(self, engine):
         inspector = inspect(engine)
@@ -136,6 +138,7 @@ class TestTableCoverage:
 # ---------------------------------------------------------------------------
 # bot_runs
 # ---------------------------------------------------------------------------
+
 
 class TestBotRun:
     def test_create_and_read(self, session):
@@ -171,6 +174,7 @@ class TestBotRun:
 # bot_state
 # ---------------------------------------------------------------------------
 
+
 class TestBotState:
     def test_create_with_fk(self, session):
         run = _make_bot_run(session)
@@ -197,6 +201,7 @@ class TestBotState:
 # market_snapshots
 # ---------------------------------------------------------------------------
 
+
 class TestMarketSnapshot:
     def test_create(self, session):
         run = _make_bot_run(session)
@@ -220,8 +225,15 @@ class TestMarketSnapshot:
     def test_optional_fields_nullable(self, session):
         run = _make_bot_run(session)
         snap = MarketSnapshot(
-            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
-            timestamp=_now(), open=3000, high=3100, low=2900, close=3050, volume=500,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
+            timestamp=_now(),
+            open=3000,
+            high=3100,
+            low=2900,
+            close=3050,
+            volume=500,
         )
         session.add(snap)
         session.flush()
@@ -232,6 +244,7 @@ class TestMarketSnapshot:
 # ---------------------------------------------------------------------------
 # quant_signals
 # ---------------------------------------------------------------------------
+
 
 class TestQuantSignal:
     def test_create_with_scores(self, session):
@@ -256,37 +269,64 @@ class TestQuantSignal:
 # decisions — verifica la cadena de decisión
 # ---------------------------------------------------------------------------
 
+
 class TestDecisionChain:
     def _make_chain(self, session):
         run = _make_bot_run(session)
         snap = MarketSnapshot(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT", timestamp=_now(),
-            open=60000, high=61000, low=59000, close=60500, volume=1000,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            open=60000,
+            high=61000,
+            low=59000,
+            close=60500,
+            volume=1000,
         )
         session.add(snap)
         fp = FeaturePackage(
-            id=_uid(), bot_run_id=run.id, market_snapshot_id=snap.id,
-            symbol="BTCUSDT", timestamp=_now(), version="v1",
-            features={"x": 1}, features_hash=_uid(),
+            id=_uid(),
+            bot_run_id=run.id,
+            market_snapshot_id=snap.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            version="v1",
+            features={"x": 1},
+            features_hash=_uid(),
         )
         session.add(fp)
         req = ModelRequest(
-            id=_uid(), bot_run_id=run.id, feature_package_id=fp.id,
-            symbol="BTCUSDT", timestamp=_now(), model="gpt-5.5",
-            context={"prompt": "..."}, request_hash="def456",
+            id=_uid(),
+            bot_run_id=run.id,
+            feature_package_id=fp.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            model="gpt-5.5",
+            context={"prompt": "..."},
+            request_hash="def456",
         )
         session.add(req)
         resp = ModelResponse(
-            id=_uid(), model_request_id=req.id, timestamp=_now(),
-            raw_response='{"action":"OPEN"}', model="gpt-5.5",
+            id=_uid(),
+            model_request_id=req.id,
+            timestamp=_now(),
+            raw_response='{"action":"OPEN"}',
+            model="gpt-5.5",
             is_valid_schema=True,
         )
         session.add(resp)
         dec = Decision(
-            id=_uid(), bot_run_id=run.id, model_response_id=resp.id,
-            symbol="BTCUSDT", timestamp=_now(),
-            action="OPEN", direction="LONG", confidence=0.82,
-            margin_usdt=10, leverage=3,
+            id=_uid(),
+            bot_run_id=run.id,
+            model_response_id=resp.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            action="OPEN",
+            direction="LONG",
+            confidence=0.82,
+            margin_usdt=10,
+            leverage=3,
         )
         session.add(dec)
         session.flush()
@@ -301,10 +341,15 @@ class TestDecisionChain:
     def test_decision_aggregation(self, session):
         run, dec = self._make_chain(session)
         agg = DecisionAggregation(
-            id=_uid(), bot_run_id=run.id, decision_id=dec.id,
-            symbol="BTCUSDT", timestamp=_now(),
-            quant_score=0.75, gpt_confidence=0.82,
-            aggregated_score=0.78, final_action="OPEN",
+            id=_uid(),
+            bot_run_id=run.id,
+            decision_id=dec.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            quant_score=0.75,
+            gpt_confidence=0.82,
+            aggregated_score=0.78,
+            final_action="OPEN",
         )
         session.add(agg)
         session.flush()
@@ -313,15 +358,23 @@ class TestDecisionChain:
     def test_risk_validation_results(self, session):
         run, dec = self._make_chain(session)
         agg = DecisionAggregation(
-            id=_uid(), bot_run_id=run.id, decision_id=dec.id,
-            symbol="BTCUSDT", timestamp=_now(), final_action="OPEN",
+            id=_uid(),
+            bot_run_id=run.id,
+            decision_id=dec.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            final_action="OPEN",
         )
         session.add(agg)
         session.flush()
         for result in ("APPROVE", "ADJUST_DOWN", "BLOCK"):
             rv = RiskValidation(
-                id=_uid(), bot_run_id=run.id, decision_aggregation_id=agg.id,
-                symbol="BTCUSDT", timestamp=_now(), result=result,
+                id=_uid(),
+                bot_run_id=run.id,
+                decision_aggregation_id=agg.id,
+                symbol="BTCUSDT",
+                timestamp=_now(),
+                result=result,
             )
             session.add(rv)
         session.flush()
@@ -331,38 +384,61 @@ class TestDecisionChain:
 # trades + orders + positions + position_events
 # ---------------------------------------------------------------------------
 
+
 class TestTradeLifecycle:
     def test_full_trade_lifecycle(self, session):
         run = _make_bot_run(session)
 
         trade = Trade(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            environment="PAPER", direction="LONG",
-            margin_usdt=10, leverage=3, opened_at=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            direction="LONG",
+            margin_usdt=10,
+            leverage=3,
+            opened_at=_now(),
         )
         session.add(trade)
         session.flush()
 
         order = Order(
-            id=_uid(), bot_run_id=run.id, trade_id=trade.id,
-            symbol="BTCUSDT", environment="PAPER",
-            order_type="MARKET", side="BUY", quantity="0.001",
-            is_simulated=True, created_at=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            trade_id=trade.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="BUY",
+            quantity="0.001",
+            is_simulated=True,
+            created_at=_now(),
         )
         session.add(order)
 
         pos = Position(
-            id=_uid(), bot_run_id=run.id, trade_id=trade.id,
-            symbol="BTCUSDT", environment="PAPER", direction="LONG",
-            quantity="0.001", entry_price=60000, margin_usdt=10,
-            leverage=3, opened_at=_now(), updated_at=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            trade_id=trade.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            direction="LONG",
+            quantity="0.001",
+            entry_price=60000,
+            margin_usdt=10,
+            leverage=3,
+            opened_at=_now(),
+            updated_at=_now(),
         )
         session.add(pos)
         session.flush()
 
         event = PositionEvent(
-            id=_uid(), position_id=pos.id,
-            event_type="SL_UPDATE", old_value=58000, new_value=59000,
+            id=_uid(),
+            position_id=pos.id,
+            event_type="SL_UPDATE",
+            old_value=58000,
+            new_value=59000,
             created_at=_now(),
         )
         session.add(event)
@@ -375,16 +451,26 @@ class TestTradeLifecycle:
     def test_is_simulated_default_true(self, session):
         run = _make_bot_run(session)
         trade = Trade(
-            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
-            environment="PAPER", direction="SHORT",
-            margin_usdt=5, leverage=2, opened_at=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
+            environment="PAPER",
+            direction="SHORT",
+            margin_usdt=5,
+            leverage=2,
+            opened_at=_now(),
         )
         session.add(trade)
         session.flush()
         order = Order(
-            id=_uid(), bot_run_id=run.id, trade_id=trade.id,
-            symbol="ETHUSDT", environment="PAPER",
-            order_type="MARKET", side="SELL", quantity="0.01",
+            id=_uid(),
+            bot_run_id=run.id,
+            trade_id=trade.id,
+            symbol="ETHUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="SELL",
+            quantity="0.01",
             created_at=_now(),
         )
         session.add(order)
@@ -396,20 +482,29 @@ class TestTradeLifecycle:
 # backtest + replay
 # ---------------------------------------------------------------------------
 
+
 class TestBacktestAndReplay:
     def test_backtest_run_and_result(self, session):
         run = _make_bot_run(session)
         bt = BacktestRun(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            started_at=_now(), period_start=_now(), period_end=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            started_at=_now(),
+            period_start=_now(),
+            period_end=_now(),
             config_snapshot={"fee": 0.0004},
         )
         session.add(bt)
         session.flush()
         result = BacktestResult(
-            id=_uid(), backtest_run_id=bt.id,
-            total_trades=100, winning_trades=55, losing_trades=45,
-            win_rate=0.55, total_pnl=12,
+            id=_uid(),
+            backtest_run_id=bt.id,
+            total_trades=100,
+            winning_trades=55,
+            losing_trades=45,
+            win_rate=0.55,
+            total_pnl=12,
         )
         session.add(result)
         session.flush()
@@ -418,14 +513,20 @@ class TestBacktestAndReplay:
     def test_historical_replay_run_and_snapshot(self, session):
         run = _make_bot_run(session)
         rr = HistoricalReplayRun(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            started_at=_now(), period_start=_now(), period_end=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            started_at=_now(),
+            period_start=_now(),
+            period_end=_now(),
             config_snapshot={},
         )
         session.add(rr)
         session.flush()
         snap = HistoricalReplaySnapshot(
-            id=_uid(), replay_run_id=rr.id, sequence_num=1,
+            id=_uid(),
+            replay_run_id=rr.id,
+            sequence_num=1,
             market_snapshot={"close": 60000},
         )
         session.add(snap)
@@ -437,12 +538,16 @@ class TestBacktestAndReplay:
 # audit tables
 # ---------------------------------------------------------------------------
 
+
 class TestAuditTables:
     def test_system_event(self, session):
         run = _make_bot_run(session)
         ev = SystemEvent(
-            id=_uid(), bot_run_id=run.id, timestamp=_now(),
-            event_type="CYCLE_START", severity="INFO",
+            id=_uid(),
+            bot_run_id=run.id,
+            timestamp=_now(),
+            event_type="CYCLE_START",
+            severity="INFO",
             message="Ciclo iniciado",
         )
         session.add(ev)
@@ -452,8 +557,11 @@ class TestAuditTables:
     def test_error_record(self, session):
         run = _make_bot_run(session)
         err = ErrorRecord(
-            id=_uid(), bot_run_id=run.id, timestamp=_now(),
-            module="risk_engine", error_type="ValueError",
+            id=_uid(),
+            bot_run_id=run.id,
+            timestamp=_now(),
+            module="risk_engine",
+            error_type="ValueError",
             message="leverage fuera de rango",
             recovered=False,
         )
@@ -464,7 +572,9 @@ class TestAuditTables:
     def test_kill_switch_event(self, session):
         run = _make_bot_run(session)
         ks = KillSwitchEvent(
-            id=_uid(), bot_run_id=run.id, timestamp=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            timestamp=_now(),
             trigger_reason="Drawdown > 10%",
             state_before="ACTIVE",
             action_taken="HALT_AND_CLOSE_ALL",
@@ -478,9 +588,13 @@ class TestAuditTables:
     def test_token_usage(self, session):
         run = _make_bot_run(session)
         tu = TokenUsage(
-            id=_uid(), bot_run_id=run.id, timestamp=_now(),
-            model="gpt-5.5", prompt_tokens=1200,
-            completion_tokens=150, total_tokens=1350,
+            id=_uid(),
+            bot_run_id=run.id,
+            timestamp=_now(),
+            model="gpt-5.5",
+            prompt_tokens=1200,
+            completion_tokens=150,
+            total_tokens=1350,
         )
         session.add(tu)
         session.flush()
@@ -489,9 +603,13 @@ class TestAuditTables:
     def test_news_context(self, session):
         run = _make_bot_run(session)
         nc = NewsContext(
-            id=_uid(), bot_run_id=run.id, timestamp=_now(),
-            symbol="BTCUSDT", source="CoinDesk",
-            headline="BTC hits 100k", sentiment="POSITIVE",
+            id=_uid(),
+            bot_run_id=run.id,
+            timestamp=_now(),
+            symbol="BTCUSDT",
+            source="CoinDesk",
+            headline="BTC hits 100k",
+            sentiment="POSITIVE",
             relevance_score=0.9,
         )
         session.add(nc)
@@ -503,12 +621,17 @@ class TestAuditTables:
 # market_regimes, volatility_assessments, strategy_performance
 # ---------------------------------------------------------------------------
 
+
 class TestMarketRegime:
     def test_create(self, session):
         run = _make_bot_run(session)
         regime = MarketRegime(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            timestamp=_now(), regime="TRENDING", confidence=0.85,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            regime="TRENDING",
+            confidence=0.85,
         )
         session.add(regime)
         session.flush()
@@ -519,14 +642,26 @@ class TestMarketRegime:
     def test_optional_snapshot_fk(self, session):
         run = _make_bot_run(session)
         snap = MarketSnapshot(
-            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT", timestamp=_now(),
-            open=3000, high=3100, low=2900, close=3050, volume=500,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
+            timestamp=_now(),
+            open=3000,
+            high=3100,
+            low=2900,
+            close=3050,
+            volume=500,
         )
         session.add(snap)
         session.flush()
         regime = MarketRegime(
-            id=_uid(), bot_run_id=run.id, market_snapshot_id=snap.id,
-            symbol="ETHUSDT", timestamp=_now(), regime="RANGING", confidence=0.6,
+            id=_uid(),
+            bot_run_id=run.id,
+            market_snapshot_id=snap.id,
+            symbol="ETHUSDT",
+            timestamp=_now(),
+            regime="RANGING",
+            confidence=0.6,
         )
         session.add(regime)
         session.flush()
@@ -537,9 +672,14 @@ class TestVolatilityAssessment:
     def test_create(self, session):
         run = _make_bot_run(session)
         va = VolatilityAssessment(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            timestamp=_now(), atr_percent=2.5, volatility_score=0.7,
-            leverage_cap=5, liquidation_risk_score=0.3,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            atr_percent=2.5,
+            volatility_score=0.7,
+            leverage_cap=5,
+            liquidation_risk_score=0.3,
         )
         session.add(va)
         session.flush()
@@ -550,7 +690,10 @@ class TestVolatilityAssessment:
     def test_all_nullable_fields(self, session):
         run = _make_bot_run(session)
         va = VolatilityAssessment(
-            id=_uid(), bot_run_id=run.id, symbol="SOLUSDT", timestamp=_now(),
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="SOLUSDT",
+            timestamp=_now(),
         )
         session.add(va)
         session.flush()
@@ -562,10 +705,17 @@ class TestStrategyPerformance:
     def test_create_and_aggregate(self, session):
         run = _make_bot_run(session)
         sp = StrategyPerformance(
-            id=_uid(), bot_run_id=run.id, symbol="BTCUSDT",
-            regime="TRENDING", setup_type="BREAKOUT",
-            total_trades=50, winning_trades=30, losing_trades=20,
-            win_rate=0.6, sharpe_ratio=1.4, max_drawdown=0.08,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            regime="TRENDING",
+            setup_type="BREAKOUT",
+            total_trades=50,
+            winning_trades=30,
+            losing_trades=20,
+            win_rate=0.6,
+            sharpe_ratio=1.4,
+            max_drawdown=0.08,
         )
         session.add(sp)
         session.flush()
@@ -576,8 +726,12 @@ class TestStrategyPerformance:
     def test_optional_period(self, session):
         run = _make_bot_run(session)
         sp = StrategyPerformance(
-            id=_uid(), bot_run_id=run.id, symbol="ETHUSDT",
-            total_trades=0, winning_trades=0, losing_trades=0,
+            id=_uid(),
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
+            total_trades=0,
+            winning_trades=0,
+            losing_trades=0,
         )
         session.add(sp)
         session.flush()

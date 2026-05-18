@@ -27,9 +27,7 @@ class ModelResponseRepository(BaseRepository[ModelResponse]):
     model = ModelResponse
 
     def get_by_request_id(self, model_request_id: str) -> ModelResponse | None:
-        stmt = select(ModelResponse).where(
-            ModelResponse.model_request_id == model_request_id
-        )
+        stmt = select(ModelResponse).where(ModelResponse.model_request_id == model_request_id)
         return self._session.scalars(stmt).first()
 
     def list_by_bot_run(
@@ -50,9 +48,7 @@ class ModelResponseRepository(BaseRepository[ModelResponse]):
 class DecisionRepository(BaseRepository[Decision]):
     model = Decision
 
-    def list_by_symbol(
-        self, bot_run_id: str, symbol: str, *, limit: int = 100
-    ) -> list[Decision]:
+    def list_by_symbol(self, bot_run_id: str, symbol: str, *, limit: int = 100) -> list[Decision]:
         stmt = (
             select(Decision)
             .where(Decision.bot_run_id == bot_run_id, Decision.symbol == symbol)
@@ -61,9 +57,7 @@ class DecisionRepository(BaseRepository[Decision]):
         )
         return list(self._session.scalars(stmt))
 
-    def list_by_action(
-        self, bot_run_id: str, action: str, *, limit: int = 100
-    ) -> list[Decision]:
+    def list_by_action(self, bot_run_id: str, action: str, *, limit: int = 100) -> list[Decision]:
         stmt = (
             select(Decision)
             .where(Decision.bot_run_id == bot_run_id, Decision.action == action)
@@ -77,9 +71,7 @@ class DecisionAggregationRepository(BaseRepository[DecisionAggregation]):
     model = DecisionAggregation
 
     def get_by_decision_id(self, decision_id: str) -> DecisionAggregation | None:
-        stmt = select(DecisionAggregation).where(
-            DecisionAggregation.decision_id == decision_id
-        )
+        stmt = select(DecisionAggregation).where(DecisionAggregation.decision_id == decision_id)
         return self._session.scalars(stmt).first()
 
     def list_by_symbol(
@@ -100,9 +92,7 @@ class DecisionAggregationRepository(BaseRepository[DecisionAggregation]):
 class RiskValidationRepository(BaseRepository[RiskValidation]):
     model = RiskValidation
 
-    def get_by_aggregation_id(
-        self, decision_aggregation_id: str
-    ) -> RiskValidation | None:
+    def get_by_aggregation_id(self, decision_aggregation_id: str) -> RiskValidation | None:
         stmt = select(RiskValidation).where(
             RiskValidation.decision_aggregation_id == decision_aggregation_id
         )

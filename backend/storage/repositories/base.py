@@ -50,9 +50,7 @@ class BaseRepository[T: Base]:
     def get_by_id(self, id: str) -> T | None:
         return self._session.get(self.model, id)
 
-    def list_by_bot_run(
-        self, bot_run_id: str, *, limit: int = 100, offset: int = 0
-    ) -> list[T]:
+    def list_by_bot_run(self, bot_run_id: str, *, limit: int = 100, offset: int = 0) -> list[T]:
         """Lista registros filtrados por bot_run_id.
 
         Requiere que el modelo tenga columna `bot_run_id`. Los repos cuyo

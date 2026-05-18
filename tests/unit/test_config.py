@@ -144,6 +144,7 @@ def test_blocks_max_positions_above_3(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_blocks_invalid_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises((ConfigError, Exception)):
         from backend.core.config import TradingConfig
+
         TradingConfig(
             market="USDT_M_FUTURES",
             preferred_exchange="BINGX",
@@ -159,6 +160,7 @@ def test_blocks_invalid_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_blocks_cross_margin_type(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises((ConfigError, Exception)):
         from backend.core.config import TradingConfig
+
         TradingConfig(
             market="USDT_M_FUTURES",
             preferred_exchange="BINGX",
