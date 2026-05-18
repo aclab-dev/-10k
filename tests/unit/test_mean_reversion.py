@@ -17,7 +17,7 @@ from backend.market_data.schemas import (
     Exchange,
     MarketSnapshot,
 )
-from backend.quant_signals.mean_reversion import _MIN_CV, compute_mean_reversion_signal
+from backend.quant_signals.mean_reversion import compute_mean_reversion_signal
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -115,13 +115,6 @@ class TestSignalDirection:
         signal = compute_mean_reversion_signal(snap)
         assert signal > 0.0, "precio bajo la media debe dar señal positiva (alcista)"
 
-    def test_price_at_mean_gives_zero(self) -> None:
-        # closes = [95000, 95000, 95000, 95000] → mean = 95000, std = 0
-        # mercado plano → señal 0.0 (caso flat market)
-        snap = _snapshot(95000, 95000, 95000, 95000, last_price=95000)
-        signal = compute_mean_reversion_signal(snap)
-        assert signal == 0.0
-
     def test_price_exactly_at_computed_mean_gives_zero(self) -> None:
         # closes = [96000, 94000, 96000, 94000] → mean = 95000
         snap = _snapshot(96000, 94000, 96000, 94000, last_price=95000)
@@ -148,9 +141,9 @@ class TestFlatMarket:
         assert compute_mean_reversion_signal(snap) == 0.0
 
     def test_near_zero_std_returns_zero(self) -> None:
-        # std/mean < _MIN_CV
+        # std/mean < 1e-6 (umbral de mercado plano)
         base = 50000.0
-        tiny = base * _MIN_CV * 0.5
+        tiny = base * 1e-6 * 0.5
         snap = _snapshot(base, base + tiny, base, base - tiny, last_price=base)
         assert compute_mean_reversion_signal(snap) == 0.0
 

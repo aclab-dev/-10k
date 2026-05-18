@@ -6,6 +6,14 @@ timeframes del MarketSnapshot, normalizado a [-1.0, 1.0] mediante tanh.
 Convención de signo (igual que el resto de señales del paquete):
 - Positivo (+): precio por debajo de la media → expectativa alcista (reversa alcista).
 - Negativo (−): precio por encima de la media → expectativa bajista (reversa bajista).
+
+Limitaciones conocidas (condicionadas por el contrato MarketSnapshot 4.10.1):
+- n=4: el z-score se calcula sobre exactamente 4 cierres, uno por timeframe. Con tan
+  pocos puntos la estimación de std tiene alta varianza; un outlier puede distorsionar
+  la señal. Una ventana rolling requeriría ampliar CandleData con una lista de cierres.
+- Mezcla de escalas: los 4 cierres no son observaciones IID (el cierre 4h representa
+  48× más tiempo que el 5m). Se usan como puntos de referencia a distintas escalas,
+  no como muestra homogénea. Aceptable mientras el schema no exponga historia por TF.
 """
 
 from __future__ import annotations
@@ -36,9 +44,9 @@ def compute_mean_reversion_signal(snapshot: MarketSnapshot) -> float:
     variance = sum((c - mean) ** 2 for c in closes) / n
     std = math.sqrt(variance)
 
-    if mean == 0.0 or std / mean < _MIN_CV:
+    if std / mean < _MIN_CV:
         return 0.0
 
     last_price = float(snapshot.last_price)
     z = (mean - last_price) / std
-    return max(-1.0, min(1.0, math.tanh(z)))
+    return math.tanh(z)
