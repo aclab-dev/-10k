@@ -150,13 +150,11 @@ class TestExtremeDetection:
         snap = _snapshot(open_interest=100000.0, volume=1000.0)
         assert compute_open_interest_signal(snap) == pytest.approx(-1.0, abs=0.001)
 
-    def test_very_low_oi_saturates_near_plus_one(self) -> None:
-        # ratio ≈ 0 → desvío ≈ -1 → tanh(-1) ≈ -0.76 → señal ≈ +0.76
-        # Para saturar cerca de +1.0 necesitamos ratio << -_OI_NEUTRAL_RATIO, no posible
-        # (ratio siempre ≥ 0). Verificamos que sea positivo y cercano a tanh(1).
+    def test_very_low_oi_gives_max_bullish_signal(self) -> None:
+        # ratio → 0 (OI ≈ 0): signal = -tanh((0-1)/1) = tanh(1) ≈ 0.76.
+        # El alcista topa en ~0.76 porque ratio ≥ 0 siempre; no hay saturación a +1.0.
         snap = _snapshot(open_interest=0.001, volume=1000.0)
         signal = compute_open_interest_signal(snap)
-        # Con ratio ≈ 0: signal = -tanh((0 - 1) / 1) = -tanh(-1) = tanh(1) ≈ 0.76
         assert signal == pytest.approx(math.tanh(1.0), rel=1e-3)
 
 
