@@ -351,6 +351,8 @@ class TestComputeQuantSignals:
         assert -1.0 <= pkg.momentum_signal <= 1.0
 
     def test_other_signals_are_none(self) -> None:
+        # Este test debe actualizarse a medida que se implementen las señales
+        # de las tarjetas 48-52: reemplazar cada None por la aserción de rango.
         pkg = compute_quant_signals(_snapshot())
         assert pkg.mean_reversion_signal is None
         assert pkg.breakout_signal is None

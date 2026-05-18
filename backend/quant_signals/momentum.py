@@ -41,7 +41,10 @@ MOMENTUM_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
 class MomentumResult:
     """Output del cálculo de señal momentum."""
 
-    signal: float  # en [-1.0, 1.0]; negativo = bearish, positivo = bullish
+    # Señal en [-1.0, 1.0] basada en ROC intra-vela (close-open)/open de cada TF.
+    # Negativo = bearish, positivo = bullish. No refleja momentum entre velas
+    # consecutivas: si el precio subió ayer y hoy abre flat, esta señal vale 0.
+    signal: float
     rationale: dict[str, Any]  # desglose auditable por timeframe
 
 

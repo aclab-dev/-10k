@@ -19,6 +19,8 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
         snapshot_id=snapshot.snapshot_id,
         timestamp_utc=snapshot.timestamp_utc,
         symbol=snapshot.symbol,
+        # Al integrar señales 48-52, este campo debe unir los TFs de todas
+        # las señales activas en lugar de reflejar solo los de momentum.
         timeframes_used=list(MOMENTUM_TIMEFRAMES),
         momentum_signal=momentum_result.signal,
         raw_feature_refs={"momentum": momentum_result.rationale},
