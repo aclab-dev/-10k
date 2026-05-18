@@ -704,7 +704,7 @@ class NewsContext(Base):
     headline: Mapped[str | None] = mapped_column(Text, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(
         String(16), nullable=True
-    )  # POSITIVE/NEGATIVE/NEUTRAL  # noqa: E501
+    )  # POSITIVE/NEGATIVE/NEUTRAL
     relevance_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_data: Mapped[dict[str, Any] | None] = mapped_column(PgJSON, nullable=True)
 
