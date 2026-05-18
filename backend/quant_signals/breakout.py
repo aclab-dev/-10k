@@ -33,9 +33,9 @@ _INSIDE_ATTENUATION: Final[float] = 0.1
 _MIN_VOL_FACTOR: Final[float] = 0.2
 
 # Minutos por timeframe, para normalizar volumen a tasa por minuto.
-_TF_MINUTES: Final[dict[str, int]] = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+_TF_MINUTES: Final[dict[str, int]] = {"5m": 5, "1h": 60, "4h": 240}
 
-BREAKOUT_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
+BREAKOUT_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "1h", "4h")
 
 
 @dataclass(frozen=True)
