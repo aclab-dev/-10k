@@ -203,7 +203,7 @@ class TestSymbolVariety:
         ],
     )
     def test_signal_direction_across_price_levels(
-        self, closes: tuple[float, ...], last_price: float
+        self, closes: tuple[float, float, float, float], last_price: float
     ) -> None:
         snap = _snapshot(*closes, last_price=last_price)
         signal = compute_mean_reversion_signal(snap)
