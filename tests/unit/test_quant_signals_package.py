@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from backend.quant_signals.schemas import _SIGNAL_VERSION, QuantSignalsPackage
+from backend.quant_signals.schemas import SIGNAL_VERSION, QuantSignalsPackage
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,7 +21,7 @@ def _now() -> datetime:
 
 def _package(**overrides: object) -> QuantSignalsPackage:
     """Construye un QuantSignalsPackage válido con valores mínimos."""
-    defaults: dict = {
+    defaults: dict[str, object] = {
         "snapshot_id": str(uuid.uuid4()),
         "timestamp_utc": _now(),
         "symbol": "BTCUSDT",
@@ -40,7 +40,7 @@ class TestQuantSignalsPackageConstruction:
     def test_minimal_fields_accepted(self) -> None:
         pkg = _package()
         assert pkg.symbol == "BTCUSDT"
-        assert pkg.version == _SIGNAL_VERSION
+        assert pkg.version == SIGNAL_VERSION
 
     def test_signal_id_auto_generated(self) -> None:
         pkg = _package()
@@ -97,6 +97,31 @@ class TestQuantSignalsPackageConstruction:
 
 
 # ---------------------------------------------------------------------------
+# Validación de UUID
+# ---------------------------------------------------------------------------
+
+
+class TestUUIDValidation:
+    def test_valid_uuid_signal_id_accepted(self) -> None:
+        valid_id = str(uuid.uuid4())
+        pkg = _package(signal_id=valid_id)
+        assert pkg.signal_id == valid_id
+
+    def test_invalid_signal_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="UUID válido"):
+            _package(signal_id="not-a-uuid")
+
+    def test_invalid_snapshot_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="UUID válido"):
+            _package(snapshot_id="not-a-uuid")
+
+    def test_valid_uuid_snapshot_id_accepted(self) -> None:
+        valid_id = str(uuid.uuid4())
+        pkg = _package(snapshot_id=valid_id)
+        assert pkg.snapshot_id == valid_id
+
+
+# ---------------------------------------------------------------------------
 # Validación de symbol
 # ---------------------------------------------------------------------------
 
@@ -127,14 +152,19 @@ class TestTimestampValidation:
         assert pkg.timestamp_utc.tzinfo is not None
 
     def test_naive_datetime_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="timezone"):
+        with pytest.raises(ValidationError, match="UTC"):
             _package(timestamp_utc=datetime(2024, 1, 1, 12, 0))
 
-    def test_non_utc_timezone_accepted(self) -> None:
-        # El contrato exige tz-aware; validar la zona exacta no es responsabilidad del contrato
+    def test_non_utc_timezone_rejected(self) -> None:
+        # El campo se llama timestamp_utc — el contrato garantiza offset=0
         tz_plus3 = timezone(timedelta(hours=3))
-        pkg = _package(timestamp_utc=datetime(2024, 1, 1, 12, 0, tzinfo=tz_plus3))
-        assert pkg.timestamp_utc.tzinfo is not None
+        with pytest.raises(ValidationError, match="UTC"):
+            _package(timestamp_utc=datetime(2024, 1, 1, 12, 0, tzinfo=tz_plus3))
+
+    def test_utc_plus_zero_explicit_accepted(self) -> None:
+        tz_utc = timezone(timedelta(0))
+        pkg = _package(timestamp_utc=datetime(2024, 1, 1, 12, 0, tzinfo=tz_utc))
+        assert pkg.timestamp_utc.utcoffset() == timedelta(0)
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +364,18 @@ class TestToDbKwargs:
         kwargs = pkg.to_db_kwargs(str(uuid.uuid4()))
         assert kwargs["order_flow_score"] == 0.4
 
+    def test_funding_signal_key_matches_orm_column_name(self) -> None:
+        # La columna ORM se llama funding_signal (no funding_score)
+        pkg = _package(funding_signal=-0.2)
+        kwargs = pkg.to_db_kwargs(str(uuid.uuid4()))
+        assert kwargs["funding_signal"] == -0.2
+
+    def test_open_interest_signal_key_matches_orm_column_name(self) -> None:
+        # La columna ORM se llama open_interest_signal (no open_interest_score)
+        pkg = _package(open_interest_signal=0.3)
+        kwargs = pkg.to_db_kwargs(str(uuid.uuid4()))
+        assert kwargs["open_interest_signal"] == 0.3
+
     def test_raw_signals_contains_metadata(self) -> None:
         pkg = _package(
             signal_conflict_score=0.3,
@@ -345,7 +387,7 @@ class TestToDbKwargs:
         assert raw["signal_conflict_score"] == 0.3
         assert raw["signal_confidence"] == 0.9
         assert raw["timeframes_used"] == ["1h", "4h"]
-        assert raw["version"] == _SIGNAL_VERSION
+        assert raw["version"] == SIGNAL_VERSION
 
     def test_raw_feature_refs_included_when_present(self) -> None:
         refs = {"rsi_14": 62.5, "ema_diff": 0.003}

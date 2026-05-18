@@ -9,7 +9,7 @@ de un ciclo de análisis de señales para un símbolo dado.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -20,7 +20,7 @@ from backend.market_data.schemas import _ALLOWED_SYMBOLS
 # Constantes
 # ---------------------------------------------------------------------------
 
-_SIGNAL_VERSION = "1.0"
+SIGNAL_VERSION = "1.0"
 
 _ALLOWED_TIMEFRAMES = frozenset({"5m", "15m", "1h", "4h"})
 
@@ -63,13 +63,22 @@ class QuantSignalsPackage(BaseModel):
 
     # Metadatos y versionado
     raw_feature_refs: dict[str, Any] | None = None
-    version: str = _SIGNAL_VERSION
+    version: str = SIGNAL_VERSION
 
     model_config = {"frozen": True}
 
     # ------------------------------------------------------------------
     # Validadores de campo
     # ------------------------------------------------------------------
+
+    @field_validator("signal_id", "snapshot_id")
+    @classmethod
+    def must_be_valid_uuid(cls, v: str) -> str:
+        try:
+            uuid.UUID(v)
+        except ValueError as exc:
+            raise ValueError(f"'{v}' no es un UUID válido.") from exc
+        return v
 
     @field_validator("symbol")
     @classmethod
@@ -80,9 +89,9 @@ class QuantSignalsPackage(BaseModel):
 
     @field_validator("timestamp_utc")
     @classmethod
-    def must_be_utc_aware(cls, v: datetime) -> datetime:
-        if v.tzinfo is None:
-            raise ValueError("timestamp_utc debe incluir timezone (UTC).")
+    def must_be_utc(cls, v: datetime) -> datetime:
+        if v.tzinfo is None or v.utcoffset() != timedelta(0):
+            raise ValueError("timestamp_utc debe ser UTC (offset=0).")
         return v
 
     @field_validator("timeframes_used")
@@ -121,6 +130,9 @@ class QuantSignalsPackage(BaseModel):
     def to_db_kwargs(self, bot_run_id: str) -> dict[str, Any]:
         """Devuelve un dict listo para crear un registro en quant_signals.
 
+        La mayoría de señales se mapean a columnas *_score en la tabla.
+        Excepción: funding_signal y open_interest_signal conservan el sufijo
+        _signal porque así se llaman las columnas en el ORM (models.QuantSignal).
         composite_score mapea a signal_strength_score (intensidad global de señal).
         signal_conflict_score y metadatos sin columna propia van en raw_signals.
         """
@@ -144,6 +156,7 @@ class QuantSignalsPackage(BaseModel):
             "breakout_score": self.breakout_signal,
             "liquidity_sweep_score": self.liquidity_sweep_signal,
             "order_flow_score": self.order_flow_imbalance_signal,
+            # columnas ORM se llaman *_signal (no *_score) para estos dos campos
             "funding_signal": self.funding_signal,
             "open_interest_signal": self.open_interest_signal,
             "composite_score": self.signal_strength_score,
