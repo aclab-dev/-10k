@@ -226,6 +226,18 @@ class TestMarketSnapshotRepository:
         repo = MarketSnapshotRepository(session)
         assert repo.get_latest_by_symbol(run.id, "BTCUSDT") is None
 
+    def test_list_by_symbol_since_filters(self, session: Session) -> None:
+        run = _bot_run(session)
+        t1 = datetime(2026, 1, 1, tzinfo=UTC)
+        t2 = datetime(2026, 1, 2, tzinfo=UTC)
+        t3 = datetime(2026, 1, 3, tzinfo=UTC)
+        for ts in (t1, t2, t3):
+            self._snap(session, run, "BTCUSDT", ts)
+
+        repo = MarketSnapshotRepository(session)
+        results = repo.list_by_symbol(run.id, "BTCUSDT", since=t2)
+        assert len(results) == 2
+
 
 # ---------------------------------------------------------------------------
 # QuantSignalRepository
