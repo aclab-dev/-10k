@@ -14,6 +14,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from backend.core.config import Environment
+from backend.market_data.schemas import (
+    CandleData,
+    Candles,
+    CoherenceStatus,
+    DataFreshnessStatus,
+    Exchange,
+)
+from backend.market_data.schemas import MarketSnapshot as MarketSnapshotSchema
 from backend.storage.database import Base
 from backend.storage.models import (
     AccountState,
@@ -237,6 +246,47 @@ class TestMarketSnapshotRepository:
         repo = MarketSnapshotRepository(session)
         results = repo.list_by_symbol(run.id, "BTCUSDT", since=t2)
         assert len(results) == 2
+
+    def test_save_snapshot_persists_fields_from_schema(self, session: Session) -> None:
+        run = _bot_run(session)
+        now = datetime(2026, 1, 5, tzinfo=UTC)
+        candle = CandleData(
+            open=Decimal("50000"), high=Decimal("50100"),
+            low=Decimal("49900"), close=Decimal("50010"),
+            volume=Decimal("100"), n_candles=10,
+        )
+        schema_snap = MarketSnapshotSchema(
+            timestamp_utc=now,
+            exchange=Exchange.BINGX,
+            environment=Environment.PAPER,
+            symbol="SOLUSDT",
+            last_price=Decimal("50005"),
+            bid=Decimal("50000"),
+            ask=Decimal("50010"),
+            spread_absolute=Decimal("10"),
+            spread_percent=Decimal("0.02"),
+            candles=Candles(tf_5m=candle, tf_15m=candle, tf_1h=candle, tf_4h=candle),
+            volume=Decimal("1000"),
+            account_balance_usdt=Decimal("500"),
+            open_positions_count=0,
+            active_orders_count=0,
+            latency_ms=50,
+            exchange_server_time=now,
+            local_time=now,
+            clock_skew_ms=0,
+            data_freshness_status=DataFreshnessStatus.FRESH,
+            coherence_status=CoherenceStatus.OK,
+        )
+
+        repo = MarketSnapshotRepository(session)
+        orm = repo.save_snapshot(schema_snap, run.id)
+
+        assert orm.id == schema_snap.snapshot_id
+        assert orm.symbol == "SOLUSDT"
+        assert orm.close == Decimal("50005")
+        assert orm.bid == Decimal("50000")
+        assert orm.ask == Decimal("50010")
+        assert orm.bot_run_id == run.id
 
 
 # ---------------------------------------------------------------------------
