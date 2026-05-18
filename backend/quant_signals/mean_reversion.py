@@ -23,7 +23,7 @@ def compute_mean_reversion_signal(snapshot: MarketSnapshot) -> float:
 
     Toma los cierres de los 4 timeframes como proxy de historia reciente,
     calcula el z-score del precio actual respecto a esa distribución y lo
-    normaliza con tanh. Devuelve 0.0 si el mercado está plano (std < _MIN_CV * mean).
+    normaliza con tanh. Devuelve 0.0 si el mercado está plano (std/mean < _MIN_CV).
     """
     closes = [
         float(snapshot.candles.tf_5m.close),
@@ -36,9 +36,9 @@ def compute_mean_reversion_signal(snapshot: MarketSnapshot) -> float:
     variance = sum((c - mean) ** 2 for c in closes) / n
     std = math.sqrt(variance)
 
-    if std < _MIN_CV * mean:
+    if mean == 0.0 or std / mean < _MIN_CV:
         return 0.0
 
     last_price = float(snapshot.last_price)
     z = (mean - last_price) / std
-    return math.tanh(z)
+    return max(-1.0, min(1.0, math.tanh(z)))
