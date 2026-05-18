@@ -72,13 +72,16 @@ def calculate_breakout(snapshot: MarketSnapshot) -> BreakoutResult:
     last_price = float(snapshot.last_price)
 
     # --- Desplazamiento respecto al rango 4h ---
+    breakout_pct: float | None
     if last_price > box_top:
-        breakout_pct: float | None = (last_price - box_top) / box_top
-        raw_breakout = math.tanh(breakout_pct / _BREAKOUT_THRESHOLD)
+        pct = (last_price - box_top) / box_top
+        breakout_pct = pct
+        raw_breakout = math.tanh(pct / _BREAKOUT_THRESHOLD)
         position = "above_range"
     elif last_price < box_bottom:
-        breakout_pct = (last_price - box_bottom) / box_bottom  # negativo
-        raw_breakout = math.tanh(breakout_pct / _BREAKOUT_THRESHOLD)
+        pct = (last_price - box_bottom) / box_bottom  # negativo
+        breakout_pct = pct
+        raw_breakout = math.tanh(pct / _BREAKOUT_THRESHOLD)
         position = "below_range"
     else:
         breakout_pct = None

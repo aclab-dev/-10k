@@ -6,8 +6,6 @@ import math
 from datetime import UTC, datetime
 from decimal import Decimal
 
-import pytest
-
 from backend.core.config import Environment
 from backend.market_data.schemas import (
     CandleData,
@@ -18,7 +16,6 @@ from backend.market_data.schemas import (
     MarketSnapshot,
 )
 from backend.quant_signals.breakout import (
-    BreakoutResult,
     _INSIDE_ATTENUATION,
     _MIN_VOL_FACTOR,
     calculate_breakout,
@@ -59,7 +56,9 @@ def _candle(
 
 
 def _flat_candle(price: float = _BASE_PRICE, volume: float = 500.0) -> CandleData:
-    return _candle(high=price * 1.001, low=price * 0.999, open_price=price, close_price=price, volume=volume)
+    return _candle(
+        high=price * 1.001, low=price * 0.999, open_price=price, close_price=price, volume=volume
+    )
 
 
 def _4h_box(volume: float = 1000.0) -> CandleData:
