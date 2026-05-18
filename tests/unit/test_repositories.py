@@ -305,11 +305,18 @@ class TestMarketSnapshotRepository:
         orm = repo.save_snapshot(schema_snap, run.id)
 
         assert orm.id == schema_snap.snapshot_id
+        assert orm.bot_run_id == run.id
         assert orm.symbol == "SOLUSDT"
+        # to_db_kwargs maps last_price → close (not the candle's close field)
         assert orm.close == Decimal("50005")
         assert orm.bid == Decimal("50000")
         assert orm.ask == Decimal("50010")
-        assert orm.bot_run_id == run.id
+        # spread maps to spread_absolute, not spread_percent
+        assert orm.spread == Decimal("10")
+        assert orm.open == candle.open
+        assert orm.high == candle.high
+        assert orm.low == candle.low
+        assert orm.volume == Decimal("1000")
 
 
 # ---------------------------------------------------------------------------

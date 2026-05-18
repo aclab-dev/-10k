@@ -71,10 +71,10 @@ def _snapshot(**overrides: object) -> MarketSnapshotSchema:
 
 
 def _make_engine(bot_run_id: str = "run-id-123") -> tuple[MarketDataEngine, MagicMock]:
-    """Devuelve (engine, mock_repo) con el repositorio reemplazado por un mock."""
-    engine = MarketDataEngine(MagicMock(), bot_run_id)
+    """Devuelve (engine, mock_repo) sin construir el repositorio real."""
     mock_repo = MagicMock()
-    engine._repo = mock_repo
+    with patch("backend.market_data.engine.MarketSnapshotRepository", return_value=mock_repo):
+        engine = MarketDataEngine(MagicMock(), bot_run_id)
     return engine, mock_repo
 
 
@@ -150,5 +150,4 @@ class TestMarketDataEngine:
         with patch("backend.market_data.engine.validate_snapshot", return_value=snap):
             engine.process_snapshot(snap)
 
-        call_args = mock_repo.save_snapshot.call_args[0]
-        assert call_args[1] == "specific-run-99"
+        mock_repo.save_snapshot.assert_called_once_with(snap, "specific-run-99")
