@@ -171,14 +171,19 @@ class TestMarketDataEnginePostgres:
         run = _bot_run(pg_session)
         engine_obj = MarketDataEngine(pg_session, run.id)
         bad_candle = CandleData(
-            open=Decimal("50000"), high=Decimal("50100"),
-            low=Decimal("49900"), close=Decimal("50010"),
-            volume=Decimal("100"), n_candles=1,
+            open=Decimal("50000"),
+            high=Decimal("50100"),
+            low=Decimal("49900"),
+            close=Decimal("50010"),
+            volume=Decimal("100"),
+            n_candles=1,
         )
         snap = _valid_snapshot(
             candles=Candles(
-                tf_5m=bad_candle, tf_15m=bad_candle,
-                tf_1h=bad_candle, tf_4h=bad_candle,
+                tf_5m=bad_candle,
+                tf_15m=bad_candle,
+                tf_1h=bad_candle,
+                tf_4h=bad_candle,
             )
         )
 
@@ -189,15 +194,20 @@ class TestMarketDataEnginePostgres:
         run = _bot_run(pg_session)
         engine_obj = MarketDataEngine(pg_session, run.id)
         bad_candle = CandleData(
-            open=Decimal("50000"), high=Decimal("50100"),
-            low=Decimal("49900"), close=Decimal("50010"),
-            volume=Decimal("100"), n_candles=1,
+            open=Decimal("50000"),
+            high=Decimal("50100"),
+            low=Decimal("49900"),
+            close=Decimal("50010"),
+            volume=Decimal("100"),
+            n_candles=1,
         )
         snap = _valid_snapshot(
             symbol="SOLUSDT",
             candles=Candles(
-                tf_5m=bad_candle, tf_15m=bad_candle,
-                tf_1h=bad_candle, tf_4h=bad_candle,
+                tf_5m=bad_candle,
+                tf_15m=bad_candle,
+                tf_1h=bad_candle,
+                tf_4h=bad_candle,
             ),
         )
 

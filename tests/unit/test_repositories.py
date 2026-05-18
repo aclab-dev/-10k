@@ -14,6 +14,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from backend.core.config import Environment
+from backend.market_data.schemas import (
+    CandleData,
+    Candles,
+    CoherenceStatus,
+    DataFreshnessStatus,
+    Exchange,
+)
+from backend.market_data.schemas import MarketSnapshot as MarketSnapshotSchema
 from backend.storage.database import Base
 from backend.storage.models import (
     AccountState,
@@ -74,6 +83,7 @@ from backend.storage.repositories import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def engine():
     eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
@@ -113,6 +123,7 @@ def _bot_run(session: Session, status: str = "RUNNING") -> BotRun:
 # BotRunRepository
 # ---------------------------------------------------------------------------
 
+
 class TestBotRunRepository:
     def test_save_and_get(self, session: Session) -> None:
         repo = BotRunRepository(session)
@@ -144,6 +155,7 @@ class TestBotRunRepository:
 # BotStateRepository
 # ---------------------------------------------------------------------------
 
+
 class TestBotStateRepository:
     def test_get_latest(self, session: Session) -> None:
         run = _bot_run(session)
@@ -172,19 +184,30 @@ class TestBotStateRepository:
 # AccountStateRepository
 # ---------------------------------------------------------------------------
 
+
 class TestAccountStateRepository:
     def test_get_latest(self, session: Session) -> None:
         run = _bot_run(session)
         t1 = datetime(2026, 1, 1, tzinfo=UTC)
         t2 = datetime(2026, 1, 2, tzinfo=UTC)
-        session.add(AccountState(
-            bot_run_id=run.id, timestamp=t1,
-            balance_usdt=Decimal("90"), equity_usdt=Decimal("90"), environment="PAPER",
-        ))
-        session.add(AccountState(
-            bot_run_id=run.id, timestamp=t2,
-            balance_usdt=Decimal("100"), equity_usdt=Decimal("100"), environment="PAPER",
-        ))
+        session.add(
+            AccountState(
+                bot_run_id=run.id,
+                timestamp=t1,
+                balance_usdt=Decimal("90"),
+                equity_usdt=Decimal("90"),
+                environment="PAPER",
+            )
+        )
+        session.add(
+            AccountState(
+                bot_run_id=run.id,
+                timestamp=t2,
+                balance_usdt=Decimal("100"),
+                equity_usdt=Decimal("100"),
+                environment="PAPER",
+            )
+        )
         session.flush()
 
         repo = AccountStateRepository(session)
@@ -197,12 +220,18 @@ class TestAccountStateRepository:
 # MarketSnapshotRepository
 # ---------------------------------------------------------------------------
 
+
 class TestMarketSnapshotRepository:
     def _snap(self, session: Session, run: BotRun, symbol: str, ts: datetime) -> MarketSnapshot:
         snap = MarketSnapshot(
-            bot_run_id=run.id, symbol=symbol, timestamp=ts,
-            open=Decimal("100"), high=Decimal("110"), low=Decimal("90"),
-            close=Decimal("105"), volume=Decimal("1000"),
+            bot_run_id=run.id,
+            symbol=symbol,
+            timestamp=ts,
+            open=Decimal("100"),
+            high=Decimal("110"),
+            low=Decimal("90"),
+            close=Decimal("105"),
+            volume=Decimal("1000"),
         )
         session.add(snap)
         session.flush()
@@ -238,18 +267,74 @@ class TestMarketSnapshotRepository:
         results = repo.list_by_symbol(run.id, "BTCUSDT", since=t2)
         assert len(results) == 2
 
+    def test_save_snapshot_persists_fields_from_schema(self, session: Session) -> None:
+        run = _bot_run(session)
+        now = datetime(2026, 1, 5, tzinfo=UTC)
+        candle = CandleData(
+            open=Decimal("50000"),
+            high=Decimal("50100"),
+            low=Decimal("49900"),
+            close=Decimal("50010"),
+            volume=Decimal("100"),
+            n_candles=10,
+        )
+        schema_snap = MarketSnapshotSchema(
+            timestamp_utc=now,
+            exchange=Exchange.BINGX,
+            environment=Environment.PAPER,
+            symbol="SOLUSDT",
+            last_price=Decimal("50005"),
+            bid=Decimal("50000"),
+            ask=Decimal("50010"),
+            spread_absolute=Decimal("10"),
+            spread_percent=Decimal("0.02"),
+            candles=Candles(tf_5m=candle, tf_15m=candle, tf_1h=candle, tf_4h=candle),
+            volume=Decimal("1000"),
+            account_balance_usdt=Decimal("500"),
+            open_positions_count=0,
+            active_orders_count=0,
+            latency_ms=50,
+            exchange_server_time=now,
+            local_time=now,
+            clock_skew_ms=0,
+            data_freshness_status=DataFreshnessStatus.FRESH,
+            coherence_status=CoherenceStatus.OK,
+        )
+
+        repo = MarketSnapshotRepository(session)
+        orm = repo.save_snapshot(schema_snap, run.id)
+
+        assert orm.id == schema_snap.snapshot_id
+        assert orm.bot_run_id == run.id
+        assert orm.symbol == "SOLUSDT"
+        # to_db_kwargs maps last_price → close (not the candle's close field)
+        assert orm.close == Decimal("50005")
+        assert orm.bid == Decimal("50000")
+        assert orm.ask == Decimal("50010")
+        # spread maps to spread_absolute, not spread_percent
+        assert orm.spread == Decimal("10")
+        assert orm.open == candle.open
+        assert orm.high == candle.high
+        assert orm.low == candle.low
+        assert orm.volume == Decimal("1000")
+
 
 # ---------------------------------------------------------------------------
 # QuantSignalRepository
 # ---------------------------------------------------------------------------
 
+
 class TestQuantSignalRepository:
     def test_get_latest_by_symbol(self, session: Session) -> None:
         run = _bot_run(session)
         for ts in (datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 2, tzinfo=UTC)):
-            session.add(QuantSignal(
-                bot_run_id=run.id, symbol="BTCUSDT", timestamp=ts,
-            ))
+            session.add(
+                QuantSignal(
+                    bot_run_id=run.id,
+                    symbol="BTCUSDT",
+                    timestamp=ts,
+                )
+            )
         session.flush()
 
         repo = QuantSignalRepository(session)
@@ -262,14 +347,19 @@ class TestQuantSignalRepository:
 # MarketRegimeRepository
 # ---------------------------------------------------------------------------
 
+
 class TestMarketRegimeRepository:
     def test_get_latest_by_symbol(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(MarketRegime(
-            bot_run_id=run.id, symbol="BTCUSDT",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-            regime="TRENDING", confidence=0.9,
-        ))
+        session.add(
+            MarketRegime(
+                bot_run_id=run.id,
+                symbol="BTCUSDT",
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                regime="TRENDING",
+                confidence=0.9,
+            )
+        )
         session.flush()
 
         repo = MarketRegimeRepository(session)
@@ -282,14 +372,18 @@ class TestMarketRegimeRepository:
 # VolatilityAssessmentRepository
 # ---------------------------------------------------------------------------
 
+
 class TestVolatilityAssessmentRepository:
     def test_get_latest_by_symbol(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(VolatilityAssessment(
-            bot_run_id=run.id, symbol="ETHUSDT",
-            timestamp=datetime(2026, 1, 1, tzinfo=UTC),
-            leverage_cap=5,
-        ))
+        session.add(
+            VolatilityAssessment(
+                bot_run_id=run.id,
+                symbol="ETHUSDT",
+                timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+                leverage_cap=5,
+            )
+        )
         session.flush()
 
         repo = VolatilityAssessmentRepository(session)
@@ -302,14 +396,18 @@ class TestVolatilityAssessmentRepository:
 # FeaturePackageRepository
 # ---------------------------------------------------------------------------
 
+
 class TestFeaturePackageRepository:
     def test_get_by_hash(self, session: Session) -> None:
         run = _bot_run(session)
         h = _uid()
         pkg = FeaturePackage(
-            bot_run_id=run.id, symbol="BTCUSDT",
-            timestamp=_now(), version="v1",
-            features={"x": 1}, features_hash=h,
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            version="v1",
+            features={"x": 1},
+            features_hash=h,
         )
         session.add(pkg)
         session.flush()
@@ -327,6 +425,7 @@ class TestFeaturePackageRepository:
 # ---------------------------------------------------------------------------
 # ModelRequestRepository / ModelResponseRepository
 # ---------------------------------------------------------------------------
+
 
 class TestModelRequestRepository:
     def _model_request(self, session: Session, run: BotRun, hash_: str) -> ModelRequest:
@@ -422,11 +521,14 @@ class TestModelResponseRepository:
 # DecisionRepository
 # ---------------------------------------------------------------------------
 
+
 class TestDecisionRepository:
     def _decision(self, session: Session, run: BotRun, symbol: str, action: str) -> Decision:
         d = Decision(
-            bot_run_id=run.id, symbol=symbol,
-            timestamp=_now(), action=action,
+            bot_run_id=run.id,
+            symbol=symbol,
+            timestamp=_now(),
+            action=action,
         )
         session.add(d)
         session.flush()
@@ -456,19 +558,25 @@ class TestDecisionRepository:
 # DecisionAggregationRepository
 # ---------------------------------------------------------------------------
 
+
 class TestDecisionAggregationRepository:
     def test_get_by_decision_id(self, session: Session) -> None:
         run = _bot_run(session)
         decision = Decision(
-            bot_run_id=run.id, symbol="BTCUSDT",
-            timestamp=_now(), action="OPEN",
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            action="OPEN",
         )
         session.add(decision)
         session.flush()
 
         agg = DecisionAggregation(
-            bot_run_id=run.id, decision_id=decision.id,
-            symbol="BTCUSDT", timestamp=_now(), final_action="OPEN",
+            bot_run_id=run.id,
+            decision_id=decision.id,
+            symbol="BTCUSDT",
+            timestamp=_now(),
+            final_action="OPEN",
         )
         session.add(agg)
         session.flush()
@@ -483,14 +591,19 @@ class TestDecisionAggregationRepository:
 # RiskValidationRepository
 # ---------------------------------------------------------------------------
 
+
 class TestRiskValidationRepository:
     def test_list_by_result(self, session: Session) -> None:
         run = _bot_run(session)
         for result in ("APPROVE", "BLOCK", "APPROVE"):
-            session.add(RiskValidation(
-                bot_run_id=run.id, symbol="BTCUSDT",
-                timestamp=_now(), result=result,
-            ))
+            session.add(
+                RiskValidation(
+                    bot_run_id=run.id,
+                    symbol="BTCUSDT",
+                    timestamp=_now(),
+                    result=result,
+                )
+            )
         session.flush()
 
         repo = RiskValidationRepository(session)
@@ -504,14 +617,19 @@ class TestRiskValidationRepository:
 # TradeRepository
 # ---------------------------------------------------------------------------
 
+
 class TestTradeRepository:
     def _trade(
         self, session: Session, run: BotRun, symbol: str = "BTCUSDT", status: str = "OPEN"
     ) -> Trade:
         t = Trade(
-            bot_run_id=run.id, symbol=symbol,
-            environment="PAPER", direction="LONG",
-            margin_usdt=Decimal("10"), leverage=5, status=status,
+            bot_run_id=run.id,
+            symbol=symbol,
+            environment="PAPER",
+            direction="LONG",
+            margin_usdt=Decimal("10"),
+            leverage=5,
+            status=status,
         )
         session.add(t)
         session.flush()
@@ -550,12 +668,17 @@ class TestTradeRepository:
 # OrderRepository
 # ---------------------------------------------------------------------------
 
+
 class TestOrderRepository:
     def _order(self, session: Session, run: BotRun, exchange_id: str | None = None) -> Order:
         o = Order(
-            bot_run_id=run.id, symbol="BTCUSDT", environment="PAPER",
-            order_type="MARKET", side="BUY",
-            quantity=Decimal("0.001"), status="PENDING",
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="BUY",
+            quantity=Decimal("0.001"),
+            status="PENDING",
             exchange_order_id=exchange_id,
         )
         session.add(o)
@@ -579,11 +702,17 @@ class TestOrderRepository:
     def test_list_by_status(self, session: Session) -> None:
         run = _bot_run(session)
         self._order(session, run)  # PENDING
-        session.add(Order(
-            bot_run_id=run.id, symbol="BTCUSDT", environment="PAPER",
-            order_type="MARKET", side="SELL",
-            quantity=Decimal("0.001"), status="FILLED",
-        ))
+        session.add(
+            Order(
+                bot_run_id=run.id,
+                symbol="BTCUSDT",
+                environment="PAPER",
+                order_type="MARKET",
+                side="SELL",
+                quantity=Decimal("0.001"),
+                status="FILLED",
+            )
+        )
         session.flush()
 
         repo = OrderRepository(session)
@@ -595,15 +724,21 @@ class TestOrderRepository:
 # PositionRepository
 # ---------------------------------------------------------------------------
 
+
 class TestPositionRepository:
     def _position(
         self, session: Session, run: BotRun, symbol: str = "BTCUSDT", status: str = "OPEN"
     ) -> Position:
         p = Position(
-            bot_run_id=run.id, symbol=symbol,
-            environment="PAPER", direction="LONG",
-            quantity=Decimal("0.001"), entry_price=Decimal("50000"),
-            margin_usdt=Decimal("10"), leverage=5, status=status,
+            bot_run_id=run.id,
+            symbol=symbol,
+            environment="PAPER",
+            direction="LONG",
+            quantity=Decimal("0.001"),
+            entry_price=Decimal("50000"),
+            margin_usdt=Decimal("10"),
+            leverage=5,
+            status=status,
         )
         session.add(p)
         session.flush()
@@ -637,14 +772,19 @@ class TestPositionRepository:
 # PositionEventRepository
 # ---------------------------------------------------------------------------
 
+
 class TestPositionEventRepository:
     def test_list_by_position(self, session: Session) -> None:
         run = _bot_run(session)
         pos = Position(
-            bot_run_id=run.id, symbol="BTCUSDT",
-            environment="PAPER", direction="LONG",
-            quantity=Decimal("0.001"), entry_price=Decimal("50000"),
-            margin_usdt=Decimal("10"), leverage=5,
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            direction="LONG",
+            quantity=Decimal("0.001"),
+            entry_price=Decimal("50000"),
+            margin_usdt=Decimal("10"),
+            leverage=5,
         )
         session.add(pos)
         session.flush()
@@ -660,10 +800,14 @@ class TestPositionEventRepository:
     def test_list_by_event_type(self, session: Session) -> None:
         run = _bot_run(session)
         pos = Position(
-            bot_run_id=run.id, symbol="ETHUSDT",
-            environment="PAPER", direction="SHORT",
-            quantity=Decimal("0.01"), entry_price=Decimal("3000"),
-            margin_usdt=Decimal("10"), leverage=3,
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
+            environment="PAPER",
+            direction="SHORT",
+            quantity=Decimal("0.01"),
+            entry_price=Decimal("3000"),
+            margin_usdt=Decimal("10"),
+            leverage=3,
         )
         session.add(pos)
         session.flush()
@@ -681,14 +825,19 @@ class TestPositionEventRepository:
 # SystemEventRepository
 # ---------------------------------------------------------------------------
 
+
 class TestSystemEventRepository:
     def test_list_by_severity(self, session: Session) -> None:
         run = _bot_run(session)
         for sev in ("INFO", "ERROR", "INFO"):
-            session.add(SystemEvent(
-                bot_run_id=run.id, event_type="TEST",
-                severity=sev, message="msg",
-            ))
+            session.add(
+                SystemEvent(
+                    bot_run_id=run.id,
+                    event_type="TEST",
+                    severity=sev,
+                    message="msg",
+                )
+            )
         session.flush()
 
         repo = SystemEventRepository(session)
@@ -697,10 +846,14 @@ class TestSystemEventRepository:
 
     def test_list_by_event_type(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(SystemEvent(
-            bot_run_id=run.id, event_type="KILL_SWITCH",
-            severity="CRITICAL", message="kill",
-        ))
+        session.add(
+            SystemEvent(
+                bot_run_id=run.id,
+                event_type="KILL_SWITCH",
+                severity="CRITICAL",
+                message="kill",
+            )
+        )
         session.flush()
 
         repo = SystemEventRepository(session)
@@ -711,6 +864,7 @@ class TestSystemEventRepository:
 # ---------------------------------------------------------------------------
 # ErrorRecordRepository
 # ---------------------------------------------------------------------------
+
 
 class TestErrorRecordRepository:
     def test_list_unrecovered(self, session: Session) -> None:
@@ -725,9 +879,9 @@ class TestErrorRecordRepository:
 
     def test_list_by_module(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(ErrorRecord(
-            bot_run_id=run.id, message="err", module="risk_engine", recovered=False
-        ))
+        session.add(
+            ErrorRecord(bot_run_id=run.id, message="err", module="risk_engine", recovered=False)
+        )
         session.flush()
 
         repo = ErrorRecordRepository(session)
@@ -739,19 +893,28 @@ class TestErrorRecordRepository:
 # KillSwitchEventRepository
 # ---------------------------------------------------------------------------
 
+
 class TestKillSwitchEventRepository:
     def test_list_pending_review(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(KillSwitchEvent(
-            bot_run_id=run.id, trigger_reason="orphan orders",
-            state_before="ACTIVE", action_taken="HALT",
-            requires_manual_review=True,
-        ))
-        session.add(KillSwitchEvent(
-            bot_run_id=run.id, trigger_reason="auto resolved",
-            state_before="ACTIVE", action_taken="RESUME",
-            requires_manual_review=False,
-        ))
+        session.add(
+            KillSwitchEvent(
+                bot_run_id=run.id,
+                trigger_reason="orphan orders",
+                state_before="ACTIVE",
+                action_taken="HALT",
+                requires_manual_review=True,
+            )
+        )
+        session.add(
+            KillSwitchEvent(
+                bot_run_id=run.id,
+                trigger_reason="auto resolved",
+                state_before="ACTIVE",
+                action_taken="RESUME",
+                requires_manual_review=False,
+            )
+        )
         session.flush()
 
         repo = KillSwitchEventRepository(session)
@@ -763,17 +926,28 @@ class TestKillSwitchEventRepository:
 # TokenUsageRepository
 # ---------------------------------------------------------------------------
 
+
 class TestTokenUsageRepository:
     def test_total_tokens_for_run(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(TokenUsage(
-            bot_run_id=run.id, model="gpt-4",
-            prompt_tokens=100, completion_tokens=50, total_tokens=150,
-        ))
-        session.add(TokenUsage(
-            bot_run_id=run.id, model="gpt-4",
-            prompt_tokens=200, completion_tokens=100, total_tokens=300,
-        ))
+        session.add(
+            TokenUsage(
+                bot_run_id=run.id,
+                model="gpt-4",
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+            )
+        )
+        session.add(
+            TokenUsage(
+                bot_run_id=run.id,
+                model="gpt-4",
+                prompt_tokens=200,
+                completion_tokens=100,
+                total_tokens=300,
+            )
+        )
         session.flush()
 
         repo = TokenUsageRepository(session)
@@ -790,16 +964,21 @@ class TestTokenUsageRepository:
 # BacktestRunRepository + BacktestResultRepository
 # ---------------------------------------------------------------------------
 
+
 class TestBacktestRepositories:
     def test_backtest_run_list_by_status(self, session: Session) -> None:
         run = _bot_run(session)
         for status in ("RUNNING", "DONE", "RUNNING"):
-            session.add(BacktestRun(
-                bot_run_id=run.id, symbol="BTCUSDT",
-                period_start=datetime(2026, 1, 1, tzinfo=UTC),
-                period_end=datetime(2026, 2, 1, tzinfo=UTC),
-                config_snapshot={}, status=status,
-            ))
+            session.add(
+                BacktestRun(
+                    bot_run_id=run.id,
+                    symbol="BTCUSDT",
+                    period_start=datetime(2026, 1, 1, tzinfo=UTC),
+                    period_end=datetime(2026, 2, 1, tzinfo=UTC),
+                    config_snapshot={},
+                    status=status,
+                )
+            )
         session.flush()
 
         repo = BacktestRunRepository(session)
@@ -809,10 +988,12 @@ class TestBacktestRepositories:
     def test_backtest_result_get_by_run(self, session: Session) -> None:
         run = _bot_run(session)
         bt_run = BacktestRun(
-            bot_run_id=run.id, symbol="ETHUSDT",
+            bot_run_id=run.id,
+            symbol="ETHUSDT",
             period_start=datetime(2026, 1, 1, tzinfo=UTC),
             period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            config_snapshot={}, status="DONE",
+            config_snapshot={},
+            status="DONE",
         )
         session.add(bt_run)
         session.flush()
@@ -830,15 +1011,20 @@ class TestBacktestRepositories:
 # HistoricalReplayRunRepository + HistoricalReplaySnapshotRepository
 # ---------------------------------------------------------------------------
 
+
 class TestHistoricalReplayRepositories:
     def test_replay_run_list_by_status(self, session: Session) -> None:
         run = _bot_run(session)
-        session.add(HistoricalReplayRun(
-            bot_run_id=run.id, symbol="BTCUSDT",
-            period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            config_snapshot={}, status="DONE",
-        ))
+        session.add(
+            HistoricalReplayRun(
+                bot_run_id=run.id,
+                symbol="BTCUSDT",
+                period_start=datetime(2026, 1, 1, tzinfo=UTC),
+                period_end=datetime(2026, 2, 1, tzinfo=UTC),
+                config_snapshot={},
+                status="DONE",
+            )
+        )
         session.flush()
 
         repo = HistoricalReplayRunRepository(session)
@@ -848,20 +1034,24 @@ class TestHistoricalReplayRepositories:
     def test_replay_snapshot_list_by_replay_run(self, session: Session) -> None:
         run = _bot_run(session)
         replay = HistoricalReplayRun(
-            bot_run_id=run.id, symbol="BTCUSDT",
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
             period_start=datetime(2026, 1, 1, tzinfo=UTC),
             period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            config_snapshot={}, status="DONE",
+            config_snapshot={},
+            status="DONE",
         )
         session.add(replay)
         session.flush()
 
         for i in range(3):
-            session.add(HistoricalReplaySnapshot(
-                replay_run_id=replay.id,
-                sequence_num=i,
-                market_snapshot={"seq": i},
-            ))
+            session.add(
+                HistoricalReplaySnapshot(
+                    replay_run_id=replay.id,
+                    sequence_num=i,
+                    market_snapshot={"seq": i},
+                )
+            )
         session.flush()
 
         repo = HistoricalReplaySnapshotRepository(session)

@@ -18,18 +18,14 @@ from backend.storage.repositories.base import BaseRepository
 class StrategyPerformanceRepository(BaseRepository[StrategyPerformance]):
     model = StrategyPerformance
 
-    def list_by_symbol(
-        self, bot_run_id: str, symbol: str
-    ) -> list[StrategyPerformance]:
+    def list_by_symbol(self, bot_run_id: str, symbol: str) -> list[StrategyPerformance]:
         stmt = select(StrategyPerformance).where(
             StrategyPerformance.bot_run_id == bot_run_id,
             StrategyPerformance.symbol == symbol,
         )
         return list(self._session.scalars(stmt))
 
-    def list_by_regime(
-        self, bot_run_id: str, regime: str
-    ) -> list[StrategyPerformance]:
+    def list_by_regime(self, bot_run_id: str, regime: str) -> list[StrategyPerformance]:
         stmt = select(StrategyPerformance).where(
             StrategyPerformance.bot_run_id == bot_run_id,
             StrategyPerformance.regime == regime,
@@ -40,9 +36,7 @@ class StrategyPerformanceRepository(BaseRepository[StrategyPerformance]):
 class HistoricalReplayRunRepository(BaseRepository[HistoricalReplayRun]):
     model = HistoricalReplayRun
 
-    def list_by_status(
-        self, bot_run_id: str, status: str
-    ) -> list[HistoricalReplayRun]:
+    def list_by_status(self, bot_run_id: str, status: str) -> list[HistoricalReplayRun]:
         stmt = select(HistoricalReplayRun).where(
             HistoricalReplayRun.bot_run_id == bot_run_id,
             HistoricalReplayRun.status == status,
@@ -111,18 +105,14 @@ class BacktestResultRepository(BaseRepository[BacktestResult]):
         return list(self._session.scalars(stmt))
 
     def get_by_backtest_run(self, backtest_run_id: str) -> list[BacktestResult]:
-        stmt = select(BacktestResult).where(
-            BacktestResult.backtest_run_id == backtest_run_id
-        )
+        stmt = select(BacktestResult).where(BacktestResult.backtest_run_id == backtest_run_id)
         return list(self._session.scalars(stmt))
 
 
 class NewsContextRepository(BaseRepository[NewsContext]):
     model = NewsContext
 
-    def list_by_symbol(
-        self, bot_run_id: str, symbol: str, *, limit: int = 50
-    ) -> list[NewsContext]:
+    def list_by_symbol(self, bot_run_id: str, symbol: str, *, limit: int = 50) -> list[NewsContext]:
         stmt = (
             select(NewsContext)
             .where(

@@ -77,9 +77,7 @@ class CycleRunner:
         )
         while not self._shutdown_event.is_set():
             if not self._state_machine.is_running():
-                log.info(
-                    "cycle_runner.paused_by_state", state=self._state_machine.state.value
-                )
+                log.info("cycle_runner.paused_by_state", state=self._state_machine.state.value)
             else:
                 self._tick()
             # Espera segmentada para responder rapido a shutdown.
@@ -104,9 +102,7 @@ def parse_interval_from_env(raw: str | None, default: int = DEFAULT_INTERVAL_SEC
     try:
         value = int(raw)
     except ValueError as exc:
-        raise ValueError(
-            f"WORKER_HEARTBEAT_INTERVAL_SECONDS must be an int, got {raw!r}"
-        ) from exc
+        raise ValueError(f"WORKER_HEARTBEAT_INTERVAL_SECONDS must be an int, got {raw!r}") from exc
     if value <= 0:
         raise ValueError(f"WORKER_HEARTBEAT_INTERVAL_SECONDS must be > 0, got {value}")
     return value

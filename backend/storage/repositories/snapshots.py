@@ -91,9 +91,7 @@ class MarketRegimeRepository(BaseRepository[MarketRegime]):
 class VolatilityAssessmentRepository(BaseRepository[VolatilityAssessment]):
     model = VolatilityAssessment
 
-    def get_latest_by_symbol(
-        self, bot_run_id: str, symbol: str
-    ) -> VolatilityAssessment | None:
+    def get_latest_by_symbol(self, bot_run_id: str, symbol: str) -> VolatilityAssessment | None:
         stmt = (
             select(VolatilityAssessment)
             .where(

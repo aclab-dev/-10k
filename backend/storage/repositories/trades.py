@@ -18,9 +18,7 @@ class TradeRepository(BaseRepository[Trade]):
         )
         return list(self._session.scalars(stmt))
 
-    def list_by_symbol(
-        self, bot_run_id: str, symbol: str, *, limit: int = 100
-    ) -> list[Trade]:
+    def list_by_symbol(self, bot_run_id: str, symbol: str, *, limit: int = 100) -> list[Trade]:
         stmt = (
             select(Trade)
             .where(Trade.bot_run_id == bot_run_id, Trade.symbol == symbol)
@@ -29,9 +27,7 @@ class TradeRepository(BaseRepository[Trade]):
         )
         return list(self._session.scalars(stmt))
 
-    def list_by_status(
-        self, bot_run_id: str, status: str, *, limit: int = 100
-    ) -> list[Trade]:
+    def list_by_status(self, bot_run_id: str, status: str, *, limit: int = 100) -> list[Trade]:
         stmt = (
             select(Trade)
             .where(Trade.bot_run_id == bot_run_id, Trade.status == status)
@@ -52,9 +48,7 @@ class OrderRepository(BaseRepository[Order]):
         stmt = select(Order).where(Order.trade_id == trade_id).order_by(Order.created_at)
         return list(self._session.scalars(stmt))
 
-    def list_by_status(
-        self, bot_run_id: str, status: str, *, limit: int = 100
-    ) -> list[Order]:
+    def list_by_status(self, bot_run_id: str, status: str, *, limit: int = 100) -> list[Order]:
         stmt = (
             select(Order)
             .where(Order.bot_run_id == bot_run_id, Order.status == status)
@@ -117,9 +111,7 @@ class PositionEventRepository(BaseRepository[PositionEvent]):
         )
         return list(self._session.scalars(stmt))
 
-    def list_by_event_type(
-        self, position_id: str, event_type: str
-    ) -> list[PositionEvent]:
+    def list_by_event_type(self, position_id: str, event_type: str) -> list[PositionEvent]:
         stmt = (
             select(PositionEvent)
             .where(
