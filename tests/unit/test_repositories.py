@@ -42,15 +42,6 @@ from backend.storage.models import (
     Trade,
     VolatilityAssessment,
 )
-from backend.core.config import Environment
-from backend.market_data.schemas import (
-    CandleData,
-    Candles,
-    CoherenceStatus,
-    DataFreshnessStatus,
-    Exchange,
-    MarketSnapshot as MarketSnapshotSchema,
-)
 from backend.storage.repositories import (
     AccountStateRepository,
     BacktestResultRepository,
