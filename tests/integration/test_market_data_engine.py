@@ -1,12 +1,17 @@
-"""Tests del MarketDataEngine — validate + persist flow (F4)."""
+"""Tests de integración: MarketDataEngine contra PostgreSQL real (F4).
+
+Verifican el flujo validate → persist incluyendo el comportamiento real de
+la columna JSONB `extra` y el redondeo de Numeric(20,8).
+
+Ejecutar con: pytest -m integration
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from backend.core.config import Environment
@@ -20,28 +25,12 @@ from backend.market_data.schemas import (
     MarketSnapshot as MarketSnapshotSchema,
 )
 from backend.market_data.validators import SnapshotRejectedError
-from backend.storage.database import Base
 from backend.storage.models import BotRun, MarketSnapshot as MarketSnapshotORM
 from backend.storage.repositories.snapshots import MarketSnapshotRepository
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def engine():
-    eng = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(eng)
-    yield eng
-    Base.metadata.drop_all(eng)
-
-
-@pytest.fixture
-def session(engine):
-    with Session(engine) as s:
-        yield s
-        s.rollback()
 
 
 def _bot_run(session: Session) -> BotRun:
@@ -97,14 +86,50 @@ def _valid_snapshot(**overrides: object) -> MarketSnapshotSchema:
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# MarketSnapshotRepository — save_snapshot contra PostgreSQL
 # ---------------------------------------------------------------------------
 
 
-class TestMarketDataEngine:
-    def test_process_valid_snapshot_returns_orm(self, session: Session) -> None:
-        run = _bot_run(session)
-        engine = MarketDataEngine(session, run.id)
+@pytest.mark.integration
+class TestMarketSnapshotRepositoryPostgres:
+    def test_save_snapshot_persists_record(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        snap = _valid_snapshot()
+
+        repo = MarketSnapshotRepository(pg_session)
+        orm = repo.save_snapshot(snap, run.id)
+
+        assert orm.id == snap.snapshot_id
+        assert orm.symbol == "BTCUSDT"
+        assert orm.bot_run_id == run.id
+        assert orm.close == Decimal("50005")
+
+    def test_save_snapshot_extra_jsonb_roundtrip(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        snap = _valid_snapshot()
+
+        repo = MarketSnapshotRepository(pg_session)
+        orm = repo.save_snapshot(snap, run.id)
+        pg_session.expire(orm)
+
+        assert orm.extra is not None
+        assert "candles" in orm.extra
+        assert "tf_5m" in orm.extra["candles"]
+        assert orm.extra["data_freshness_status"] == DataFreshnessStatus.FRESH
+        assert orm.extra["coherence_status"] == CoherenceStatus.OK
+        assert orm.extra["exchange"] == Exchange.BINGX
+
+
+# ---------------------------------------------------------------------------
+# MarketDataEngine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestMarketDataEnginePostgres:
+    def test_process_valid_snapshot_returns_orm(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine = MarketDataEngine(pg_session, run.id)
         snap = _valid_snapshot()
 
         result = engine.process_snapshot(snap)
@@ -114,25 +139,38 @@ class TestMarketDataEngine:
         assert result.symbol == "BTCUSDT"
         assert result.bot_run_id == run.id
 
-    def test_process_valid_snapshot_is_queryable(self, session: Session) -> None:
-        run = _bot_run(session)
-        engine = MarketDataEngine(session, run.id)
+    def test_process_valid_snapshot_is_queryable(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine = MarketDataEngine(pg_session, run.id)
         snap = _valid_snapshot(symbol="ETHUSDT")
 
         engine.process_snapshot(snap)
 
-        repo = MarketSnapshotRepository(session)
+        repo = MarketSnapshotRepository(pg_session)
         latest = repo.get_latest_by_symbol(run.id, "ETHUSDT")
         assert latest is not None
         assert latest.id == snap.snapshot_id
 
-    def test_process_snapshot_with_invalid_coherence_raises(self, session: Session) -> None:
-        run = _bot_run(session)
-        engine_obj = MarketDataEngine(session, run.id)
+    def test_process_expired_snapshot_raises(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine_obj = MarketDataEngine(pg_session, run.id)
+        expired_ts = datetime.now(UTC) - timedelta(seconds=35)
+        snap = _valid_snapshot(
+            timestamp_utc=expired_ts,
+            exchange_server_time=expired_ts,
+            local_time=expired_ts,
+        )
+
+        with pytest.raises(SnapshotRejectedError, match="expirado"):
+            engine_obj.process_snapshot(snap)
+
+    def test_process_snapshot_with_invalid_coherence_raises(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine_obj = MarketDataEngine(pg_session, run.id)
         bad_candle = CandleData(
             open=Decimal("50000"), high=Decimal("50100"),
             low=Decimal("49900"), close=Decimal("50010"),
-            volume=Decimal("100"), n_candles=1,  # gap → INVALID
+            volume=Decimal("100"), n_candles=1,
         )
         snap = _valid_snapshot(
             candles=Candles(
@@ -141,12 +179,12 @@ class TestMarketDataEngine:
             )
         )
 
-        with pytest.raises(SnapshotRejectedError):
+        with pytest.raises(SnapshotRejectedError, match="incoherentes"):
             engine_obj.process_snapshot(snap)
 
-    def test_process_rejected_snapshot_is_not_persisted(self, session: Session) -> None:
-        run = _bot_run(session)
-        engine_obj = MarketDataEngine(session, run.id)
+    def test_process_rejected_snapshot_is_not_persisted(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine_obj = MarketDataEngine(pg_session, run.id)
         bad_candle = CandleData(
             open=Decimal("50000"), high=Decimal("50100"),
             low=Decimal("49900"), close=Decimal("50010"),
@@ -163,15 +201,16 @@ class TestMarketDataEngine:
         with pytest.raises(SnapshotRejectedError):
             engine_obj.process_snapshot(snap)
 
-        repo = MarketSnapshotRepository(session)
+        repo = MarketSnapshotRepository(pg_session)
         assert repo.get_latest_by_symbol(run.id, "SOLUSDT") is None
 
-    def test_process_extra_contains_candles_and_status(self, session: Session) -> None:
-        run = _bot_run(session)
-        engine_obj = MarketDataEngine(session, run.id)
+    def test_process_extra_jsonb_roundtrip(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        engine_obj = MarketDataEngine(pg_session, run.id)
         snap = _valid_snapshot()
 
         result = engine_obj.process_snapshot(snap)
+        pg_session.expire(result)
 
         assert result.extra is not None
         assert "candles" in result.extra
