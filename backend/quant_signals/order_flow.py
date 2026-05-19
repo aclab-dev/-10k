@@ -47,7 +47,7 @@ def _candle_ofi(candle: CandleData) -> float:
     price_range = candle.high - candle.low
     if price_range == Decimal("0"):
         return 0.0
-    return float((2 * candle.close - candle.high - candle.low) / price_range)
+    return max(-1.0, min(1.0, float((2 * candle.close - candle.high - candle.low) / price_range)))
 
 
 def calculate_order_flow_imbalance(snapshot: MarketSnapshot) -> OrderFlowResult:

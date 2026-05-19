@@ -358,7 +358,6 @@ class TestComputeQuantSignals:
         assert pkg.breakout_signal is None
         assert pkg.funding_signal is None
         assert pkg.open_interest_signal is None
-        # order_flow_imbalance_signal implementado en tarjeta 51
         assert pkg.order_flow_imbalance_signal is not None
         assert -1.0 <= pkg.order_flow_imbalance_signal <= 1.0
         assert pkg.liquidity_sweep_signal is None
