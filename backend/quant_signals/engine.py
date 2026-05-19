@@ -26,7 +26,9 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
         snapshot_id=snapshot.snapshot_id,
         timestamp_utc=snapshot.timestamp_utc,
         symbol=snapshot.symbol,
-        timeframes_used=sorted(set(MOMENTUM_TIMEFRAMES) | set(BREAKOUT_TIMEFRAMES) | set(ORDER_FLOW_TIMEFRAMES)),
+        timeframes_used=sorted(
+            set(MOMENTUM_TIMEFRAMES) | set(BREAKOUT_TIMEFRAMES) | set(ORDER_FLOW_TIMEFRAMES)
+        ),
         momentum_signal=momentum_result.signal,
         mean_reversion_signal=compute_mean_reversion_signal(snapshot),
         breakout_signal=breakout_result.signal,
