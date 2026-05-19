@@ -362,7 +362,8 @@ class TestComputeQuantSignals:
         assert -1.0 <= pkg.open_interest_signal <= 1.0
         assert pkg.order_flow_imbalance_signal is not None
         assert -1.0 <= pkg.order_flow_imbalance_signal <= 1.0
-        assert pkg.liquidity_sweep_signal is None
+        assert pkg.liquidity_sweep_signal is not None
+        assert -1.0 <= pkg.liquidity_sweep_signal <= 1.0
 
     def test_timeframes_used_are_all_four(self) -> None:
         pkg = compute_quant_signals(_snapshot())
