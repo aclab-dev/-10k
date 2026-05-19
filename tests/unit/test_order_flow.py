@@ -16,7 +16,10 @@ from backend.market_data.schemas import (
     Exchange,
     MarketSnapshot,
 )
+from backend.quant_signals.engine import compute_quant_signals
 from backend.quant_signals.order_flow import (
+    _TF_WEIGHTS,
+    ORDER_FLOW_TIMEFRAMES,
     _candle_ofi,
     calculate_order_flow_imbalance,
 )
@@ -239,3 +242,71 @@ class TestOrderFlowRationale:
         result = calculate_order_flow_imbalance(_snapshot())
         with pytest.raises((AttributeError, TypeError)):
             result.signal = 0.5  # type: ignore[misc]
+
+    def test_rationale_signal_matches_result_signal(self) -> None:
+        bullish = _candle(90.0, 110.0, high_price=110.0, low_price=90.0)
+        result = calculate_order_flow_imbalance(_snapshot(tf_4h=bullish))
+        assert result.rationale["signal"] == pytest.approx(result.signal)
+
+
+# ---------------------------------------------------------------------------
+# Tests: constantes del módulo
+# ---------------------------------------------------------------------------
+
+
+class TestOrderFlowConstants:
+    def test_tf_weights_sum_to_one(self) -> None:
+        assert sum(_TF_WEIGHTS.values()) == pytest.approx(1.0)
+
+    def test_timeframes_match_weights_keys(self) -> None:
+        assert set(ORDER_FLOW_TIMEFRAMES) == set(_TF_WEIGHTS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Tests: aislamiento por timeframe
+# ---------------------------------------------------------------------------
+
+
+class TestOrderFlowTfIsolation:
+    """Verifica que cada TF contribuye con exactamente su peso cuando los demás son doji."""
+
+    @pytest.mark.parametrize(
+        "tf, expected_signal",
+        [
+            ("5m", 0.10),
+            ("15m", 0.20),
+            ("1h", 0.30),
+            ("4h", 0.40),
+        ],
+    )
+    def test_single_bullish_tf_contributes_its_weight(
+        self, tf: str, expected_signal: float
+    ) -> None:
+        bullish = _candle(90.0, 110.0, high_price=110.0, low_price=90.0)
+        doji = _doji_candle()
+        tfs = ("5m", "15m", "1h", "4h")
+        kwargs: dict[str, object] = {f"tf_{t}": (bullish if t == tf else doji) for t in tfs}
+        result = calculate_order_flow_imbalance(_snapshot(**kwargs))  # type: ignore[arg-type]
+        assert result.signal == pytest.approx(expected_signal)
+
+
+# ---------------------------------------------------------------------------
+# Tests: integración con engine
+# ---------------------------------------------------------------------------
+
+
+class TestOrderFlowEngineIntegration:
+    def test_engine_populates_ofi_signal(self) -> None:
+        pkg = compute_quant_signals(_snapshot())
+        assert pkg.order_flow_imbalance_signal is not None
+
+    def test_engine_ofi_signal_in_bounds(self) -> None:
+        bullish = _candle(90.0, 110.0, high_price=110.0, low_price=90.0)
+        pkg = compute_quant_signals(_snapshot(tf_4h=bullish))
+        assert pkg.order_flow_imbalance_signal is not None
+        assert -1.0 <= pkg.order_flow_imbalance_signal <= 1.0
+
+    def test_engine_raw_feature_refs_contains_ofi_rationale(self) -> None:
+        pkg = compute_quant_signals(_snapshot())
+        assert pkg.raw_feature_refs is not None
+        assert "order_flow_imbalance" in pkg.raw_feature_refs

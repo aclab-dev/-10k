@@ -1,7 +1,7 @@
 """Señal order flow imbalance multi-timeframe (épica F5, tarjeta 51).
 
 Sin datos de L2, aproxima el imbalance usando la posición del cierre dentro
-del rango high-low de cada vela:
+del rango high-low de cada vela (una vela por timeframe, la más reciente del snapshot):
 
     ofi = (2*close - high - low) / (high - low)
 
