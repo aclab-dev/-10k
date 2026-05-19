@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.market_data.schemas import MarketSnapshot
+from backend.quant_signals.breakout import BREAKOUT_TIMEFRAMES, calculate_breakout
 from backend.quant_signals.funding import compute_funding_signal
 from backend.quant_signals.mean_reversion import compute_mean_reversion_signal
 from backend.quant_signals.momentum import MOMENTUM_TIMEFRAMES, calculate_momentum
@@ -17,15 +18,20 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
     QuantSignalsPackage lo permite y los módulos downstream deben tolerarlo.
     """
     momentum_result = calculate_momentum(snapshot)
+    breakout_result = calculate_breakout(snapshot)
 
     return QuantSignalsPackage(
         snapshot_id=snapshot.snapshot_id,
         timestamp_utc=snapshot.timestamp_utc,
         symbol=snapshot.symbol,
-        timeframes_used=list(MOMENTUM_TIMEFRAMES),
+        timeframes_used=sorted(set(MOMENTUM_TIMEFRAMES) | set(BREAKOUT_TIMEFRAMES)),
         momentum_signal=momentum_result.signal,
         mean_reversion_signal=compute_mean_reversion_signal(snapshot),
+        breakout_signal=breakout_result.signal,
         funding_signal=compute_funding_signal(snapshot),
         open_interest_signal=compute_open_interest_signal(snapshot),
-        raw_feature_refs={"momentum": momentum_result.rationale},
+        raw_feature_refs={
+            "momentum": momentum_result.rationale,
+            "breakout": breakout_result.rationale,
+        },
     )
