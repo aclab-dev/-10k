@@ -351,13 +351,17 @@ class TestComputeQuantSignals:
         assert -1.0 <= pkg.momentum_signal <= 1.0
 
     def test_other_signals_are_none(self) -> None:
-        # Este test debe actualizarse a medida que se implementen las señales
-        # de las tarjetas 48-52: reemplazar cada None por la aserción de rango.
+        # Implementadas: breakout (#49), mean_reversion (#48), funding y open_interest (#50), order_flow_imbalance (#51).
+        # Señales pendientes (tarjeta 52): quedan en None.
         pkg = compute_quant_signals(_snapshot())
-        assert pkg.mean_reversion_signal is None
-        assert pkg.breakout_signal is None
-        assert pkg.funding_signal is None
-        assert pkg.open_interest_signal is None
+        assert pkg.breakout_signal is not None
+        assert -1.0 <= pkg.breakout_signal <= 1.0
+        assert pkg.mean_reversion_signal is not None
+        assert -1.0 <= pkg.mean_reversion_signal <= 1.0
+        assert pkg.funding_signal is not None
+        assert -1.0 <= pkg.funding_signal <= 1.0
+        assert pkg.open_interest_signal is not None
+        assert -1.0 <= pkg.open_interest_signal <= 1.0
         assert pkg.order_flow_imbalance_signal is not None
         assert -1.0 <= pkg.order_flow_imbalance_signal <= 1.0
         assert pkg.liquidity_sweep_signal is None
