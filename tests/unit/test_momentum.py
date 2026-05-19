@@ -351,7 +351,7 @@ class TestComputeQuantSignals:
         assert -1.0 <= pkg.momentum_signal <= 1.0
 
     def test_other_signals_are_none(self) -> None:
-        # Señales implementadas: breakout (#49), mean_reversion (#48), funding y open_interest (#50).
+        # Implementadas: breakout (#49), mean_reversion (#48), funding y open_interest (#50).
         # Señales pendientes (tarjetas 51-52): quedan en None.
         pkg = compute_quant_signals(_snapshot())
         assert pkg.breakout_signal is not None
