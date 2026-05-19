@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from backend.market_data.schemas import MarketSnapshot
+from backend.quant_signals.funding import compute_funding_signal
+from backend.quant_signals.mean_reversion import compute_mean_reversion_signal
 from backend.quant_signals.momentum import MOMENTUM_TIMEFRAMES, calculate_momentum
+from backend.quant_signals.open_interest import compute_open_interest_signal
 from backend.quant_signals.schemas import QuantSignalsPackage
 
 
@@ -19,9 +22,10 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
         snapshot_id=snapshot.snapshot_id,
         timestamp_utc=snapshot.timestamp_utc,
         symbol=snapshot.symbol,
-        # Al integrar señales 48-52, este campo debe unir los TFs de todas
-        # las señales activas en lugar de reflejar solo los de momentum.
         timeframes_used=list(MOMENTUM_TIMEFRAMES),
         momentum_signal=momentum_result.signal,
+        mean_reversion_signal=compute_mean_reversion_signal(snapshot),
+        funding_signal=compute_funding_signal(snapshot),
+        open_interest_signal=compute_open_interest_signal(snapshot),
         raw_feature_refs={"momentum": momentum_result.rationale},
     )
