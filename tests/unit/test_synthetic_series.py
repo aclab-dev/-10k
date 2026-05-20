@@ -546,6 +546,10 @@ class TestFundingSignalSyntheticSeries:
         neg = compute_funding_signal(_snapshot(last_price=50000.0, funding_rate=-rate))
         assert abs(pos + neg) < 1e-9
 
+    def test_no_funding_rate_returns_zero(self) -> None:
+        snap = _snapshot(last_price=50000.0, funding_rate=None)
+        assert compute_funding_signal(snap) == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Tests — Open Interest
