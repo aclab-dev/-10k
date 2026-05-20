@@ -118,7 +118,7 @@ def calculate_liquidity_sweeps(snapshot: MarketSnapshot) -> LiquiditySweepResult
             "upper_wick": upper_wick,
             "wick_imbalance": wick_imbalance,
             "wick_fraction": wick_fraction,
-            "raw_score": wick_imbalance * wick_fraction,
+            "raw_score": raw_score,
             "normalized": normalized,
             "weight": _TF_WEIGHTS[tf],
             "threshold": threshold,
