@@ -76,18 +76,6 @@ def _wick_metrics(candle: CandleData) -> tuple[float, float, float]:
     return high - low, body_bot - low, high - body_top
 
 
-def _score_candle(
-    candle_range: float, lower_wick: float, upper_wick: float, threshold: float
-) -> float:
-    """Calcula el sweep score normalizado para una vela."""
-    if candle_range < _MIN_RANGE:
-        return 0.0
-    wick_imbalance = (lower_wick - upper_wick) / candle_range
-    wick_fraction = (lower_wick + upper_wick) / candle_range
-    raw_score = wick_imbalance * wick_fraction
-    return math.tanh(raw_score / threshold)
-
-
 def calculate_liquidity_sweeps(snapshot: MarketSnapshot) -> LiquiditySweepResult:
     """Calcula la señal de liquidity sweeps multi-timeframe a partir de un MarketSnapshot.
 
@@ -112,14 +100,17 @@ def calculate_liquidity_sweeps(snapshot: MarketSnapshot) -> LiquiditySweepResult
         candle = candles_by_tf[tf]
         candle_range, lower_wick, upper_wick = _wick_metrics(candle)
         threshold = _TF_SWEEP_THRESHOLD[tf]
-        normalized = _score_candle(candle_range, lower_wick, upper_wick, threshold)
 
         if candle_range >= _MIN_RANGE:
             wick_imbalance = (lower_wick - upper_wick) / candle_range
             wick_fraction = (lower_wick + upper_wick) / candle_range
+            raw_score = wick_imbalance * wick_fraction
+            normalized = math.tanh(raw_score / threshold)
         else:
             wick_imbalance = 0.0
             wick_fraction = 0.0
+            raw_score = 0.0
+            normalized = 0.0
 
         per_tf[tf] = {
             "candle_range": candle_range,

@@ -288,6 +288,18 @@ class TestLiquiditySweepEdgeCases:
         result = calculate_liquidity_sweeps(snap)
         assert result.signal == pytest.approx(0.0, abs=1e-9)
 
+    def test_flat_candle_zero_range_hits_min_range_guard(self) -> None:
+        # Vela completamente flat: high == low == open == close → candle_range == 0
+        d = Decimal("50000")
+        flat = CandleData(open=d, high=d, low=d, close=d, volume=Decimal("500"), n_candles=1)
+        snap = _snapshot(tf_5m=flat, tf_15m=flat, tf_1h=flat, tf_4h=flat)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.signal == pytest.approx(0.0, abs=1e-9)
+        for tf_data in result.rationale["timeframes"].values():
+            assert tf_data["wick_imbalance"] == pytest.approx(0.0)
+            assert tf_data["wick_fraction"] == pytest.approx(0.0)
+            assert tf_data["normalized"] == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # Determinismo y reproducibilidad
