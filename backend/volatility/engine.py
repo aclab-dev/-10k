@@ -46,10 +46,25 @@ def _atr_from_candle(candle: CandleData) -> Decimal:
 
 
 def _abs_roc(candle: CandleData) -> float:
-    """ROC intra-vela en valor absoluto: |close − open| / open."""
+    """ROC intra-vela en valor absoluto: |close − open| / open.
+
+    Mide solo el movimiento del cuerpo de la vela. No captura volatilidad de mechas.
+    """
     if candle.open == Decimal("0"):
         return 0.0
     return float(abs(candle.close - candle.open) / candle.open)
+
+
+def _range_vol(candle: CandleData) -> float:
+    """Volatilidad de rango intra-vela: (High − Low) / open.
+
+    Captura el movimiento total de la vela (cuerpo + mechas). Siempre ≥ _abs_roc.
+    Uso: proxy de realized_vol que detecta tanto cuerpos grandes como dojis de
+    mecha larga (wide range, flat body), caso ignorado por _abs_roc.
+    """
+    if candle.open == Decimal("0"):
+        return 0.0
+    return float((candle.high - candle.low) / candle.open)
 
 
 def _leverage_cap_for_score(score: float) -> int:
@@ -70,7 +85,8 @@ def compute_volatility_assessment(snapshot: MarketSnapshot) -> VolatilityAssessm
 
     Algoritmo:
       1. ATR por TF = High − Low (True Range aproximado, vela única).
-      2. realized_vol = media(|ROC intra-vela|) en los 4 TFs.
+      2. realized_vol = media((H−L)/open) en los 4 TFs — captura rango completo,
+         incluyendo dojis de mecha larga (wide range, flat body).
       3. volatility_score = tanh(realized_vol / threshold) → [0.0, 1.0].
       4. Régimen = EXPANSION si score ≥ threshold, CONTRACTION si no.
       5. leverage_cap = escalonado según score.
@@ -91,9 +107,11 @@ def compute_volatility_assessment(snapshot: MarketSnapshot) -> VolatilityAssessm
     # 2. ATR 1h como % del last_price
     atr_percent = float(atrs["1h"] / snapshot.last_price) * 100.0
 
-    # 3. Realized vol: media de |ROC intra-vela| en los 4 TFs
-    rocs: dict[str, float] = {tf: _abs_roc(c) for tf, c in candles.items()}
-    realized_vol = sum(rocs.values()) / len(rocs)
+    # 3. Realized vol: media de (H−L)/open en los 4 TFs.
+    # Se usa el rango completo (cuerpo + mechas) para capturar tanto cuerpos grandes
+    # como dojis de mecha larga (ej. open=close=50000, high=60000, low=40000).
+    range_vols: dict[str, float] = {tf: _range_vol(c) for tf, c in candles.items()}
+    realized_vol = sum(range_vols.values()) / len(range_vols)
 
     # 4. Volatility score [0.0, 1.0] — tanh con clip defensivo
     raw_score = math.tanh(realized_vol / _REALIZED_VOL_THRESHOLD)
@@ -118,7 +136,7 @@ def compute_volatility_assessment(snapshot: MarketSnapshot) -> VolatilityAssessm
         "timeframes": {
             tf: {
                 "atr": str(atrs[tf]),
-                "abs_roc": rocs[tf],
+                "range_vol": range_vols[tf],
             }
             for tf in ("5m", "15m", "1h", "4h")
         },

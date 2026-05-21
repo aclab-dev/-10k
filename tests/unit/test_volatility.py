@@ -6,6 +6,8 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from backend.core.config import Environment
 from backend.market_data.schemas import (
     CandleData,
@@ -21,6 +23,7 @@ from backend.volatility.engine import (
     _abs_roc,
     _atr_from_candle,
     _leverage_cap_for_score,
+    _range_vol,
     compute_volatility_assessment,
 )
 from backend.volatility.schemas import VolatilityRegime
@@ -320,6 +323,39 @@ class TestAtrValues:
         assert result.atr_percent >= 0.0
 
 
+class TestRangeVol:
+    def test_full_range_captured(self) -> None:
+        candle = _candle(open_price=100.0, close_price=100.0, high_price=110.0, low_price=90.0)
+        assert abs(_range_vol(candle) - 0.20) < 1e-9
+
+    def test_range_vol_gte_abs_roc(self) -> None:
+        """range_vol siempre >= abs_roc porque H−L >= |close−open|."""
+        for open_p, close_p, high_p, low_p in [
+            (100.0, 110.0, 115.0, 95.0),
+            (100.0, 90.0, 105.0, 88.0),
+            (100.0, 100.0, 120.0, 80.0),  # flat body, wide range
+        ]:
+            c = _candle(open_price=open_p, close_price=close_p, high_price=high_p, low_price=low_p)
+            assert _range_vol(c) >= _abs_roc(c)
+
+    def test_flat_body_wide_range_captured(self) -> None:
+        """Doji de mecha larga: body=0, rango=20%. Debe capturar volatilidad."""
+        candle = _candle(open_price=100.0, close_price=100.0, high_price=110.0, low_price=90.0)
+        assert _abs_roc(candle) == 0.0  # el cuerpo es plano...
+        assert _range_vol(candle) == pytest.approx(0.20)  # ...pero el rango es alto
+
+    def test_zero_open_does_not_raise(self) -> None:
+        candle = CandleData(
+            open=Decimal("0"),
+            high=Decimal("100"),
+            low=Decimal("0"),
+            close=Decimal("50"),
+            volume=Decimal("0"),
+            n_candles=1,
+        )
+        assert _range_vol(candle) == 0.0
+
+
 class TestRealizedVol:
     def test_flat_market_low_realized_vol(self) -> None:
         result = compute_volatility_assessment(_snapshot())
@@ -452,3 +488,31 @@ class TestEdgeCases:
         result = compute_volatility_assessment(snap)
         assert result.volatility_score <= 1.0
         assert result.liquidation_risk_score <= 1.0
+
+    def test_wide_range_flat_body_is_expansion_with_conservative_leverage(self) -> None:
+        """Caso Rodrigo: doji de mecha larga — body plano pero rango extremo.
+
+        open=50000, high=60000, low=40000, close=50000 → rango 40%, body 0%.
+        Con _abs_roc este caso daría CONTRACTION + leverage_cap 10x (bug).
+        Con _range_vol debe dar EXPANSION + leverage_cap conservador.
+        """
+        doji = _candle(
+            open_price=50000.0,
+            close_price=50000.0,
+            high_price=60000.0,
+            low_price=40000.0,
+        )
+        snap = _snapshot(
+            tf_5m=doji,
+            tf_15m=doji,
+            tf_1h=doji,
+            tf_4h=doji,
+            last_price=Decimal("50000"),
+        )
+        result = compute_volatility_assessment(snap)
+
+        # Rango = 20000/50000 = 40% → realized_vol = 0.40 → score ≈ 1.0
+        assert result.realized_vol == pytest.approx(0.40, rel=1e-3)
+        assert result.volatility_score > 0.99
+        assert result.volatility_regime == VolatilityRegime.EXPANSION
+        assert result.leverage_cap == 3  # cap más conservador

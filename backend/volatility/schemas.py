@@ -2,7 +2,7 @@
 
 Limitación conocida: MarketSnapshot expone una sola vela por timeframe, por lo que:
 - ATR ≈ High − Low (True Range sin prev_close).
-- realized_vol ≈ media de |ROC intra-vela| en los 4 TFs (proxy, no serie temporal).
+- realized_vol ≈ media de (H−L)/open en los 4 TFs — captura rango completo (cuerpo + mechas).
 Esta aproximación es aceptable mientras el contrato MarketSnapshot no exponga
 historia de velas por TF.
 """
@@ -63,7 +63,7 @@ class VolatilityAssessmentPackage(BaseModel):
     # ATR 1h como porcentaje del last_price (referencia principal)
     atr_percent: float = Field(ge=0.0)
 
-    # Realized vol proxy: media de |ROC intra-vela| en los 4 TFs
+    # Realized vol proxy: media de (H−L)/open en los 4 TFs (rango completo, no solo cuerpo)
     realized_vol: float = Field(ge=0.0)
 
     # Clasificación de régimen
