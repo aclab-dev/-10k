@@ -236,9 +236,7 @@ class TestVolumeConfirmation:
 
     def test_volume_factor_floor_is_respected(self) -> None:
         tf_5m_tiny = _candle(high=_BOX_TOP + 100, low=_BOX_TOP, volume=0.001)
-        result = calculate_breakout(
-            _snapshot(last_price=_BOX_TOP + 200, tf_5m=tf_5m_tiny)
-        )
+        result = calculate_breakout(_snapshot(last_price=_BOX_TOP + 200, tf_5m=tf_5m_tiny))
         assert result.rationale["volume"]["volume_factor"] >= _MIN_VOL_FACTOR
 
 

@@ -190,9 +190,9 @@ class TestSymbolVariety:
     @pytest.mark.parametrize(
         "closes,last_price",
         [
-            ((3000, 2900, 2800, 2700), 3100),   # ETH-like, precio sobre media
-            ((100, 99, 98, 97), 95),             # BNB-like, precio bajo media
-            ((2.0, 1.9, 1.8, 1.7), 2.1),        # XRP-like, precio sobre media
+            ((3000, 2900, 2800, 2700), 3100),  # ETH-like, precio sobre media
+            ((100, 99, 98, 97), 95),  # BNB-like, precio bajo media
+            ((2.0, 1.9, 1.8, 1.7), 2.1),  # XRP-like, precio sobre media
         ],
     )
     def test_signal_direction_across_price_levels(
