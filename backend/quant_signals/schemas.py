@@ -100,8 +100,7 @@ class QuantSignalsPackage(BaseModel):
         invalid = set(v) - _ALLOWED_TIMEFRAMES
         if invalid:
             raise ValueError(
-                f"Timeframes inválidos: {sorted(invalid)}."
-                f" Válidos: {sorted(_ALLOWED_TIMEFRAMES)}"
+                f"Timeframes inválidos: {sorted(invalid)}. Válidos: {sorted(_ALLOWED_TIMEFRAMES)}"
             )
         return v
 
@@ -118,9 +117,7 @@ class QuantSignalsPackage(BaseModel):
     @classmethod
     def individual_signal_in_range(cls, v: float | None) -> float | None:
         if v is not None and not (-1.0 <= v <= 1.0):
-            raise ValueError(
-                f"Las señales individuales deben estar en [-1.0, 1.0], recibido: {v}"
-            )
+            raise ValueError(f"Las señales individuales deben estar en [-1.0, 1.0], recibido: {v}")
         return v
 
     # ------------------------------------------------------------------
