@@ -129,25 +129,32 @@ Una vez recibida la confirmación del usuario:
    git clone https://github.com/aclab-dev/-10k.git ~/code/-10k
    ```
 
-2. Actualizar `develop`:
+2. **OBLIGATORIO — sin excepciones**: moverse a `develop` y actualizarlo, sin importar en qué branch esté parado actualmente. Nunca reutilizar el branch actual ni asumir que ya está en el estado correcto.
    ```bash
    cd ~/code/-10k
    git checkout develop
    git pull origin develop
    ```
+   Si `git pull` falla (conflictos, divergencia, etc.) → detener el flujo y reportar el error al usuario. No continuar.
 
-3. Crear el feature branch:
+3. Verificar que develop está limpio (sin cambios sin commitear):
+   ```bash
+   git status
+   ```
+   Si hay cambios sin commitear en develop → detener y notificar al usuario. No crear el feature branch sobre un develop sucio.
+
+4. Crear el feature branch **siempre desde develop**:
    ```bash
    git checkout -b FEATURE_BRANCH
    ```
 
-4. Invocar el **GH-AGENT** para marcar el issue como en progreso:
+5. Invocar el **GH-AGENT** para marcar el issue como en progreso:
    > Agregar el label `in-progress` al issue #`ISSUE_NUMBER` en `aclab-dev/-10k`.
    > Si el label no existe, crearlo con color `#0075ca`.
 
 Notificar al usuario:
 ```
-Branch FEATURE_BRANCH creado desde develop. Iniciando desarrollo...
+Branch FEATURE_BRANCH creado desde develop (actualizado). Iniciando desarrollo...
 ```
 
 ---
