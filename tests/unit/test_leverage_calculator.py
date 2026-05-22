@@ -69,8 +69,9 @@ class TestEnvCap:
     def test_testnet_cap(self) -> None:
         assert _env_cap(Environment.TESTNET, _DEFAULT_LEVERAGE_CONFIG) == 5
 
-    def test_live_uses_absolute_cap(self) -> None:
-        assert _env_cap(Environment.LIVE, _DEFAULT_LEVERAGE_CONFIG) == 5
+    def test_live_uses_initial_cap(self) -> None:
+        # LIVE usa el cap inicial (3x) — más conservador, sin phase tracking aún
+        assert _env_cap(Environment.LIVE, _DEFAULT_LEVERAGE_CONFIG) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -118,14 +119,15 @@ class TestEnvironmentCaps:
         )
         assert result.suggested_leverage <= 5
 
-    def test_live_never_exceeds_5x_absolute(self) -> None:
+    def test_live_never_exceeds_3x_initial(self) -> None:
+        # Cap LIVE inicial (3x) — conservador hasta que exista phase tracking
         result = compute_dynamic_leverage(
             _vol_assessment(leverage_cap=10),
             PrimaryRegime.TRENDING,
             Environment.LIVE,
             _DEFAULT_LEVERAGE_CONFIG,
         )
-        assert result.suggested_leverage <= 5
+        assert result.suggested_leverage <= 3
 
     def test_env_cap_stored_in_result(self) -> None:
         result = compute_dynamic_leverage(
@@ -135,6 +137,21 @@ class TestEnvironmentCaps:
             _DEFAULT_LEVERAGE_CONFIG,
         )
         assert result.env_cap == 5
+
+    def test_live_env_cap_is_initial_not_absolute(self) -> None:
+        """Verifica que LIVE usa max_leverage_live_initial (3x), no el absoluto (5x).
+
+        El cap absoluto (5x) es la garantía de nivel inferior del Risk Engine.
+        Aquí siempre aplicamos 3x hasta que exista phase tracking LIVE.
+        """
+        result = compute_dynamic_leverage(
+            _vol_assessment(leverage_cap=10),
+            PrimaryRegime.TRENDING,
+            Environment.LIVE,
+            _DEFAULT_LEVERAGE_CONFIG,
+        )
+        assert result.env_cap == 3
+        assert result.suggested_leverage == 3
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +259,7 @@ class TestEnvironmentRegimeInteraction:
             Environment.LIVE,
             _DEFAULT_LEVERAGE_CONFIG,
         )
-        assert result.suggested_leverage <= 5
+        assert result.suggested_leverage <= 3
 
     def test_regime_applies_before_env_cap(self) -> None:
         # vol_cap=4, UNCLEAR × 0.5 = floor(2) = 2 → env_cap TESTNET=5 → suggested=2

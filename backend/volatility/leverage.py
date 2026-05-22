@@ -61,13 +61,19 @@ class DynamicLeverageResult(BaseModel):
 
 
 def _env_cap(environment: Environment, cfg: LeverageConfig) -> int:
-    """Devuelve el tope duro de leverage para el entorno dado."""
+    """Devuelve el tope duro de leverage para el entorno dado.
+
+    Para LIVE se aplica el cap inicial (más conservador) porque el sistema
+    aún no implementa el mecanismo de promoción de fase LIVE inicial → absoluto.
+    El cap absoluto (5x) es una garantía de nivel inferior que se enforcea en
+    el Risk Engine; aquí siempre usamos 3x hasta que exista tracking de fase.
+    """
     if environment == Environment.PAPER:
         return cfg.max_leverage_paper
     if environment == Environment.TESTNET:
         return cfg.max_leverage_testnet
-    # LIVE: usar el tope absoluto (el inicial se aplica externamente según fase)
-    return cfg.max_leverage_live_absolute
+    # LIVE: cap inicial (3x) — conservador hasta que se implemente phase tracking
+    return cfg.max_leverage_live_initial
 
 
 # ---------------------------------------------------------------------------
