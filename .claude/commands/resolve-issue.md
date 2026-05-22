@@ -133,9 +133,9 @@ Una vez recibida la confirmación del usuario:
    ```bash
    cd ~/code/-10k
    git checkout develop
-   git pull origin develop
+   git pull --ff-only origin develop
    ```
-   Si `git pull` falla (conflictos, divergencia, etc.) → detener el flujo y reportar el error al usuario. No continuar.
+   Si `git pull --ff-only` falla (develop local divergió, conflictos, etc.) → detener el flujo y reportar el error al usuario. No continuar.
 
 3. Verificar que develop está limpio (sin cambios sin commitear):
    ```bash
