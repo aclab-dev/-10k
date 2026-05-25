@@ -12,7 +12,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.core.config import Environment, MarginType, PositionMode
 from backend.market_data.schemas import _ALLOWED_SYMBOLS
+from backend.market_regime.schemas import PrimaryRegime
 
 DECISION_SCHEMA_VERSION = "1.0"
 CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
@@ -157,7 +159,7 @@ class ModelDecision(BaseModel):
     decision_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     challenge_mode: str = Field(default=CHALLENGE_MODE)
     schema_version: str = Field(default=DECISION_SCHEMA_VERSION)
-    environment: str
+    environment: Environment
     timestamp_utc: str
 
     # Decisión
@@ -165,8 +167,8 @@ class ModelDecision(BaseModel):
     symbol: str
     market: str = Field(default="USDT_M_FUTURES")
     exchange_preference: str = Field(default="BINGX")
-    margin_type: str = Field(default="ISOLATED")
-    position_mode: str = Field(default="ONE_WAY")
+    margin_type: MarginType = Field(default=MarginType.ISOLATED)
+    position_mode: PositionMode = Field(default=PositionMode.ONE_WAY)
     entry_type: EntryType
     entry_price: float = Field(ge=0.0)
     stop_loss: float = Field(ge=0.0)
@@ -181,13 +183,13 @@ class ModelDecision(BaseModel):
     estimated_exit_fee_usdt: float = Field(ge=0.0)
     estimated_slippage_usdt: float = Field(ge=0.0)
     estimated_funding_usdt: float = Field(ge=0.0)
-    net_risk_reward: float
+    net_risk_reward: float = Field(ge=0.0)
     estimated_max_loss_usdt: float = Field(ge=0.0)
     liquidation_distance_percent_estimated: float = Field(ge=0.0)
 
     # Evaluación
     confidence: float = Field(ge=0.0, le=1.0)
-    market_regime: str
+    market_regime: PrimaryRegime
     setup_name: str
     timeframes_used: list[str]
 
@@ -242,4 +244,11 @@ class ModelDecision(BaseModel):
                 raise ValueError("stop_loss > 0 requerido cuando execute=True")
             if self.take_profit <= 0:
                 raise ValueError("take_profit > 0 requerido cuando execute=True")
+        return self
+
+    @model_validator(mode="after")
+    def execute_requires_minimum_rr(self) -> ModelDecision:
+        if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
+            if self.net_risk_reward < 1.5:
+                raise ValueError("net_risk_reward >= 1.5 requerido cuando execute=True")
         return self

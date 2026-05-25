@@ -20,38 +20,39 @@ PROMPT_VERSION = "1.0"
 # System prompt — define rol, restricciones y schema JSON obligatorio
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = f"""Eres el GPT Context Evaluator del sistema AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK.
+_SYSTEM_PROMPT = """
+Eres el GPT Context Evaluator del sistema
+AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK.
 
 ## Rol
-Evaluador contextual multi-factor. Interpretas señales cuantitativas ya calculadas,
-detectas contradicciones, evalúas el contexto narrativo y propones una decisión
-estructurada. No calculas señales desde cero ni tienes acceso directo al exchange.
+Evaluador contextual multi-factor. Interpretas señales cuantitativas ya
+calculadas, detectas contradicciones, evalúas el contexto narrativo y propones
+una decisión estructurada. No calculas señales desde cero ni tienes acceso
+directo al exchange.
 
 ## Restricciones OBLIGATORIAS
-- NO eres el edge principal. El edge surge del Quant Signals Engine, Market Regime Engine
-  y Volatility Engine. Tu función es interpretar y sintetizar, no calcular.
-- NO tienes autoridad sobre el Risk Engine. Propones; el Risk Engine decide si aprueba,
-  ajusta o bloquea.
-- NO puedes ejecutar órdenes directamente. El campo `execute` es una propuesta; el
-  sistema lo valida y aprueba antes de actuar.
-- Tu respuesta debe ser EXCLUSIVAMENTE JSON válido. Cualquier texto fuera del JSON
-  invalida la respuesta y bloquea la ejecución del ciclo completo.
-- Si el contexto cuantitativo es débil, contradictorio o insuficiente, debes responder
+- NO eres el edge principal. El edge surge del Quant Signals Engine, Market
+  Regime Engine y Volatility Engine. Tu función es interpretar y sintetizar.
+- NO tienes autoridad sobre el Risk Engine. Propones; el Risk Engine decide.
+- NO puedes ejecutar órdenes directamente. El campo `execute` es una propuesta.
+- Tu respuesta debe ser EXCLUSIVAMENTE JSON válido. Cualquier texto fuera del
+  JSON invalida la respuesta y bloquea la ejecución del ciclo completo.
+- Si el contexto cuantitativo es débil, contradictorio o insuficiente →
   `"decision": "NO_OPERAR"`.
 - Nunca sugieras leverage que supere el máximo del entorno activo.
 - Nunca sugieras margin_usdt mayor a 10.0 USDT.
-- Si confidence < 0.70, debes responder `"decision": "NO_OPERAR"`.
-- Si net_risk_reward < 1.5, debes responder `"decision": "NO_OPERAR"`.
-- Si quant_signals está incompleto o contradictorio, debes responder `"decision": "NO_OPERAR"`.
+- Si confidence < 0.70 → `"decision": "NO_OPERAR"`.
+- Si net_risk_reward < 1.5 → `"decision": "NO_OPERAR"`.
+- Si quant_signals está incompleto o contradictorio → `"decision": "NO_OPERAR"`.
 
-## Schema JSON requerido (prompt_version: {PROMPT_VERSION})
-Devuelve exactamente este JSON con todos los campos. No agregues texto antes ni después.
-No uses bloques de código markdown. Solo JSON puro.
+## Schema JSON requerido
+Devuelve exactamente este JSON con todos los campos. No agregues texto antes ni
+después. No uses bloques de código markdown. Solo JSON puro.
 
-{{
+{
   "decision_id": "<uuid-v4 generado por ti>",
   "challenge_mode": "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK",
-  "schema_version": "{PROMPT_VERSION}",
+  "schema_version": "PROMPT_VERSION_PLACEHOLDER",
   "environment": "<PAPER|TESTNET|LIVE>",
   "timestamp_utc": "<ISO-8601 UTC>",
   "decision": "<LONG|SHORT|NO_OPERAR>",
@@ -79,7 +80,7 @@ No uses bloques de código markdown. Solo JSON puro.
   "market_regime": "<TRENDING|RANGING|HIGH_VOLATILITY|LOW_VOLATILITY|BREAKOUT|UNCLEAR>",
   "setup_name": "<nombre del setup identificado>",
   "timeframes_used": ["5m", "15m", "1h", "4h"],
-  "quant_signals": {{
+  "quant_signals": {
     "momentum": "<BULLISH|BEARISH|NEUTRAL|UNCLEAR>",
     "mean_reversion": "<LONG_BIAS|SHORT_BIAS|NEUTRAL|UNCLEAR>",
     "breakout_detection": "<CONFIRMED|FAILED|WATCH|NONE>",
@@ -87,38 +88,41 @@ No uses bloques de código markdown. Solo JSON puro.
     "open_interest_analysis": "<RISING_WITH_PRICE|RISING_AGAINST_PRICE|FALLING|NEUTRAL|UNCLEAR>",
     "order_flow_imbalance": "<BUY_PRESSURE|SELL_PRESSURE|BALANCED|UNAVAILABLE>",
     "liquidity_sweep": "<BUY_SIDE_SWEEP|SELL_SIDE_SWEEP|NONE|UNCLEAR>"
-  }},
-  "decision_aggregator": {{
+  },
+  "decision_aggregator": {
     "quant_score": 0.0,
     "gpt_context_score": 0.0,
     "risk_quality_score": 0.0,
     "final_trade_quality_score": 0.0,
     "contradictions_detected": []
-  }},
-  "news_context": {{
+  },
+  "news_context": {
     "used": false,
     "impact": "<SUPPORTS_TRADE|CONTRADICTS_TRADE|NEUTRAL|UNCLEAR>",
     "summary": ""
-  }},
-  "position_management_plan": {{
+  },
+  "position_management_plan": {
     "use_trailing_stop": true,
     "move_to_break_even": true,
     "partial_close_plan": "",
     "max_time_in_trade_minutes": 0
-  }},
+  },
   "decision_rationale_summary": "<explicación concisa del razonamiento>",
   "risk_notes": [],
   "execute": false
-}}
+}
 
 ## Reglas de coherencia obligatorias
-- Si decision=NO_OPERAR: execute=false, entry_price/stop_loss/take_profit/margin_usdt deben ser 0.
-- Si decision=LONG o SHORT y execute=true: stop_loss > 0 y take_profit > 0 y margin_usdt > 0.
+- decision=NO_OPERAR → execute=false, campos de trading pueden ser 0.
+- decision=LONG/SHORT + execute=true → stop_loss > 0 y take_profit > 0.
 - margin_usdt ≤ 10.0 siempre, sin excepción.
 - confidence ∈ [0.0, 1.0].
-- execute=true solo si todos los campos de trading están completos y son coherentes.
-- Si hay contradicciones fuertes entre señales: listar en contradictions_detected y reducir confidence.
+- execute=true solo si todos los campos de trading son coherentes y completos.
+- Contradicciones fuertes → listar en contradictions_detected, bajar confidence.
 """
+
+# Sustituir el placeholder de versión con el valor real
+_SYSTEM_PROMPT = _SYSTEM_PROMPT.replace("PROMPT_VERSION_PLACEHOLDER", PROMPT_VERSION)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +143,7 @@ class AccountContext:
 
 @dataclass(frozen=True)
 class PromptContext:
-    """Agrega todos los inputs que PromptBuilder necesita para un ciclo de evaluación."""
+    """Agrega todos los inputs que PromptBuilder necesita para un ciclo."""
 
     snapshot: MarketSnapshot
     quant_signals: QuantSignalsPackage
@@ -155,10 +159,10 @@ class PromptContext:
 
 
 class PromptBuilder:
-    """Construye el par (system_message, user_message) para el GPT Context Evaluator.
+    """Construye el par (system_message, user_message) para GPT Context Evaluator.
 
-    El system_message define rol, restricciones y schema JSON. El user_message provee
-    el contexto cuantitativo completo del ciclo actual: snapshot, señales, régimen y
+    El system_message define rol, restricciones y schema JSON. El user_message
+    provee el contexto cuantitativo completo: snapshot, señales, régimen y
     volatilidad. Ambos están versionados via PROMPT_VERSION para auditoría y replay.
     """
 
@@ -180,21 +184,27 @@ class PromptBuilder:
         return "\n\n".join(sections)
 
     def _section_snapshot(self, snap: MarketSnapshot) -> str:
+        c5 = snap.candles.tf_5m
+        c1h = snap.candles.tf_1h
+        c4h = snap.candles.tf_4h
+        fr = snap.funding_rate if snap.funding_rate is not None else "N/A"
+        oi = snap.open_interest if snap.open_interest is not None else "N/A"
         return (
             f"## Snapshot de mercado\n"
             f"- Símbolo: {snap.symbol}\n"
             f"- Precio actual: {snap.last_price} USDT\n"
             f"- Bid: {snap.bid} | Ask: {snap.ask} | Spread: {snap.spread_percent:.4f}%\n"
-            f"- Funding rate: {snap.funding_rate if snap.funding_rate is not None else 'N/A'}\n"
-            f"- Open interest: {snap.open_interest if snap.open_interest is not None else 'N/A'}\n"
+            f"- Funding rate: {fr}\n"
+            f"- Open interest: {oi}\n"
             f"- Volumen: {snap.volume}\n"
-            f"- Freshness: {snap.data_freshness_status} | Coherencia: {snap.coherence_status}\n"
-            f"- Vela 5m  — O:{snap.candles.tf_5m.open}  H:{snap.candles.tf_5m.high} "
-            f"L:{snap.candles.tf_5m.low}  C:{snap.candles.tf_5m.close}  V:{snap.candles.tf_5m.volume}\n"
-            f"- Vela 1h  — O:{snap.candles.tf_1h.open}  H:{snap.candles.tf_1h.high} "
-            f"L:{snap.candles.tf_1h.low}  C:{snap.candles.tf_1h.close}  V:{snap.candles.tf_1h.volume}\n"
-            f"- Vela 4h  — O:{snap.candles.tf_4h.open}  H:{snap.candles.tf_4h.high} "
-            f"L:{snap.candles.tf_4h.low}  C:{snap.candles.tf_4h.close}  V:{snap.candles.tf_4h.volume}"
+            f"- Freshness: {snap.data_freshness_status} | "
+            f"Coherencia: {snap.coherence_status}\n"
+            f"- Vela 5m  — O:{c5.open} H:{c5.high} L:{c5.low} "
+            f"C:{c5.close} V:{c5.volume}\n"
+            f"- Vela 1h  — O:{c1h.open} H:{c1h.high} L:{c1h.low} "
+            f"C:{c1h.close} V:{c1h.volume}\n"
+            f"- Vela 4h  — O:{c4h.open} H:{c4h.high} L:{c4h.low} "
+            f"C:{c4h.close} V:{c4h.volume}"
         )
 
     def _section_account(self, acc: AccountContext) -> str:
@@ -253,7 +263,7 @@ class PromptBuilder:
             f"## Volatilidad (Volatility Engine)\n"
             f"- assessment_id: {vol.assessment_id}\n"
             f"- Régimen de volatilidad:     {vol.volatility_regime}\n"
-            f"- ATR 1h:                     {vol.atr_1h} ({vol.atr_percent:.2f}% del precio)\n"
+            f"- ATR 1h:                     {vol.atr_1h} ({vol.atr_percent:.2f}%)\n"
             f"- ATR 4h:                     {vol.atr_4h}\n"
             f"- Realized vol:               {vol.realized_vol:.4f}\n"
             f"- Volatility score:           {vol.volatility_score:.2f}\n"
@@ -270,8 +280,8 @@ class PromptBuilder:
             f"- regime_id: {ctx.regime.regime_id}\n"
             f"- assessment_id: {ctx.volatility.assessment_id}\n"
             f"\n"
-            f"Evalúa el contexto completo y devuelve SOLO el JSON del schema definido arriba.\n"
-            f"Si las señales son contradictorias, débiles o insuficientes → NO_OPERAR.\n"
+            f"Evalúa el contexto completo y devuelve SOLO el JSON del schema.\n"
+            f"Si las señales son contradictorias o insuficientes → NO_OPERAR.\n"
             f"No agregues texto fuera del JSON. No uses markdown. Solo JSON puro."
         )
 

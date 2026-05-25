@@ -181,7 +181,7 @@ class TestModelDecisionConstruction:
     def test_model_is_frozen(self) -> None:
         d = _decision()
         with pytest.raises(ValidationError):
-            d.execute = True  # type: ignore[misc]
+            d.execute = True
 
 
 # ---------------------------------------------------------------------------
