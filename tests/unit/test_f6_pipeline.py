@@ -111,9 +111,10 @@ def _snapshot(
     candle_15m: CandleData | None = None,
     candle_1h: CandleData | None = None,
     candle_4h: CandleData | None = None,
+    snapshot_id: str | None = None,
 ) -> MarketSnapshot:
     return MarketSnapshot(
-        snapshot_id=str(uuid.uuid4()),
+        snapshot_id=snapshot_id or str(uuid.uuid4()),
         timestamp_utc=_NOW,
         exchange=Exchange.PAPER,
         environment=Environment.PAPER,
@@ -424,36 +425,39 @@ class TestLowVolatilityPipeline:
         assert vol.volatility_regime == self._EXPECTED_VOL_REGIME
 
     def test_dynamic_leverage_at_maximum_paper(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
         vol = compute_volatility_assessment(snapshot)
         lev = compute_dynamic_leverage(
             vol_assessment=vol,
-            regime=PrimaryRegime.LOW_VOLATILITY,
+            regime=regime.primary_regime,
             environment=Environment.PAPER,
             leverage_config=_LEVERAGE_CFG,
         )
         assert lev.suggested_leverage == self._EXPECTED_DYNAMIC_LEVERAGE
 
     def test_dynamic_leverage_testnet_capped(self, snapshot: MarketSnapshot) -> None:
-        """TESTNET env_cap (5x) overrides LOW_VOL regime_adjusted (10x)."""
+        """TESTNET env_cap (5x) overrides LOW_VOL regime_adjusted (10x): min(10, 5) = 5."""
+        regime = MarketRegimeEngine().assess(snapshot)
         vol = compute_volatility_assessment(snapshot)
         lev = compute_dynamic_leverage(
             vol_assessment=vol,
-            regime=PrimaryRegime.LOW_VOLATILITY,
+            regime=regime.primary_regime,
             environment=Environment.TESTNET,
             leverage_config=_LEVERAGE_CFG,
         )
-        assert lev.suggested_leverage <= _LEVERAGE_CFG.max_leverage_testnet
+        assert lev.suggested_leverage == _LEVERAGE_CFG.max_leverage_testnet
 
     def test_dynamic_leverage_live_capped(self, snapshot: MarketSnapshot) -> None:
-        """LIVE env_cap (3x initial) overrides LOW_VOL regime_adjusted (10x)."""
+        """LIVE env_cap (3x initial) overrides LOW_VOL regime_adjusted (10x): min(10, 3) = 3."""
+        regime = MarketRegimeEngine().assess(snapshot)
         vol = compute_volatility_assessment(snapshot)
         lev = compute_dynamic_leverage(
             vol_assessment=vol,
-            regime=PrimaryRegime.LOW_VOLATILITY,
+            regime=regime.primary_regime,
             environment=Environment.LIVE,
             leverage_config=_LEVERAGE_CFG,
         )
-        assert lev.suggested_leverage <= _LEVERAGE_CFG.max_leverage_live_initial
+        assert lev.suggested_leverage == _LEVERAGE_CFG.max_leverage_live_initial
 
     def test_feature_package_has_all_keys(self, snapshot: MarketSnapshot) -> None:
         regime = MarketRegimeEngine().assess(snapshot)
@@ -496,11 +500,16 @@ class TestPipelineDeterminism:
         assert h1 == h2
 
     def test_different_snapshots_different_hash(self) -> None:
+        # Same snapshot_id to isolate: only candle data differs → hash must differ
+        # because features (ATR, vol_score, regime) are computed from candle data.
+        fixed_id = str(uuid.uuid4())
         snap_1h_high = _snapshot(
-            candle_1h=_candle(open="49000", high="52200", low="48000", close="50000")
+            candle_1h=_candle(open="49000", high="52200", low="48000", close="50000"),
+            snapshot_id=fixed_id,
         )
         snap_1h_low = _snapshot(
-            candle_1h=_candle(open="49960", high="50010", low="49910", close="49980")
+            candle_1h=_candle(open="49960", high="50010", low="49910", close="49980"),
+            snapshot_id=fixed_id,
         )
         h_high = self._run_pipeline(snap_1h_high)
         h_low = self._run_pipeline(snap_1h_low)
