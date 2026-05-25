@@ -15,7 +15,6 @@ Scenarios:
 
 from __future__ import annotations
 
-import math
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -331,20 +330,22 @@ class TestHighVolatilityPipeline:
     def test_dynamic_leverage_reduced_by_high_vol_multiplier(
         self, snapshot: MarketSnapshot
     ) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
         vol = compute_volatility_assessment(snapshot)
         lev = compute_dynamic_leverage(
             vol_assessment=vol,
-            regime=PrimaryRegime.HIGH_VOLATILITY,
+            regime=regime.primary_regime,
             environment=Environment.PAPER,
             leverage_config=_LEVERAGE_CFG,
         )
         assert lev.suggested_leverage == self._EXPECTED_DYNAMIC_LEVERAGE
 
     def test_dynamic_leverage_does_not_exceed_env_cap(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
         vol = compute_volatility_assessment(snapshot)
         lev = compute_dynamic_leverage(
             vol_assessment=vol,
-            regime=PrimaryRegime.HIGH_VOLATILITY,
+            regime=regime.primary_regime,
             environment=Environment.PAPER,
             leverage_config=_LEVERAGE_CFG,
         )
