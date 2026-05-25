@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from backend.feature_engineering.normalization import canonicalize
-from backend.market_data.schemas import _ALLOWED_SYMBOLS
+from backend.market_data.schemas import ALLOWED_SYMBOLS
 
 FEATURE_PACKAGE_VERSION = "1.0"
 
@@ -37,6 +37,11 @@ class FeatureEngineeringPackage(BaseModel):
 
     The `features_hash` is derived from version + features + source versions so
     downstream code can detect semantic changes in the feature payload.
+
+    `features_hash` is always computed automatically. Passing an explicit value
+    is supported for deserialization round-trips; it is validated against the
+    recomputed hash and a ValueError is raised if it does not match.
+    After construction this field is always a non-None str.
     """
 
     package_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -45,6 +50,7 @@ class FeatureEngineeringPackage(BaseModel):
     timestamp_utc: datetime
     version: str = FEATURE_PACKAGE_VERSION
     features: dict[str, Any]
+    # None only during Pydantic construction — always set to a str by model_post_init.
     features_hash: str | None = None
     source_versions: dict[str, str] = Field(default_factory=dict)
     details: dict[str, Any] = Field(default_factory=dict)
@@ -52,16 +58,17 @@ class FeatureEngineeringPackage(BaseModel):
     model_config = {"frozen": True}
 
     def model_post_init(self, __context: Any) -> None:
-        if self.features_hash is None:
-            object.__setattr__(
-                self,
-                "features_hash",
-                compute_features_hash(
-                    self.features,
-                    version=self.version,
-                    source_versions=self.source_versions,
-                ),
+        expected = compute_features_hash(
+            self.features,
+            version=self.version,
+            source_versions=self.source_versions,
+        )
+        if self.features_hash is not None and self.features_hash != expected:
+            raise ValueError(
+                f"Provided features_hash does not match the recomputed hash. "
+                f"Expected {expected!r}, got {self.features_hash!r}."
             )
+        object.__setattr__(self, "features_hash", expected)
 
     @field_validator("package_id", "snapshot_id")
     @classmethod
@@ -75,8 +82,8 @@ class FeatureEngineeringPackage(BaseModel):
     @field_validator("symbol")
     @classmethod
     def symbol_allowed(cls, value: str) -> str:
-        if value not in _ALLOWED_SYMBOLS:
-            raise ValueError(f"Symbol '{value}' not allowed. Valid: {sorted(_ALLOWED_SYMBOLS)}")
+        if value not in ALLOWED_SYMBOLS:
+            raise ValueError(f"Symbol '{value}' not allowed. Valid: {sorted(ALLOWED_SYMBOLS)}")
         return value
 
     @field_validator("timestamp_utc")
@@ -97,7 +104,13 @@ class FeatureEngineeringPackage(BaseModel):
         return value
 
     def to_db_kwargs(self, bot_run_id: str) -> dict[str, Any]:
-        """Return kwargs compatible with storage.models.FeaturePackage."""
+        """Return kwargs compatible with storage.models.FeaturePackage.
+
+        Note: `source_versions` and `details` are intentionally excluded —
+        the feature_packages table has no columns for them. They live only
+        in the in-memory package and are available for downstream consumers
+        before persistence.
+        """
         return {
             "id": self.package_id,
             "bot_run_id": bot_run_id,

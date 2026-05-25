@@ -46,7 +46,11 @@ def percent_feature(value: float | Decimal | None, *, cap: float = 100.0) -> flo
 
 
 def enum_feature(value: Enum | str | None) -> str | None:
-    """Return the stable string representation for enums used in feature payloads."""
+    """Return the stable string representation for enums used in feature payloads.
+
+    Returns None when value is None — callers and downstream consumers of the
+    features dict should expect str | None for enum-typed features.
+    """
     if value is None:
         return None
     if isinstance(value, Enum):

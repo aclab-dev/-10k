@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from backend.feature_engineering.normalization import (
     enum_feature,
@@ -15,6 +15,10 @@ from backend.feature_engineering.schemas import FEATURE_PACKAGE_VERSION, Feature
 from backend.market_regime.schemas import MarketRegimeAssessment
 from backend.quant_signals.schemas import QuantSignalsPackage
 from backend.volatility.schemas import VolatilityAssessmentPackage
+
+# Maximum leverage cap produced by the volatility engine (highest band in engine.py).
+# Used to normalize leverage_cap into [0, 1] for homogeneous feature vectors.
+_MAX_LEVERAGE_CAP: Final[int] = 10
 
 
 def build_feature_package(
@@ -56,7 +60,7 @@ def build_feature_package(
         "volatility.realized_vol": optional_float(volatility.realized_vol),
         "volatility.regime": enum_feature(volatility.volatility_regime),
         "volatility.score": score_feature(volatility.volatility_score),
-        "volatility.leverage_cap": volatility.leverage_cap,
+        "volatility.leverage_cap": score_feature(volatility.leverage_cap / _MAX_LEVERAGE_CAP),
         "volatility.liquidation_risk_score": score_feature(volatility.liquidation_risk_score),
     }
 

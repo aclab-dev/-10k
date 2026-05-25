@@ -6,11 +6,10 @@ import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from backend.feature_engineering import (
     FEATURE_PACKAGE_VERSION,
@@ -35,8 +34,7 @@ from backend.market_regime.schemas import (
     VolatilityState,
 )
 from backend.quant_signals.schemas import QuantSignalsPackage
-from backend.storage.database import Base
-from backend.storage.models import BotRun
+from backend.storage.models import FeaturePackage
 from backend.volatility.schemas import VolatilityAssessmentPackage, VolatilityRegime
 
 
@@ -127,6 +125,10 @@ class TestNormalization:
         assert clamp(2.0, 0.0, 1.0) == 1.0
         assert clamp(-1.0, 0.0, 1.0) == 0.0
 
+    def test_clamp_invalid_bounds_raises(self) -> None:
+        with pytest.raises(ValueError, match="minimum cannot be greater than maximum"):
+            clamp(0.5, 1.0, 0.0)
+
     def test_signal_feature_uses_neutral_for_none(self) -> None:
         assert signal_feature(None) == 0.0
 
@@ -140,6 +142,10 @@ class TestNormalization:
 
     def test_percent_feature_normalizes_by_cap(self) -> None:
         assert percent_feature(50.0, cap=100.0) == 0.5
+
+    def test_percent_feature_invalid_cap_raises(self) -> None:
+        with pytest.raises(ValueError, match="cap must be positive"):
+            percent_feature(0.5, cap=0.0)
 
 
 class TestFeatureEngineeringPackage:
@@ -206,6 +212,26 @@ class TestFeatureEngineeringPackage:
         assert kwargs["version"] == FEATURE_PACKAGE_VERSION
         assert kwargs["features_hash"] == pkg.features_hash
         assert kwargs["features"] == pkg.features
+        # source_versions and details are intentionally excluded: no columns in DB model.
+        assert "source_versions" not in kwargs
+        assert "details" not in kwargs
+
+    def test_external_hash_matching_content_is_accepted(self) -> None:
+        pkg = _package()
+        assert pkg.features_hash is not None
+        pkg2 = _package(
+            snapshot_id=pkg.snapshot_id,
+            timestamp_utc=pkg.timestamp_utc,
+            features=pkg.features,
+            source_versions=pkg.source_versions,
+            features_hash=pkg.features_hash,
+        )
+        assert pkg2.features_hash == pkg.features_hash
+
+    def test_external_hash_mismatching_content_raises(self) -> None:
+        valid_but_wrong_hash = "a" * 64
+        with pytest.raises(ValueError, match="does not match the recomputed hash"):
+            _package(features_hash=valid_but_wrong_hash)
 
 
 class TestBuildFeaturePackage:
@@ -218,7 +244,8 @@ class TestBuildFeaturePackage:
         )
         assert pkg.features["signal.momentum"] == 0.4
         assert pkg.features["regime.primary"] == "TRENDING"
-        assert pkg.features["volatility.leverage_cap"] == 7
+        # leverage_cap=7, _MAX_LEVERAGE_CAP=10 → 7/10 = 0.7
+        assert pkg.features["volatility.leverage_cap"] == pytest.approx(0.7, abs=1e-7)
         assert pkg.source_versions["feature_engineering"] == FEATURE_PACKAGE_VERSION
 
     def test_pipeline_is_reproducible_for_same_inputs(self) -> None:
@@ -280,30 +307,59 @@ class TestBuildFeaturePackage:
 
 
 class TestFeatureStore:
-    def test_save_persists_in_feature_packages_and_get_by_hash(self) -> None:
-        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-        Base.metadata.create_all(engine)
-        try:
-            with Session(engine) as session:
-                run = BotRun(
-                    environment="PAPER",
-                    app_version="0.1.0",
-                    config_snapshot={"test": True},
-                    status="RUNNING",
-                )
-                session.add(run)
-                session.flush()
+    """Unit tests for FeatureStore — repository is mocked, no DB required."""
 
-                package = _package()
-                store = FeatureStore(session)
-                saved = store.save(package, bot_run_id=run.id)
+    def _make_store(self) -> tuple[FeatureStore, MagicMock]:
+        """Return a FeatureStore wired to a mock repository and the mock itself."""
+        mock_session = MagicMock()
+        store = FeatureStore(mock_session)
+        mock_repo = MagicMock()
+        store._repo = mock_repo
+        return store, mock_repo
 
-                assert saved.features_hash == package.features_hash
-                found = store.get_by_hash(package.features_hash or "")
-                assert found is not None
-                assert found.id == package.package_id
-                latest = store.get_latest_by_symbol(run.id, package.symbol)
-                assert latest is not None
-                assert latest.features_hash == package.features_hash
-        finally:
-            Base.metadata.drop_all(engine)
+    def test_save_delegates_to_repository(self) -> None:
+        store, mock_repo = self._make_store()
+        package = _package()
+        bot_run_id = str(uuid.uuid4())
+
+        db_record = MagicMock(spec=FeaturePackage)
+        db_record.features_hash = package.features_hash
+        db_record.id = package.package_id
+        mock_repo.save.return_value = db_record
+
+        result = store.save(package, bot_run_id=bot_run_id)
+
+        mock_repo.save.assert_called_once()
+        saved_kwargs = mock_repo.save.call_args[0][0]
+        assert saved_kwargs.features_hash == package.features_hash
+        assert result.features_hash == package.features_hash
+
+    def test_get_by_hash_delegates_to_repository(self) -> None:
+        store, mock_repo = self._make_store()
+        package = _package()
+        assert package.features_hash is not None
+
+        db_record = MagicMock(spec=FeaturePackage)
+        db_record.id = package.package_id
+        mock_repo.get_by_hash.return_value = db_record
+
+        result = store.get_by_hash(package.features_hash)
+
+        mock_repo.get_by_hash.assert_called_once_with(package.features_hash)
+        assert result is db_record
+
+    def test_get_by_hash_returns_none_when_not_found(self) -> None:
+        store, mock_repo = self._make_store()
+        mock_repo.get_by_hash.return_value = None
+        assert store.get_by_hash("a" * 64) is None
+
+    def test_get_latest_by_symbol_delegates_to_repository(self) -> None:
+        store, mock_repo = self._make_store()
+        bot_run_id = str(uuid.uuid4())
+        db_record = MagicMock(spec=FeaturePackage)
+        mock_repo.get_latest_by_symbol.return_value = db_record
+
+        result = store.get_latest_by_symbol(bot_run_id, "BTCUSDT")
+
+        mock_repo.get_latest_by_symbol.assert_called_once_with(bot_run_id, "BTCUSDT")
+        assert result is db_record
