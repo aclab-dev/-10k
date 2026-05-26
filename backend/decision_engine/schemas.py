@@ -8,12 +8,14 @@ al Risk Engine. Cualquier campo fuera de rango o enum inválido → BLOCK.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.core.config import Environment, MarginType, PositionMode
-from backend.market_data.schemas import _ALLOWED_SYMBOLS
+from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.market_regime.schemas import PrimaryRegime
 
 DECISION_SCHEMA_VERSION = "1.0"
@@ -160,13 +162,13 @@ class ModelDecision(BaseModel):
     challenge_mode: str = Field(default=CHALLENGE_MODE)
     schema_version: str = Field(default=DECISION_SCHEMA_VERSION)
     environment: Environment
-    timestamp_utc: str
+    timestamp_utc: datetime
 
     # Decisión
     decision: DecisionType
     symbol: str
-    market: str = Field(default="USDT_M_FUTURES")
-    exchange_preference: str = Field(default="BINGX")
+    market: Literal["USDT_M_FUTURES"] = "USDT_M_FUTURES"
+    exchange_preference: Literal["BINGX"] = "BINGX"
     margin_type: MarginType = Field(default=MarginType.ISOLATED)
     position_mode: PositionMode = Field(default=PositionMode.ONE_WAY)
     entry_type: EntryType
@@ -220,8 +222,8 @@ class ModelDecision(BaseModel):
     @field_validator("symbol")
     @classmethod
     def symbol_allowed(cls, v: str) -> str:
-        if v not in _ALLOWED_SYMBOLS:
-            raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(_ALLOWED_SYMBOLS)}")
+        if v not in ALLOWED_SYMBOLS:
+            raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(ALLOWED_SYMBOLS)}")
         return v
 
     @field_validator("challenge_mode")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -26,6 +27,7 @@ from backend.decision_engine.schemas import (
     PositionManagementPlan,
     QuantSignalsSection,
 )
+from backend.market_data.schemas import ALLOWED_SYMBOLS
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -229,6 +231,31 @@ class TestModelDecisionValidations:
     def test_negative_stop_loss_rejected(self) -> None:
         with pytest.raises(ValidationError):
             _decision(stop_loss=-1.0)
+
+    def test_invalid_market_rejected(self) -> None:
+        """market debe ser exactamente 'USDT_M_FUTURES' — Fix 5."""
+        with pytest.raises(ValidationError):
+            _decision(market="COIN_M_FUTURES")
+
+    def test_invalid_exchange_preference_rejected(self) -> None:
+        """exchange_preference debe ser exactamente 'BINGX' — Fix 5."""
+        with pytest.raises(ValidationError):
+            _decision(exchange_preference="BYBIT")
+
+    def test_timestamp_utc_parses_iso8601_string(self) -> None:
+        """Pydantic coerciona un string ISO-8601 a datetime — Fix 3."""
+        d = _decision(timestamp_utc="2026-05-25T10:00:00Z")
+        assert isinstance(d.timestamp_utc, datetime)
+
+    def test_timestamp_utc_accepts_datetime_object(self) -> None:
+        """datetime directo también es válido — Fix 3."""
+        d = _decision(timestamp_utc=datetime.now(UTC))
+        assert isinstance(d.timestamp_utc, datetime)
+
+    def test_allowed_symbols_is_public(self) -> None:
+        """ALLOWED_SYMBOLS debe ser importable como constante pública — Fix 4."""
+        assert "BTCUSDT" in ALLOWED_SYMBOLS
+        assert len(ALLOWED_SYMBOLS) == 5
 
 
 # ---------------------------------------------------------------------------

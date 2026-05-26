@@ -22,8 +22,8 @@ from backend.core.config import Environment
 # Constantes
 # ---------------------------------------------------------------------------
 
-_ALLOWED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"})
-ALLOWED_SYMBOLS = _ALLOWED_SYMBOLS  # public alias for external modules
+ALLOWED_SYMBOLS: frozenset[str] = frozenset({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"})
+_ALLOWED_SYMBOLS = ALLOWED_SYMBOLS  # alias privado mantenido por compatibilidad interna
 _MAX_SPREAD_PERCENT = Decimal("5.0")
 _MAX_CLOCK_SKEW_MS = 5_000
 _MAX_LATENCY_MS = 10_000

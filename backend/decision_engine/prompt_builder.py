@@ -121,8 +121,10 @@ después. No uses bloques de código markdown. Solo JSON puro.
 - Contradicciones fuertes → listar en contradictions_detected, bajar confidence.
 """
 
-# Sustituir el placeholder de versión con el valor real
-_SYSTEM_PROMPT = _SYSTEM_PROMPT.replace("PROMPT_VERSION_PLACEHOLDER", PROMPT_VERSION)
+# Plantilla con placeholder — se sustituye en build() con la versión del contexto.
+# El atributo de clase PromptBuilder.SYSTEM_PROMPT usa la versión por defecto.
+_SYSTEM_PROMPT_TEMPLATE: str = _SYSTEM_PROMPT
+_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.replace("PROMPT_VERSION_PLACEHOLDER", PROMPT_VERSION)
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +171,13 @@ class PromptBuilder:
     SYSTEM_PROMPT: str = _SYSTEM_PROMPT
 
     def build(self, ctx: PromptContext) -> tuple[str, str]:
-        """Devuelve (system_message, user_message) listos para enviar al modelo."""
-        return self.SYSTEM_PROMPT, self._build_user_message(ctx)
+        """Devuelve (system_message, user_message) listos para enviar al modelo.
+
+        Ambos mensajes reflejan la versión del contexto para que el Historical
+        Replay Engine pueda comparar decisiones bajo distintas versiones.
+        """
+        system = _SYSTEM_PROMPT_TEMPLATE.replace("PROMPT_VERSION_PLACEHOLDER", ctx.prompt_version)
+        return system, self._build_user_message(ctx)
 
     def _build_user_message(self, ctx: PromptContext) -> str:
         sections = [

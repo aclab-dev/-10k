@@ -297,7 +297,8 @@ class TestPromptVersioning:
         ctx = _ctx()
         assert ctx.prompt_version == PROMPT_VERSION
 
-    def test_custom_version_propagates_to_user_message(self) -> None:
+    def test_custom_version_propagates_to_both_messages(self) -> None:
+        """La versión custom debe reflejarse en system Y user para el Historical Replay Engine."""
         ctx = PromptContext(
             snapshot=_snapshot(),
             quant_signals=_quant_signals(),
@@ -306,8 +307,23 @@ class TestPromptVersioning:
             account=_account(),
             prompt_version="2.0",
         )
-        _, user = PromptBuilder().build(ctx)
+        system, user = PromptBuilder().build(ctx)
         assert "2.0" in user
+        assert "2.0" in system
+
+    def test_custom_version_replaces_schema_version_in_system(self) -> None:
+        """schema_version en el JSON del system prompt debe usar la versión del contexto."""
+        ctx = PromptContext(
+            snapshot=_snapshot(),
+            quant_signals=_quant_signals(),
+            regime=_regime(),
+            volatility=_volatility(),
+            account=_account(),
+            prompt_version="99.0",
+        )
+        system, _ = PromptBuilder().build(ctx)
+        assert '"schema_version": "99.0"' in system
+        assert '"schema_version": "1.0"' not in system
 
     def test_system_prompt_is_class_attribute(self) -> None:
         builder = PromptBuilder()
