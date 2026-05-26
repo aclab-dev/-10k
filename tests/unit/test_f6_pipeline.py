@@ -8,9 +8,12 @@ and asserts that the outputs are correct and mutually consistent:
                        → build_feature_package
 
 Scenarios:
-  - Trending market: aligned bullish candles across all TFs → TRENDING regime
-  - High volatility: extreme 1h range (>4%) → HIGH_VOLATILITY regime
-  - Low volatility:  tight 1h range (<0.3%) → LOW_VOLATILITY regime
+  - Trending market:    aligned bullish candles across all TFs → TRENDING regime
+  - High volatility:    extreme 1h range (>4%) → HIGH_VOLATILITY regime
+  - Low volatility:     tight 1h range (<0.3%) → LOW_VOLATILITY regime
+  - Ranging market:     doji candles near mid-range across all TFs → RANGING regime
+  - Breakout market:    dominant bullish 1h body at range top → BREAKOUT regime
+  - Unclear market:     moderate body_ratio in dead zone (0.35–0.50) → UNCLEAR regime
 """
 
 from __future__ import annotations
@@ -473,6 +476,249 @@ class TestLowVolatilityPipeline:
         vol = compute_volatility_assessment(snapshot)
         # With tight range, score should be well below EXPANSION threshold (0.5)
         assert vol.volatility_score < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: Ranging market
+# Doji candles (open == close) near mid-range across all TFs, moderate range (≈0.8%).
+# Known outputs: RANGING regime, ATR_1h = 400, leverage_cap = 5 (score ≈ 0.664),
+#                dynamic_leverage = 4 (RANGING multiplier 0.8 × cap 5 = 4.0 → 4).
+# ---------------------------------------------------------------------------
+
+
+class TestRangingMarketPipeline:
+    """Doji candles near mid-range across all TFs → RANGING regime, reduced leverage."""
+
+    # Doji: open == close (body = 0), close at mid-range (close_pos = 0.5).
+    # range_pct ≈ 0.8%: above LOW_VOL threshold (0.3%) and below HIGH_VOL (4%).
+    # body_ratio = 0/400 = 0.0 ≤ 0.35, close_pos = 0.5 ∈ (0.30, 0.70) → RANGING.
+    _CANDLE_RANGING = _candle(open="49980", high="50180", low="49780", close="49980")
+
+    # ATR = high − low (exact, deterministic)
+    _EXPECTED_ATR_1H = Decimal("400")  # 50180 − 49780
+    _EXPECTED_ATR_5M = Decimal("400")  # same candle used for 5m
+
+    # realized_vol ≈ mean(400/49980 × 4) ≈ 0.00800 → score ≈ tanh(0.800) ≈ 0.664
+    # score ≤ 0.75 → leverage_cap = 5
+    _EXPECTED_LEVERAGE_CAP = 5
+    _EXPECTED_VOL_REGIME = VolatilityRegime.EXPANSION  # score ≥ 0.5
+
+    # dynamic_leverage: RANGING multiplier = 0.8 → floor(5 × 0.8) = 4, env_cap = 10
+    _EXPECTED_DYNAMIC_LEVERAGE = 4
+
+    @pytest.fixture
+    def snapshot(self) -> MarketSnapshot:
+        return _snapshot(
+            candle_5m=self._CANDLE_RANGING,
+            candle_15m=self._CANDLE_RANGING,
+            candle_1h=self._CANDLE_RANGING,
+            candle_4h=self._CANDLE_RANGING,
+        )
+
+    def test_regime_is_ranging(self, snapshot: MarketSnapshot) -> None:
+        result = MarketRegimeEngine().assess(snapshot)
+        assert result.primary_regime == PrimaryRegime.RANGING
+
+    def test_atr_1h_matches_mid_range_candle(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_1h == self._EXPECTED_ATR_1H
+
+    def test_atr_5m_matches_mid_range_candle(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_5m == self._EXPECTED_ATR_5M
+
+    def test_leverage_cap(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.leverage_cap == self._EXPECTED_LEVERAGE_CAP
+
+    def test_volatility_regime_is_expansion(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.volatility_regime == self._EXPECTED_VOL_REGIME
+
+    def test_dynamic_leverage_reduced_by_ranging_multiplier(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        lev = compute_dynamic_leverage(
+            vol_assessment=vol,
+            regime=regime.primary_regime,
+            environment=Environment.PAPER,
+            leverage_config=_LEVERAGE_CFG,
+        )
+        assert lev.suggested_leverage == self._EXPECTED_DYNAMIC_LEVERAGE
+
+    def test_feature_package_has_all_keys(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        pkg = build_feature_package(
+            quant_signals=_quant(snapshot.snapshot_id),
+            market_regime=regime,
+            volatility=vol,
+        )
+        assert set(pkg.features.keys()) == _EXPECTED_FEATURE_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5: Breakout market
+# Strong bullish 1h candle (body_ratio ≈ 0.79, close at range top, range ≈ 3%).
+# Other TFs are neutral. Classification: BREAKOUT — not HIGH_VOL (range < 4%),
+# different classification path but same leverage_cap = 3.
+# Known outputs: ATR_1h = 1520, leverage_cap = 3,
+#                dynamic_leverage = 2 (BREAKOUT multiplier 0.7 × cap 3 = 2.1 → 2).
+# ---------------------------------------------------------------------------
+
+
+class TestBreakoutPipeline:
+    """Dominant bullish 1h body near range top → BREAKOUT regime, conservative leverage."""
+
+    # 1h: body_ratio = 1200/1520 ≈ 0.79 ≥ 0.75, close_pos ≈ 0.80 ≥ 0.70 (bullish extreme),
+    #     range_pct = 1520/50200 ≈ 3.0% ∈ [1.5%, 4.0%) → BREAKOUT (not HIGH_VOL).
+    _CANDLE_BREAKOUT_1H = _candle(open="49000", high="50500", low="48980", close="50200")
+
+    # ATR = high − low (exact, deterministic)
+    _EXPECTED_ATR_1H = Decimal("1520")  # 50500 − 48980
+    _EXPECTED_ATR_5M = Decimal("200")  # neutral: 50100 − 49900
+
+    # realized_vol ≈ (3 × 200/49950 + 1520/49000) / 4 ≈ 0.01076
+    # score ≈ tanh(1.076) ≈ 0.791 > 0.75 → leverage_cap = 3
+    _EXPECTED_LEVERAGE_CAP = 3
+    _EXPECTED_VOL_REGIME = VolatilityRegime.EXPANSION  # score ≥ 0.5
+
+    # dynamic: BREAKOUT multiplier = 0.7, floor(3 × 0.7) = 2
+    _EXPECTED_DYNAMIC_LEVERAGE = 2
+
+    @pytest.fixture
+    def snapshot(self) -> MarketSnapshot:
+        return _snapshot(candle_1h=self._CANDLE_BREAKOUT_1H)
+
+    def test_regime_is_breakout(self, snapshot: MarketSnapshot) -> None:
+        result = MarketRegimeEngine().assess(snapshot)
+        assert result.primary_regime == PrimaryRegime.BREAKOUT
+
+    def test_atr_1h_matches_breakout_candle(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_1h == self._EXPECTED_ATR_1H
+
+    def test_atr_5m_matches_neutral_candle(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_5m == self._EXPECTED_ATR_5M
+
+    def test_leverage_cap_same_as_high_vol(self, snapshot: MarketSnapshot) -> None:
+        """BREAKOUT and HIGH_VOL both reach leverage_cap = 3 via different classification paths."""
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.leverage_cap == self._EXPECTED_LEVERAGE_CAP
+
+    def test_volatility_regime_is_expansion(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.volatility_regime == self._EXPECTED_VOL_REGIME
+
+    def test_dynamic_leverage_reduced_by_breakout_multiplier(
+        self, snapshot: MarketSnapshot
+    ) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        lev = compute_dynamic_leverage(
+            vol_assessment=vol,
+            regime=regime.primary_regime,
+            environment=Environment.PAPER,
+            leverage_config=_LEVERAGE_CFG,
+        )
+        assert lev.suggested_leverage == self._EXPECTED_DYNAMIC_LEVERAGE
+
+    def test_feature_package_has_all_keys(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        pkg = build_feature_package(
+            quant_signals=_quant(snapshot.snapshot_id),
+            market_regime=regime,
+            volatility=vol,
+        )
+        assert set(pkg.features.keys()) == _EXPECTED_FEATURE_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Unclear market
+# 1h candle with body_ratio = 0.45 — above RANGING threshold (0.35) but below
+# TRENDING threshold (0.50) and BREAKOUT threshold (0.75). No dominant signal.
+# Known outputs: ATR_1h = 1000, leverage_cap = 5 (score ≈ 0.667),
+#                dynamic_leverage = 2 (UNCLEAR multiplier 0.5 × cap 5 = 2.5 → 2).
+# ---------------------------------------------------------------------------
+
+
+class TestUnclearPipeline:
+    """Contradictory signals, no dominant pattern → UNCLEAR regime, most conservative leverage."""
+
+    # 1h: body_ratio = 450/1000 = 0.45 — above RANGING threshold (0.35) but below
+    #     TRENDING threshold (0.50) and BREAKOUT threshold (0.75). Falls to UNCLEAR.
+    #     range_pct = 1000/49950 ≈ 2.0% → NORMAL volatility (not HIGH_VOL or LOW_VOL).
+    _CANDLE_UNCLEAR_1H = _candle(open="49500", high="50500", low="49500", close="49950")
+
+    # ATR = high − low (exact, deterministic)
+    _EXPECTED_ATR_1H = Decimal("1000")  # 50500 − 49500
+    _EXPECTED_ATR_5M = Decimal("200")  # neutral: 50100 − 49900
+
+    # realized_vol ≈ (3 × 200/49950 + 1000/49500) / 4 ≈ 0.00805
+    # score ≈ tanh(0.805) ≈ 0.667 ≤ 0.75 → leverage_cap = 5
+    _EXPECTED_LEVERAGE_CAP = 5
+    _EXPECTED_VOL_REGIME = VolatilityRegime.EXPANSION  # score ≥ 0.5
+
+    # dynamic: UNCLEAR multiplier = 0.5, floor(5 × 0.5) = 2, env_cap = 10
+    _EXPECTED_DYNAMIC_LEVERAGE = 2
+
+    @pytest.fixture
+    def snapshot(self) -> MarketSnapshot:
+        return _snapshot(candle_1h=self._CANDLE_UNCLEAR_1H)
+
+    def test_regime_is_unclear(self, snapshot: MarketSnapshot) -> None:
+        result = MarketRegimeEngine().assess(snapshot)
+        assert result.primary_regime == PrimaryRegime.UNCLEAR
+
+    def test_atr_1h_is_documented(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_1h == self._EXPECTED_ATR_1H
+
+    def test_atr_5m_matches_neutral_candle(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.atr_5m == self._EXPECTED_ATR_5M
+
+    def test_leverage_cap(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.leverage_cap == self._EXPECTED_LEVERAGE_CAP
+
+    def test_volatility_regime_is_expansion(self, snapshot: MarketSnapshot) -> None:
+        vol = compute_volatility_assessment(snapshot)
+        assert vol.volatility_regime == self._EXPECTED_VOL_REGIME
+
+    def test_dynamic_leverage_most_conservative(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        lev = compute_dynamic_leverage(
+            vol_assessment=vol,
+            regime=regime.primary_regime,
+            environment=Environment.PAPER,
+            leverage_config=_LEVERAGE_CFG,
+        )
+        assert lev.suggested_leverage == self._EXPECTED_DYNAMIC_LEVERAGE
+
+    def test_dynamic_leverage_does_not_exceed_env_cap(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        lev = compute_dynamic_leverage(
+            vol_assessment=vol,
+            regime=regime.primary_regime,
+            environment=Environment.PAPER,
+            leverage_config=_LEVERAGE_CFG,
+        )
+        assert lev.suggested_leverage <= _LEVERAGE_CFG.max_leverage_paper
+
+    def test_feature_package_has_all_keys(self, snapshot: MarketSnapshot) -> None:
+        regime = MarketRegimeEngine().assess(snapshot)
+        vol = compute_volatility_assessment(snapshot)
+        pkg = build_feature_package(
+            quant_signals=_quant(snapshot.snapshot_id),
+            market_regime=regime,
+            volatility=vol,
+        )
+        assert set(pkg.features.keys()) == _EXPECTED_FEATURE_KEYS
 
 
 # ---------------------------------------------------------------------------
