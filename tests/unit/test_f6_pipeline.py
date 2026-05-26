@@ -183,8 +183,8 @@ class TestTrendingMarketPipeline:
     _CANDLE_BULLISH = _candle(open="49200", high="50100", low="49100", close="49900")
 
     # ATR = high − low (exact, deterministic)
-    _EXPECTED_ATR_1H = Decimal("1000")   # 50000 − 49000
-    _EXPECTED_ATR_5M = Decimal("1000")   # 50100 − 49100
+    _EXPECTED_ATR_1H = Decimal("1000")  # 50000 − 49000
+    _EXPECTED_ATR_5M = Decimal("1000")  # 50100 − 49100
 
     # realized_vol ≈ mean(1000/49200, 1000/49200, 1000/49200, 1000/49300) ≈ 0.02032
     # volatility_score = tanh(0.02032 / 0.01) ≈ 0.966 → leverage_cap = 3
@@ -290,8 +290,8 @@ class TestHighVolatilityPipeline:
     # range_1h_pct = 4200 / 50010 ≈ 8.4% >> threshold 4%
     _CANDLE_HIGH_VOL_1H = _candle(open="49000", high="52200", low="48000", close="50000")
 
-    _EXPECTED_ATR_1H = Decimal("4200")   # 52200 − 48000
-    _EXPECTED_ATR_5M = Decimal("200")    # neutral: 50100 − 49900
+    _EXPECTED_ATR_1H = Decimal("4200")  # 52200 − 48000
+    _EXPECTED_ATR_5M = Decimal("200")  # neutral: 50100 − 49900
     _EXPECTED_REGIME = PrimaryRegime.HIGH_VOLATILITY
     _EXPECTED_VOL_STATE = VolatilityState.HIGH
     _EXPECTED_LEVERAGE_CAP = 3
@@ -386,7 +386,7 @@ class TestLowVolatilityPipeline:
     # range_1h_pct = 100 / 50010 ≈ 0.2% << threshold 0.3%
     _CANDLE_LOW_VOL = _candle(open="49960", high="50010", low="49910", close="49980")
 
-    _EXPECTED_ATR_1H = Decimal("100")    # 50010 − 49910
+    _EXPECTED_ATR_1H = Decimal("100")  # 50010 − 49910
     _EXPECTED_REGIME = PrimaryRegime.LOW_VOLATILITY
     _EXPECTED_VOL_STATE = VolatilityState.LOW
     _EXPECTED_LEVERAGE_CAP = 10
