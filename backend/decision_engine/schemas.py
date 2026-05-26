@@ -182,7 +182,7 @@ class ModelDecision(BaseModel):
     estimated_entry_fee_usdt: float = Field(ge=0.0)
     estimated_exit_fee_usdt: float = Field(ge=0.0)
     estimated_slippage_usdt: float = Field(ge=0.0)
-    estimated_funding_usdt: float = Field(ge=0.0)
+    estimated_funding_usdt: float  # puede ser negativo (funding recibido) o positivo (pagado)
     net_risk_reward: float = Field(ge=0.0)
     estimated_max_loss_usdt: float = Field(ge=0.0)
     liquidation_distance_percent_estimated: float = Field(ge=0.0)

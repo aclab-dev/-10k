@@ -279,6 +279,13 @@ class TestUserMessageSections:
     def test_instructions_section_present(self) -> None:
         assert "## Instrucciones" in self.user
 
+    def test_snapshot_includes_all_four_candles(self) -> None:
+        """Los cuatro timeframes usados (5m, 15m, 1h, 4h) deben aparecer en el snapshot."""
+        assert "Vela 5m" in self.user
+        assert "Vela 15m" in self.user
+        assert "Vela 1h" in self.user
+        assert "Vela 4h" in self.user
+
 
 class TestPromptVersioning:
     def test_prompt_version_constant_is_semver_like(self) -> None:

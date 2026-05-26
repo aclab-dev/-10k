@@ -185,6 +185,7 @@ class PromptBuilder:
 
     def _section_snapshot(self, snap: MarketSnapshot) -> str:
         c5 = snap.candles.tf_5m
+        c15 = snap.candles.tf_15m
         c1h = snap.candles.tf_1h
         c4h = snap.candles.tf_4h
         fr = snap.funding_rate if snap.funding_rate is not None else "N/A"
@@ -201,6 +202,8 @@ class PromptBuilder:
             f"Coherencia: {snap.coherence_status}\n"
             f"- Vela 5m  — O:{c5.open} H:{c5.high} L:{c5.low} "
             f"C:{c5.close} V:{c5.volume}\n"
+            f"- Vela 15m — O:{c15.open} H:{c15.high} L:{c15.low} "
+            f"C:{c15.close} V:{c15.volume}\n"
             f"- Vela 1h  — O:{c1h.open} H:{c1h.high} L:{c1h.low} "
             f"C:{c1h.close} V:{c1h.volume}\n"
             f"- Vela 4h  — O:{c4h.open} H:{c4h.high} L:{c4h.low} "

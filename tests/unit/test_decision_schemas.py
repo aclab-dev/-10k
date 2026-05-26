@@ -278,6 +278,38 @@ class TestModelDecisionCoherence:
         )
         assert d.decision == DecisionType.LONG
 
+    def test_execute_true_with_low_rr_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="net_risk_reward"):
+            _decision(
+                decision=DecisionType.LONG,
+                entry_type=EntryType.MARKET,
+                entry_price=50000.0,
+                stop_loss=49000.0,
+                take_profit=51500.0,
+                net_risk_reward=1.4,
+                margin_usdt=5.0,
+                leverage=3,
+                execute=True,
+            )
+
+    def test_execute_false_allows_low_rr(self) -> None:
+        """Sin execute no se exige RR mínimo — es solo análisis."""
+        d = _decision(
+            decision=DecisionType.LONG,
+            entry_type=EntryType.MARKET,
+            entry_price=50000.0,
+            stop_loss=49000.0,
+            take_profit=51500.0,
+            net_risk_reward=0.5,
+            execute=False,
+        )
+        assert d.net_risk_reward == 0.5
+
+    def test_negative_funding_usdt_accepted(self) -> None:
+        """Funding negativo es válido: significa que el trader recibe funding."""
+        d = _decision(estimated_funding_usdt=-0.05)
+        assert d.estimated_funding_usdt == -0.05
+
 
 # ---------------------------------------------------------------------------
 # Sub-schemas
