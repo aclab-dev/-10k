@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from pydantic import ValidationError
 
 from backend.decision_engine.schemas import GPTDecisionResponse
+
+_log = structlog.get_logger(__name__)
 
 
 class SchemaGuardResult:
@@ -46,4 +49,5 @@ def validate_gpt_response(raw: dict[str, Any]) -> SchemaGuardResult:
         errors = [f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()]
         return SchemaGuardResult(ok=False, decision=None, errors=errors)
     except Exception as exc:  # noqa: BLE001
+        _log.error("schema_guard.unexpected_error", error=str(exc), exc_info=True)
         return SchemaGuardResult(ok=False, decision=None, errors=[str(exc)])

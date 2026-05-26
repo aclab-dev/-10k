@@ -321,6 +321,12 @@ class TestToDbKwargs:
         kwargs = d.to_db_kwargs(bot_run_id=str(uuid.uuid4()))
         assert isinstance(kwargs["raw_decision"], dict)
 
+    def test_model_response_id_propagated(self) -> None:
+        d = _build()
+        resp_id = str(uuid.uuid4())
+        kwargs = d.to_db_kwargs(bot_run_id=str(uuid.uuid4()), model_response_id=resp_id)
+        assert kwargs["model_response_id"] == resp_id
+
 
 # ---------------------------------------------------------------------------
 # schema_guard
