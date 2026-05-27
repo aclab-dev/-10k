@@ -21,6 +21,16 @@ from backend.market_regime.schemas import PrimaryRegime
 DECISION_SCHEMA_VERSION = "1.0"
 CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
 
+# Leverage caps por entorno (tope absoluto del schema).
+# El spec maestro define LIVE inicial ≤3x · LIVE absoluto ≤5x.
+# Este dict valida el absoluto; el Risk Engine aplica el cap inicial de 3x
+# en LIVE antes de enviar la orden — el schema no necesita conocerlo.
+_LEVERAGE_CAP: dict[Environment, int] = {
+    Environment.PAPER: 10,
+    Environment.TESTNET: 5,
+    Environment.LIVE: 5,  # absoluto; Risk Engine limita a 3x en el primer trade LIVE
+}
+
 
 # ---------------------------------------------------------------------------
 # Enums — interpretaciones cualitativas de señales cuantitativas
@@ -178,7 +188,7 @@ class ModelDecision(BaseModel):
     invalidation_price: float = Field(ge=0.0)
 
     # Parámetros de riesgo
-    leverage: int = Field(ge=1, le=10)
+    leverage: int = Field(ge=1, le=10)  # tope absoluto del schema; validator aplica cap por entorno
     margin_usdt: float = Field(ge=0.0, le=10.0)
     estimated_notional_usdt: float = Field(ge=0.0)
     estimated_entry_fee_usdt: float = Field(ge=0.0)
@@ -253,4 +263,45 @@ class ModelDecision(BaseModel):
         if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
             if self.net_risk_reward < 1.5:
                 raise ValueError("net_risk_reward >= 1.5 requerido cuando execute=True")
+        return self
+
+    @model_validator(mode="after")
+    def leverage_within_env_cap(self) -> ModelDecision:
+        """Leverage no puede superar el cap del entorno (PAPER ≤10, TESTNET/LIVE ≤5)."""
+        cap = _LEVERAGE_CAP.get(self.environment)
+        if cap is None:
+            raise ValueError(f"Sin cap de leverage definido para entorno '{self.environment}'")
+        if self.leverage > cap:
+            raise ValueError(
+                f"leverage={self.leverage}x supera el cap de {cap}x para {self.environment}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def sl_tp_coherence(self) -> ModelDecision:
+        """LONG: stop_loss < entry_price < take_profit. SHORT: inverso."""
+        if not self.execute:
+            return self
+        if self.decision == DecisionType.LONG:
+            if self.stop_loss >= self.entry_price:
+                raise ValueError(
+                    f"LONG: stop_loss={self.stop_loss} debe ser menor que"
+                    f" entry_price={self.entry_price}"
+                )
+            if self.take_profit <= self.entry_price:
+                raise ValueError(
+                    f"LONG: take_profit={self.take_profit} debe ser mayor que"
+                    f" entry_price={self.entry_price}"
+                )
+        elif self.decision == DecisionType.SHORT:
+            if self.stop_loss <= self.entry_price:
+                raise ValueError(
+                    f"SHORT: stop_loss={self.stop_loss} debe ser mayor que"
+                    f" entry_price={self.entry_price}"
+                )
+            if self.take_profit >= self.entry_price:
+                raise ValueError(
+                    f"SHORT: take_profit={self.take_profit} debe ser menor que"
+                    f" entry_price={self.entry_price}"
+                )
         return self
