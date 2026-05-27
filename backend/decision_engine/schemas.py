@@ -1,107 +1,221 @@
-"""JSON Schema de decisión — sección 3.8 del spec maestro.
+"""Schemas del Decision Engine — sección 3.8 del PDF maestro.
 
-Define el contrato que el GPT debe cumplir en cada respuesta. Este schema
-es inmutable, versionado y la única fuente de verdad para la estructura de
-output del modelo. El Risk Engine consume este contrato; nunca accede al
-JSON raw.
-
-Restricciones no-negociables embebidas:
-- symbol: whitelist de 5 pares permitidos
-- margin_usdt: hard cap de 10 USDT
-- leverage: 1–10 global; caps por entorno (PAPER ≤10, TESTNET/LIVE ≤5)
-- stop_loss y take_profit: obligatorios cuando decision == OPEN
-- direction: obligatorio cuando decision == OPEN
+ModelDecision es el contrato JSON que el GPT Context Evaluator debe devolver.
+El JSON Schema Guard valida este contrato antes de que la decisión llegue
+al Risk Engine. Cualquier campo fuera de rango o enum inválido → BLOCK.
 """
 
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from backend.core.config import Environment
+from backend.core.config import Environment, MarginType, PositionMode
 from backend.market_data.schemas import ALLOWED_SYMBOLS
-
-# ---------------------------------------------------------------------------
-# Versioning
-# ---------------------------------------------------------------------------
+from backend.market_regime.schemas import PrimaryRegime
 
 DECISION_SCHEMA_VERSION = "1.0"
+CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
 
-# Leverage caps por entorno (alineados con LeverageConfig en config.yaml)
+# Leverage caps por entorno — Risk Engine aplica su propio cap después
 _LEVERAGE_CAP: dict[Environment, int] = {
     Environment.PAPER: 10,
     Environment.TESTNET: 5,
     Environment.LIVE: 5,
 }
 
-_MAX_MARGIN_USDT = Decimal("10")
-
 
 # ---------------------------------------------------------------------------
-# Enums
+# Enums — interpretaciones cualitativas de señales cuantitativas
 # ---------------------------------------------------------------------------
 
 
-class DecisionAction(StrEnum):
-    OPEN = "OPEN"
-    CLOSE = "CLOSE"
+class DecisionType(StrEnum):
+    LONG = "LONG"
+    SHORT = "SHORT"
     NO_OPERAR = "NO_OPERAR"
 
 
-class TradeDirection(StrEnum):
-    LONG = "LONG"
-    SHORT = "SHORT"
+class EntryType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    NO_ENTRY = "NO_ENTRY"
+
+
+class MomentumInterpretation(StrEnum):
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    NEUTRAL = "NEUTRAL"
+    UNCLEAR = "UNCLEAR"
+
+
+class MeanReversionInterpretation(StrEnum):
+    LONG_BIAS = "LONG_BIAS"
+    SHORT_BIAS = "SHORT_BIAS"
+    NEUTRAL = "NEUTRAL"
+    UNCLEAR = "UNCLEAR"
+
+
+class BreakoutInterpretation(StrEnum):
+    CONFIRMED = "CONFIRMED"
+    FAILED = "FAILED"
+    WATCH = "WATCH"
+    NONE = "NONE"
+
+
+class FundingInterpretation(StrEnum):
+    SUPPORTS_TRADE = "SUPPORTS_TRADE"
+    CONTRADICTS_TRADE = "CONTRADICTS_TRADE"
+    NEUTRAL = "NEUTRAL"
+    UNCLEAR = "UNCLEAR"
+
+
+class OpenInterestInterpretation(StrEnum):
+    RISING_WITH_PRICE = "RISING_WITH_PRICE"
+    RISING_AGAINST_PRICE = "RISING_AGAINST_PRICE"
+    FALLING = "FALLING"
+    NEUTRAL = "NEUTRAL"
+    UNCLEAR = "UNCLEAR"
+
+
+class OrderFlowInterpretation(StrEnum):
+    BUY_PRESSURE = "BUY_PRESSURE"
+    SELL_PRESSURE = "SELL_PRESSURE"
+    BALANCED = "BALANCED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class LiquiditySweepInterpretation(StrEnum):
+    BUY_SIDE_SWEEP = "BUY_SIDE_SWEEP"
+    SELL_SIDE_SWEEP = "SELL_SIDE_SWEEP"
+    NONE = "NONE"
+    UNCLEAR = "UNCLEAR"
+
+
+class NewsImpact(StrEnum):
+    SUPPORTS_TRADE = "SUPPORTS_TRADE"
+    CONTRADICTS_TRADE = "CONTRADICTS_TRADE"
+    NEUTRAL = "NEUTRAL"
+    UNCLEAR = "UNCLEAR"
 
 
 # ---------------------------------------------------------------------------
-# Schema principal
+# Sub-modelos
 # ---------------------------------------------------------------------------
 
 
-class GPTDecisionResponse(BaseModel):
-    """Contrato JSON del output del GPT (sección 3.8).
+class QuantSignalsSection(BaseModel):
+    """Interpretación cualitativa de las señales cuantitativas calculadas."""
 
-    Inmutable una vez validado. Producido por el GPT, consumido por
-    DecisionAggregator y RiskEngine. El Risk Engine tiene la palabra final;
-    este schema solo garantiza que el output es parseable y coherente.
+    momentum: MomentumInterpretation
+    mean_reversion: MeanReversionInterpretation
+    breakout_detection: BreakoutInterpretation
+    funding_analysis: FundingInterpretation
+    open_interest_analysis: OpenInterestInterpretation
+    order_flow_imbalance: OrderFlowInterpretation
+    liquidity_sweep: LiquiditySweepInterpretation
+
+
+class DecisionAggregatorSection(BaseModel):
+    """Scores combinados del Decision Aggregator."""
+
+    quant_score: float = Field(ge=0.0, le=1.0)
+    gpt_context_score: float = Field(ge=0.0, le=1.0)
+    risk_quality_score: float = Field(ge=0.0, le=1.0)
+    final_trade_quality_score: float = Field(ge=0.0, le=1.0)
+    contradictions_detected: list[str] = Field(default_factory=list)
+
+
+class NewsContextSection(BaseModel):
+    """Contexto externo de noticias."""
+
+    used: bool
+    impact: NewsImpact
+    summary: str
+
+
+class PositionManagementPlan(BaseModel):
+    """Plan de gestión de la posición abierta."""
+
+    use_trailing_stop: bool
+    move_to_break_even: bool
+    partial_close_plan: str
+    max_time_in_trade_minutes: int = Field(ge=0)
+
+
+# ---------------------------------------------------------------------------
+# Contrato principal
+# ---------------------------------------------------------------------------
+
+
+class ModelDecision(BaseModel):
+    """Decisión estructurada que GPT Context Evaluator debe devolver (sección 3.8).
+
+    El JSON Schema Guard valida este modelo antes de que llegue al Risk Engine.
+    Reglas de negocio obligatorias:
+    - decision=NO_OPERAR → execute=False siempre
+    - execute=True y decision=LONG/SHORT → stop_loss > 0 y take_profit > 0
+    - margin_usdt ≤ 10 (límite absoluto; Risk Engine puede reducir más)
+    - leverage ≤ 10 (máximo PAPER; Risk Engine aplica caps de entorno)
+    - confidence ∈ [0.0, 1.0]
     """
 
-    # Identificación del ciclo
+    # Metadatos
     decision_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-
-    # Contexto que GPT debe ecoear (auditabilidad)
-    challenge_mode: str = Field(min_length=1)
+    challenge_mode: str = Field(default=CHALLENGE_MODE)
+    schema_version: str = Field(default=DECISION_SCHEMA_VERSION)
     environment: Environment
+    timestamp_utc: datetime
 
-    # Decisión principal
-    decision: DecisionAction
+    # Decisión
+    decision: DecisionType
     symbol: str
+    market: Literal["USDT_M_FUTURES"] = "USDT_M_FUTURES"
+    exchange_preference: Literal["BINGX"] = "BINGX"
+    margin_type: MarginType = Field(default=MarginType.ISOLATED)
+    position_mode: PositionMode = Field(default=PositionMode.ONE_WAY)
+    entry_type: EntryType
+    entry_price: float = Field(ge=0.0)
+    stop_loss: float = Field(ge=0.0)
+    take_profit: float = Field(ge=0.0)
+    invalidation_price: float = Field(ge=0.0)
 
-    # Campos requeridos sólo cuando decision == OPEN
-    direction: TradeDirection | None = None
-    leverage: int | None = Field(default=None, ge=1, le=10)
-    margin_usdt: Decimal | None = Field(default=None, gt=Decimal("0"))
-    stop_loss: Decimal | None = Field(default=None, gt=Decimal("0"))
-    take_profit: Decimal | None = Field(default=None, gt=Decimal("0"))
+    # Parámetros de riesgo
+    leverage: int = Field(ge=1, le=10)
+    margin_usdt: float = Field(ge=0.0, le=10.0)
+    estimated_notional_usdt: float = Field(ge=0.0)
+    estimated_entry_fee_usdt: float = Field(ge=0.0)
+    estimated_exit_fee_usdt: float = Field(ge=0.0)
+    estimated_slippage_usdt: float = Field(ge=0.0)
+    estimated_funding_usdt: float  # puede ser negativo (funding recibido) o positivo (pagado)
+    net_risk_reward: float = Field(ge=0.0)
+    estimated_max_loss_usdt: float = Field(ge=0.0)
+    liquidation_distance_percent_estimated: float = Field(ge=0.0)
 
-    # Calidad de la señal [0.0, 1.0]
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Evaluación
+    confidence: float = Field(ge=0.0, le=1.0)
+    market_regime: PrimaryRegime
+    setup_name: str
+    timeframes_used: list[str]
 
-    # Razonamiento (siempre obligatorio — auditabilidad)
-    reasoning: str = Field(min_length=10)
+    # Contexto cuantitativo
+    quant_signals: QuantSignalsSection
+    decision_aggregator: DecisionAggregatorSection
+    news_context: NewsContextSection
+    position_management_plan: PositionManagementPlan
 
-    # Versionado del schema
-    schema_version: str = DECISION_SCHEMA_VERSION
+    # Narrativa
+    decision_rationale_summary: str
+    risk_notes: list[str] = Field(default_factory=list)
+
+    # Ejecución
+    execute: bool
 
     model_config = {"frozen": True}
-
-    # ------------------------------------------------------------------
-    # Validadores de campo
-    # ------------------------------------------------------------------
 
     @field_validator("decision_id")
     @classmethod
@@ -119,45 +233,38 @@ class GPTDecisionResponse(BaseModel):
             raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(ALLOWED_SYMBOLS)}")
         return v
 
-    # ------------------------------------------------------------------
-    # Validadores de modelo (cross-field)
-    # ------------------------------------------------------------------
+    @field_validator("challenge_mode")
+    @classmethod
+    def challenge_mode_valid(cls, v: str) -> str:
+        if v != CHALLENGE_MODE:
+            raise ValueError(f"challenge_mode inválido: '{v}'. Debe ser '{CHALLENGE_MODE}'")
+        return v
 
     @model_validator(mode="after")
-    def open_requires_full_spec(self) -> GPTDecisionResponse:
-        """OPEN exige direction, leverage, margin_usdt, stop_loss y take_profit."""
-        if self.decision != DecisionAction.OPEN:
-            return self
-
-        missing = [
-            field
-            for field, val in [
-                ("direction", self.direction),
-                ("leverage", self.leverage),
-                ("margin_usdt", self.margin_usdt),
-                ("stop_loss", self.stop_loss),
-                ("take_profit", self.take_profit),
-            ]
-            if val is None
-        ]
-        if missing:
-            raise ValueError(f"decision=OPEN requiere los campos: {missing}")
+    def no_operar_cannot_execute(self) -> ModelDecision:
+        if self.decision == DecisionType.NO_OPERAR and self.execute:
+            raise ValueError("execute debe ser False cuando decision=NO_OPERAR")
         return self
 
     @model_validator(mode="after")
-    def margin_within_hard_cap(self) -> GPTDecisionResponse:
-        """margin_usdt nunca puede superar el hard cap de 10 USDT."""
-        if self.margin_usdt is not None and self.margin_usdt > _MAX_MARGIN_USDT:
-            raise ValueError(
-                f"margin_usdt={self.margin_usdt} supera el hard cap de {_MAX_MARGIN_USDT} USDT"
-            )
+    def execute_requires_sl_tp(self) -> ModelDecision:
+        if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
+            if self.stop_loss <= 0:
+                raise ValueError("stop_loss > 0 requerido cuando execute=True")
+            if self.take_profit <= 0:
+                raise ValueError("take_profit > 0 requerido cuando execute=True")
         return self
 
     @model_validator(mode="after")
-    def leverage_within_env_cap(self) -> GPTDecisionResponse:
-        """Leverage no puede superar el cap del entorno actual."""
-        if self.leverage is None:
-            return self
+    def execute_requires_minimum_rr(self) -> ModelDecision:
+        if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
+            if self.net_risk_reward < 1.5:
+                raise ValueError("net_risk_reward >= 1.5 requerido cuando execute=True")
+        return self
+
+    @model_validator(mode="after")
+    def leverage_within_env_cap(self) -> ModelDecision:
+        """Leverage no puede superar el cap del entorno (PAPER ≤10, TESTNET/LIVE ≤5)."""
         cap = _LEVERAGE_CAP[self.environment]
         if self.leverage > cap:
             raise ValueError(
@@ -166,43 +273,30 @@ class GPTDecisionResponse(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def sl_below_tp_on_long(self) -> GPTDecisionResponse:
-        """OPEN LONG: stop_loss < take_profit. OPEN SHORT: stop_loss > take_profit."""
-        if self.decision != DecisionAction.OPEN:
+    def sl_tp_coherence(self) -> ModelDecision:
+        """LONG: stop_loss < entry_price < take_profit. SHORT: inverso."""
+        if not self.execute:
             return self
-        if self.stop_loss is None or self.take_profit is None:
-            return self  # ya capturado por open_requires_full_spec
-
-        if self.direction == TradeDirection.LONG and self.stop_loss >= self.take_profit:
-            raise ValueError(
-                f"LONG: stop_loss={self.stop_loss} debe ser menor que"
-                f" take_profit={self.take_profit}"
-            )
-        if self.direction == TradeDirection.SHORT and self.stop_loss <= self.take_profit:
-            raise ValueError(
-                f"SHORT: stop_loss={self.stop_loss} debe ser mayor que"
-                f" take_profit={self.take_profit}"
-            )
+        if self.decision == DecisionType.LONG:
+            if self.stop_loss >= self.entry_price:
+                raise ValueError(
+                    f"LONG: stop_loss={self.stop_loss} debe ser menor que"
+                    f" entry_price={self.entry_price}"
+                )
+            if self.take_profit <= self.entry_price:
+                raise ValueError(
+                    f"LONG: take_profit={self.take_profit} debe ser mayor que"
+                    f" entry_price={self.entry_price}"
+                )
+        if self.decision == DecisionType.SHORT:
+            if self.stop_loss <= self.entry_price:
+                raise ValueError(
+                    f"SHORT: stop_loss={self.stop_loss} debe ser mayor que"
+                    f" entry_price={self.entry_price}"
+                )
+            if self.take_profit >= self.entry_price:
+                raise ValueError(
+                    f"SHORT: take_profit={self.take_profit} debe ser menor que"
+                    f" entry_price={self.entry_price}"
+                )
         return self
-
-    # ------------------------------------------------------------------
-    # Serialización a tabla decisions
-    # ------------------------------------------------------------------
-
-    def to_db_kwargs(self, bot_run_id: str, model_response_id: str | None = None) -> dict[str, Any]:
-        """Devuelve un dict listo para crear un registro en decisions."""
-        return {
-            "id": self.decision_id,
-            "bot_run_id": bot_run_id,
-            "model_response_id": model_response_id,
-            "symbol": self.symbol,
-            "action": self.decision,
-            "direction": self.direction,
-            "confidence": self.confidence,
-            "margin_usdt": self.margin_usdt,
-            "leverage": self.leverage,
-            "stop_loss": self.stop_loss,
-            "take_profit": self.take_profit,
-            "reasoning": self.reasoning,
-            "raw_decision": self.model_dump(mode="json"),
-        }

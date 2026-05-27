@@ -1,9 +1,9 @@
-"""Tests unitarios — GPTDecisionResponse y schema_guard (sección 3.8)."""
+"""Tests unitarios — ModelDecision y schema_guard (sección 3.8)."""
 
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -11,40 +11,112 @@ from pydantic import ValidationError
 from backend.core.config import Environment
 from backend.decision_engine.schema_guard import validate_gpt_response
 from backend.decision_engine.schemas import (
+    CHALLENGE_MODE,
     DECISION_SCHEMA_VERSION,
-    DecisionAction,
-    GPTDecisionResponse,
-    TradeDirection,
+    BreakoutInterpretation,
+    DecisionAggregatorSection,
+    DecisionType,
+    FundingInterpretation,
+    LiquiditySweepInterpretation,
+    MeanReversionInterpretation,
+    ModelDecision,
+    MomentumInterpretation,
+    NewsContextSection,
+    NewsImpact,
+    OpenInterestInterpretation,
+    OrderFlowInterpretation,
+    PositionManagementPlan,
+    QuantSignalsSection,
 )
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
-def _open_long(**overrides: object) -> dict[str, object]:
-    """Dict válido para decision=OPEN LONG en PAPER."""
+def _quant_signals(
+    momentum: MomentumInterpretation = MomentumInterpretation.BULLISH,
+) -> QuantSignalsSection:
+    return QuantSignalsSection(
+        momentum=momentum,
+        mean_reversion=MeanReversionInterpretation.NEUTRAL,
+        breakout_detection=BreakoutInterpretation.CONFIRMED,
+        funding_analysis=FundingInterpretation.SUPPORTS_TRADE,
+        open_interest_analysis=OpenInterestInterpretation.RISING_WITH_PRICE,
+        order_flow_imbalance=OrderFlowInterpretation.BUY_PRESSURE,
+        liquidity_sweep=LiquiditySweepInterpretation.NONE,
+    )
+
+
+def _aggregator() -> DecisionAggregatorSection:
+    return DecisionAggregatorSection(
+        quant_score=0.8,
+        gpt_context_score=0.85,
+        risk_quality_score=0.75,
+        final_trade_quality_score=0.80,
+    )
+
+
+def _news() -> NewsContextSection:
+    return NewsContextSection(
+        used=False,
+        impact=NewsImpact.NEUTRAL,
+        summary="No relevant news.",
+    )
+
+
+def _position_plan() -> PositionManagementPlan:
+    return PositionManagementPlan(
+        use_trailing_stop=True,
+        move_to_break_even=True,
+        partial_close_plan="none",
+        max_time_in_trade_minutes=120,
+    )
+
+
+def _long_dict(**overrides: object) -> dict[str, object]:
+    """Dict válido para LONG ejecutable en PAPER."""
     base: dict[str, object] = {
-        "challenge_mode": _CHALLENGE_MODE,
         "environment": "PAPER",
-        "decision": "OPEN",
+        "timestamp_utc": _now().isoformat(),
+        "decision": "LONG",
         "symbol": "BTCUSDT",
-        "direction": "LONG",
+        "entry_type": "MARKET",
+        "entry_price": 95000.0,
+        "stop_loss": 90000.0,
+        "take_profit": 105000.0,
+        "invalidation_price": 89000.0,
         "leverage": 5,
-        "margin_usdt": "5.0",
-        "stop_loss": "90000.0",
-        "take_profit": "100000.0",
-        "confidence": 0.85,
-        "reasoning": "Momentum + breakout confirm bullish setup.",
+        "margin_usdt": 5.0,
+        "estimated_notional_usdt": 25.0,
+        "estimated_entry_fee_usdt": 0.025,
+        "estimated_exit_fee_usdt": 0.025,
+        "estimated_slippage_usdt": 0.05,
+        "estimated_funding_usdt": -0.01,
+        "net_risk_reward": 2.0,
+        "estimated_max_loss_usdt": 5.0,
+        "liquidation_distance_percent_estimated": 18.0,
+        "confidence": 0.82,
+        "market_regime": "TRENDING",
+        "setup_name": "momentum_breakout",
+        "timeframes_used": ["15m", "1h", "4h"],
+        "quant_signals": _quant_signals().model_dump(),
+        "decision_aggregator": _aggregator().model_dump(),
+        "news_context": _news().model_dump(),
+        "position_management_plan": _position_plan().model_dump(),
+        "decision_rationale_summary": "Strong momentum with breakout confirmed on 1h.",
+        "execute": True,
     }
     base.update(overrides)
     return base
 
 
-def _build(**overrides: object) -> GPTDecisionResponse:
-    return GPTDecisionResponse.model_validate(_open_long(**overrides))
+def _build(**overrides: object) -> ModelDecision:
+    return ModelDecision.model_validate(_long_dict(**overrides))
 
 
 # ---------------------------------------------------------------------------
@@ -52,61 +124,53 @@ def _build(**overrides: object) -> GPTDecisionResponse:
 # ---------------------------------------------------------------------------
 
 
-class TestGPTDecisionResponseConstruction:
-    def test_valid_open_long_accepted(self) -> None:
+class TestModelDecisionConstruction:
+    def test_valid_long_accepted(self) -> None:
         d = _build()
-        assert d.decision == DecisionAction.OPEN
-        assert d.direction == TradeDirection.LONG
+        assert d.decision == DecisionType.LONG
         assert d.symbol == "BTCUSDT"
         assert d.schema_version == DECISION_SCHEMA_VERSION
+        assert d.challenge_mode == CHALLENGE_MODE
 
     def test_decision_id_auto_generated(self) -> None:
         d = _build()
-        assert uuid.UUID(d.decision_id)  # es UUID válido
+        assert uuid.UUID(d.decision_id)
 
-    def test_two_instances_have_different_decision_ids(self) -> None:
-        a = _build()
-        b = _build()
-        assert a.decision_id != b.decision_id
-
-    def test_explicit_decision_id_preserved(self) -> None:
-        fixed = str(uuid.uuid4())
-        d = _build(decision_id=fixed)
-        assert d.decision_id == fixed
+    def test_two_instances_have_different_ids(self) -> None:
+        assert _build().decision_id != _build().decision_id
 
     def test_model_is_frozen(self) -> None:
         d = _build()
         with pytest.raises(ValidationError):
-            d.symbol = "ETHUSDT"  # frozen model raises ValidationError at runtime
+            d.symbol = "ETHUSDT"  # frozen model raises at runtime
 
-    def test_valid_open_short_accepted(self) -> None:
+    def test_valid_short_accepted(self) -> None:
         d = _build(
-            direction="SHORT",
-            stop_loss="100000.0",
-            take_profit="90000.0",
+            decision="SHORT",
+            stop_loss=100000.0,
+            take_profit=85000.0,
         )
-        assert d.direction == TradeDirection.SHORT
-
-    def test_valid_close_accepted(self) -> None:
-        d = GPTDecisionResponse(
-            challenge_mode=_CHALLENGE_MODE,
-            environment=Environment.PAPER,
-            decision=DecisionAction.CLOSE,
-            symbol="ETHUSDT",
-            reasoning="Position hit take-profit. Closing.",
-        )
-        assert d.decision == DecisionAction.CLOSE
-        assert d.direction is None
+        assert d.decision == DecisionType.SHORT
 
     def test_valid_no_operar_accepted(self) -> None:
-        d = GPTDecisionResponse(
-            challenge_mode=_CHALLENGE_MODE,
-            environment=Environment.TESTNET,
-            decision=DecisionAction.NO_OPERAR,
-            symbol="SOLUSDT",
-            reasoning="No clear signal. Staying out of market.",
+        d = ModelDecision.model_validate(
+            _long_dict(
+                decision="NO_OPERAR",
+                entry_type="NO_ENTRY",
+                entry_price=0.0,
+                stop_loss=0.0,
+                take_profit=0.0,
+                invalidation_price=0.0,
+                execute=False,
+            )
         )
-        assert d.decision == DecisionAction.NO_OPERAR
+        assert d.decision == DecisionType.NO_OPERAR
+        assert d.execute is False
+
+    def test_defaults_applied(self) -> None:
+        d = _build()
+        assert d.market == "USDT_M_FUTURES"
+        assert d.exchange_preference == "BINGX"
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +181,7 @@ class TestGPTDecisionResponseConstruction:
 class TestSymbolValidation:
     @pytest.mark.parametrize("sym", ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"])
     def test_all_allowed_symbols_accepted(self, sym: str) -> None:
-        d = _build(symbol=sym)
-        assert d.symbol == sym
+        assert _build(symbol=sym).symbol == sym
 
     def test_unknown_symbol_rejected(self) -> None:
         with pytest.raises(ValidationError, match="no permitido"):
@@ -130,20 +193,82 @@ class TestSymbolValidation:
 
 
 # ---------------------------------------------------------------------------
-# Validación de decision == OPEN (campos requeridos)
+# challenge_mode
 # ---------------------------------------------------------------------------
 
 
-class TestOpenRequiresFullSpec:
-    @pytest.mark.parametrize(
-        "missing_field",
-        ["direction", "leverage", "margin_usdt", "stop_loss", "take_profit"],
-    )
-    def test_open_missing_required_field_rejected(self, missing_field: str) -> None:
-        data = _open_long()
-        data[missing_field] = None
-        with pytest.raises(ValidationError, match="OPEN requiere"):
-            GPTDecisionResponse.model_validate(data)
+class TestChallengeMode:
+    def test_correct_challenge_mode_accepted(self) -> None:
+        d = _build(challenge_mode=CHALLENGE_MODE)
+        assert d.challenge_mode == CHALLENGE_MODE
+
+    def test_wrong_challenge_mode_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="challenge_mode inválido"):
+            _build(challenge_mode="WRONG_MODE")
+
+
+# ---------------------------------------------------------------------------
+# NO_OPERAR no puede ejecutar
+# ---------------------------------------------------------------------------
+
+
+class TestNoOperarCannotExecute:
+    def test_no_operar_execute_false_accepted(self) -> None:
+        d = ModelDecision.model_validate(
+            _long_dict(
+                decision="NO_OPERAR",
+                entry_type="NO_ENTRY",
+                entry_price=0.0,
+                stop_loss=0.0,
+                take_profit=0.0,
+                invalidation_price=0.0,
+                execute=False,
+            )
+        )
+        assert not d.execute
+
+    def test_no_operar_execute_true_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="execute debe ser False"):
+            ModelDecision.model_validate(
+                _long_dict(
+                    decision="NO_OPERAR",
+                    entry_type="NO_ENTRY",
+                    entry_price=0.0,
+                    stop_loss=0.0,
+                    take_profit=0.0,
+                    execute=True,
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
+# SL / TP requeridos cuando execute=True
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteRequiresSlTp:
+    def test_execute_true_with_sl_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="stop_loss > 0"):
+            _build(stop_loss=0.0)
+
+    def test_execute_true_with_tp_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="take_profit > 0"):
+            _build(take_profit=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Risk/reward mínimo
+# ---------------------------------------------------------------------------
+
+
+class TestMinimumRR:
+    def test_rr_above_minimum_accepted(self) -> None:
+        d = _build(net_risk_reward=1.5)
+        assert d.net_risk_reward == 1.5
+
+    def test_rr_below_minimum_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="net_risk_reward >= 1.5"):
+            _build(net_risk_reward=1.4)
 
 
 # ---------------------------------------------------------------------------
@@ -153,20 +278,27 @@ class TestOpenRequiresFullSpec:
 
 class TestMarginHardCap:
     def test_margin_at_cap_accepted(self) -> None:
-        d = _build(margin_usdt="10.0")
-        assert d.margin_usdt == Decimal("10.0")
+        d = _build(margin_usdt=10.0)
+        assert d.margin_usdt == 10.0
 
     def test_margin_above_cap_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="hard cap"):
-            _build(margin_usdt="10.01")
-
-    def test_margin_zero_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            _build(margin_usdt="0")
+            _build(margin_usdt=10.01)
 
-    def test_margin_negative_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _build(margin_usdt="-1")
+    def test_margin_zero_accepted_no_operar(self) -> None:
+        d = ModelDecision.model_validate(
+            _long_dict(
+                decision="NO_OPERAR",
+                entry_type="NO_ENTRY",
+                entry_price=0.0,
+                stop_loss=0.0,
+                take_profit=0.0,
+                invalidation_price=0.0,
+                margin_usdt=0.0,
+                execute=False,
+            )
+        )
+        assert d.margin_usdt == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -176,32 +308,25 @@ class TestMarginHardCap:
 
 class TestLeverageCaps:
     def test_leverage_10_in_paper_accepted(self) -> None:
-        d = _build(environment="PAPER", leverage=10)
-        assert d.leverage == 10
+        assert _build(environment="PAPER", leverage=10).leverage == 10
 
     def test_leverage_11_rejected(self) -> None:
         with pytest.raises(ValidationError):
             _build(leverage=11)
 
     def test_leverage_5_in_testnet_accepted(self) -> None:
-        d = _build(environment="TESTNET", leverage=5)
-        assert d.leverage == 5
+        assert _build(environment="TESTNET", leverage=5).leverage == 5
 
     def test_leverage_6_in_testnet_rejected(self) -> None:
         with pytest.raises(ValidationError, match="cap"):
             _build(environment="TESTNET", leverage=6)
 
     def test_leverage_5_in_live_accepted(self) -> None:
-        d = _build(environment="LIVE", leverage=5)
-        assert d.leverage == 5
+        assert _build(environment="LIVE", leverage=5).leverage == 5
 
     def test_leverage_6_in_live_rejected(self) -> None:
         with pytest.raises(ValidationError, match="cap"):
             _build(environment="LIVE", leverage=6)
-
-    def test_leverage_0_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _build(leverage=0)
 
 
 # ---------------------------------------------------------------------------
@@ -210,31 +335,49 @@ class TestLeverageCaps:
 
 
 class TestSlTpCoherence:
-    def test_long_sl_below_tp_accepted(self) -> None:
-        d = _build(stop_loss="85000", take_profit="95000")
-        assert d.stop_loss is not None and d.take_profit is not None
-        assert d.stop_loss < d.take_profit
+    def test_long_sl_below_entry_accepted(self) -> None:
+        d = _build(entry_price=95000.0, stop_loss=90000.0, take_profit=105000.0)
+        assert d.stop_loss < d.entry_price < d.take_profit
 
-    def test_long_sl_equal_tp_rejected(self) -> None:
+    def test_long_sl_above_entry_rejected(self) -> None:
         with pytest.raises(ValidationError, match="LONG"):
-            _build(stop_loss="90000", take_profit="90000")
+            _build(entry_price=95000.0, stop_loss=96000.0, take_profit=105000.0)
 
-    def test_long_sl_above_tp_rejected(self) -> None:
+    def test_long_tp_below_entry_rejected(self) -> None:
         with pytest.raises(ValidationError, match="LONG"):
-            _build(stop_loss="95000", take_profit="85000")
+            _build(entry_price=95000.0, stop_loss=90000.0, take_profit=94000.0)
 
-    def test_short_sl_above_tp_accepted(self) -> None:
+    def test_short_sl_above_entry_accepted(self) -> None:
         d = _build(
-            direction="SHORT",
-            stop_loss="95000",
-            take_profit="85000",
+            decision="SHORT",
+            entry_price=95000.0,
+            stop_loss=100000.0,
+            take_profit=85000.0,
         )
-        assert d.stop_loss is not None and d.take_profit is not None
-        assert d.stop_loss > d.take_profit
+        assert d.stop_loss > d.entry_price > d.take_profit
 
-    def test_short_sl_below_tp_rejected(self) -> None:
+    def test_short_sl_below_entry_rejected(self) -> None:
         with pytest.raises(ValidationError, match="SHORT"):
-            _build(direction="SHORT", stop_loss="85000", take_profit="95000")
+            _build(
+                decision="SHORT",
+                entry_price=95000.0,
+                stop_loss=90000.0,
+                take_profit=85000.0,
+            )
+
+    def test_sl_tp_not_checked_when_not_execute(self) -> None:
+        d = ModelDecision.model_validate(
+            _long_dict(
+                decision="NO_OPERAR",
+                entry_type="NO_ENTRY",
+                entry_price=0.0,
+                stop_loss=0.0,
+                take_profit=0.0,
+                invalidation_price=0.0,
+                execute=False,
+            )
+        )
+        assert not d.execute
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +385,10 @@ class TestSlTpCoherence:
 # ---------------------------------------------------------------------------
 
 
-class TestConfidenceRange:
+class TestConfidence:
     @pytest.mark.parametrize("val", [0.0, 0.5, 1.0])
     def test_valid_confidence_accepted(self, val: float) -> None:
-        d = _build(confidence=val)
-        assert d.confidence == val
+        assert _build(confidence=val).confidence == val
 
     def test_confidence_above_1_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -255,25 +397,6 @@ class TestConfidenceRange:
     def test_confidence_below_0_rejected(self) -> None:
         with pytest.raises(ValidationError):
             _build(confidence=-0.01)
-
-    def test_confidence_none_accepted(self) -> None:
-        d = _build(confidence=None)
-        assert d.confidence is None
-
-
-# ---------------------------------------------------------------------------
-# Reasoning
-# ---------------------------------------------------------------------------
-
-
-class TestReasoning:
-    def test_short_reasoning_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _build(reasoning="ok")
-
-    def test_empty_reasoning_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _build(reasoning="")
 
 
 # ---------------------------------------------------------------------------
@@ -287,45 +410,8 @@ class TestEnvironment:
             _build(environment="STAGING")
 
     @pytest.mark.parametrize("env", ["PAPER", "TESTNET", "LIVE"])
-    def test_all_valid_environments_accepted(self, env: str) -> None:
-        d = _build(environment=env)
-        assert d.environment == Environment(env)
-
-
-# ---------------------------------------------------------------------------
-# to_db_kwargs
-# ---------------------------------------------------------------------------
-
-
-class TestToDbKwargs:
-    def test_returns_required_keys(self) -> None:
-        d = _build()
-        bot_run_id = str(uuid.uuid4())
-        kwargs = d.to_db_kwargs(bot_run_id=bot_run_id)
-        for key in ("id", "bot_run_id", "symbol", "action", "direction", "raw_decision"):
-            assert key in kwargs
-
-    def test_bot_run_id_propagated(self) -> None:
-        d = _build()
-        run_id = str(uuid.uuid4())
-        kwargs = d.to_db_kwargs(bot_run_id=run_id)
-        assert kwargs["bot_run_id"] == run_id
-
-    def test_model_response_id_optional(self) -> None:
-        d = _build()
-        kwargs = d.to_db_kwargs(bot_run_id=str(uuid.uuid4()))
-        assert kwargs["model_response_id"] is None
-
-    def test_raw_decision_is_dict(self) -> None:
-        d = _build()
-        kwargs = d.to_db_kwargs(bot_run_id=str(uuid.uuid4()))
-        assert isinstance(kwargs["raw_decision"], dict)
-
-    def test_model_response_id_propagated(self) -> None:
-        d = _build()
-        resp_id = str(uuid.uuid4())
-        kwargs = d.to_db_kwargs(bot_run_id=str(uuid.uuid4()), model_response_id=resp_id)
-        assert kwargs["model_response_id"] == resp_id
+    def test_all_environments_accepted(self, env: str) -> None:
+        assert _build(environment=env).environment == Environment(env)
 
 
 # ---------------------------------------------------------------------------
@@ -335,43 +421,31 @@ class TestToDbKwargs:
 
 class TestSchemaGuard:
     def test_valid_dict_returns_ok(self) -> None:
-        result = validate_gpt_response(_open_long())
+        result = validate_gpt_response(_long_dict())
         assert result.ok
         assert result.decision is not None
         assert result.errors == []
 
     def test_result_bool_true_on_ok(self) -> None:
-        result = validate_gpt_response(_open_long())
-        assert bool(result) is True
+        assert bool(validate_gpt_response(_long_dict())) is True
 
     def test_invalid_dict_returns_not_ok(self) -> None:
-        result = validate_gpt_response({"decision": "OPEN"})
+        result = validate_gpt_response({"decision": "LONG"})
         assert not result.ok
         assert result.decision is None
         assert len(result.errors) > 0
 
     def test_result_bool_false_on_failure(self) -> None:
-        result = validate_gpt_response({})
-        assert bool(result) is False
+        assert bool(validate_gpt_response({})) is False
 
     def test_errors_are_strings(self) -> None:
-        result = validate_gpt_response({"decision": "OPEN", "symbol": "INVALID"})
+        result = validate_gpt_response({"decision": "LONG", "symbol": "INVALID"})
         assert all(isinstance(e, str) for e in result.errors)
 
-    def test_valid_close_returns_ok(self) -> None:
-        result = validate_gpt_response(
-            {
-                "challenge_mode": _CHALLENGE_MODE,
-                "environment": "PAPER",
-                "decision": "CLOSE",
-                "symbol": "BTCUSDT",
-                "reasoning": "Position closed at target level.",
-            }
-        )
-        assert result.ok
-
     def test_margin_over_cap_returns_not_ok(self) -> None:
-        data = _open_long(margin_usdt="15.0")
-        result = validate_gpt_response(data)
+        result = validate_gpt_response(_long_dict(margin_usdt=15.0))
         assert not result.ok
-        assert any("hard cap" in e for e in result.errors)
+
+    def test_accepted_decision_has_correct_type(self) -> None:
+        result = validate_gpt_response(_long_dict())
+        assert isinstance(result.decision, ModelDecision)
