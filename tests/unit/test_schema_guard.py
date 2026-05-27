@@ -203,9 +203,16 @@ class TestValidateGptResponseHappyPath:
         assert result.decision.symbol == "BTCUSDT"
         assert result.decision.environment.value == "PAPER"
 
-    @pytest.mark.parametrize("env", ["PAPER", "TESTNET", "LIVE"])
-    def test_all_environments_accepted(self, env: str) -> None:
-        leverage = 5 if env in ("TESTNET", "LIVE") else 5
+    @pytest.mark.parametrize(
+        ("env", "leverage"),
+        [
+            ("PAPER", 10),    # cap PAPER = 10x
+            ("TESTNET", 5),   # cap TESTNET = 5x
+            ("LIVE", 5),      # cap LIVE = 5x
+        ],
+    )
+    def test_all_environments_accepted_at_cap(self, env: str, leverage: int) -> None:
+        """Leverage exactamente en el cap de cada entorno debe ser aceptado."""
         result = validate_gpt_response(_valid_long(environment=env, leverage=leverage))
         assert result.ok
 
@@ -243,6 +250,10 @@ class TestValidateGptResponseBlocked:
         result = validate_gpt_response(_valid_long(environment="STAGING"))
         assert not result.ok
 
+    def test_margin_at_boundary_accepted(self) -> None:
+        result = validate_gpt_response(_valid_long(margin_usdt=10.0))
+        assert result.ok
+
     def test_margin_above_10_blocked(self) -> None:
         result = validate_gpt_response(_valid_long(margin_usdt=10.01))
         assert not result.ok
@@ -259,6 +270,14 @@ class TestValidateGptResponseBlocked:
     def test_leverage_above_live_cap_blocked(self) -> None:
         result = validate_gpt_response(_valid_long(environment="LIVE", leverage=6))
         assert not result.ok
+
+    def test_confidence_at_zero_accepted(self) -> None:
+        result = validate_gpt_response(_valid_long(confidence=0.0))
+        assert result.ok
+
+    def test_confidence_at_one_accepted(self) -> None:
+        result = validate_gpt_response(_valid_long(confidence=1.0))
+        assert result.ok
 
     def test_confidence_above_1_blocked(self) -> None:
         result = validate_gpt_response(_valid_long(confidence=1.01))

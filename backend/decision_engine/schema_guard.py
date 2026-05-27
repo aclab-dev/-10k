@@ -99,7 +99,7 @@ def validate_gpt_json_string(raw_json: str) -> SchemaGuardResult:
     try:
         parsed = json.loads(raw_json)
     except json.JSONDecodeError as exc:
-        snippet = raw_json[:200] if raw_json else ""
+        snippet = raw_json[:200]
         try:
             _log.warning(
                 "schema_guard.blocked",
