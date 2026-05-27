@@ -116,9 +116,7 @@ class GPTDecisionResponse(BaseModel):
     @classmethod
     def symbol_allowed(cls, v: str) -> str:
         if v not in ALLOWED_SYMBOLS:
-            raise ValueError(
-                f"Símbolo '{v}' no permitido. Válidos: {sorted(ALLOWED_SYMBOLS)}"
-            )
+            raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(ALLOWED_SYMBOLS)}")
         return v
 
     # ------------------------------------------------------------------
@@ -143,9 +141,7 @@ class GPTDecisionResponse(BaseModel):
             if val is None
         ]
         if missing:
-            raise ValueError(
-                f"decision=OPEN requiere los campos: {missing}"
-            )
+            raise ValueError(f"decision=OPEN requiere los campos: {missing}")
         return self
 
     @model_validator(mode="after")
