@@ -21,11 +21,14 @@ from backend.market_regime.schemas import PrimaryRegime
 DECISION_SCHEMA_VERSION = "1.0"
 CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
 
-# Leverage caps por entorno — Risk Engine aplica su propio cap después
+# Leverage caps por entorno (tope absoluto del schema).
+# El spec maestro define LIVE inicial ≤3x · LIVE absoluto ≤5x.
+# Este dict valida el absoluto; el Risk Engine aplica el cap inicial de 3x
+# en LIVE antes de enviar la orden — el schema no necesita conocerlo.
 _LEVERAGE_CAP: dict[Environment, int] = {
     Environment.PAPER: 10,
     Environment.TESTNET: 5,
-    Environment.LIVE: 5,
+    Environment.LIVE: 5,  # absoluto; Risk Engine limita a 3x en el primer trade LIVE
 }
 
 
@@ -185,7 +188,7 @@ class ModelDecision(BaseModel):
     invalidation_price: float = Field(ge=0.0)
 
     # Parámetros de riesgo
-    leverage: int = Field(ge=1, le=10)
+    leverage: int = Field(ge=1, le=10)  # tope absoluto del schema; validator aplica cap por entorno
     margin_usdt: float = Field(ge=0.0, le=10.0)
     estimated_notional_usdt: float = Field(ge=0.0)
     estimated_entry_fee_usdt: float = Field(ge=0.0)
@@ -265,7 +268,9 @@ class ModelDecision(BaseModel):
     @model_validator(mode="after")
     def leverage_within_env_cap(self) -> ModelDecision:
         """Leverage no puede superar el cap del entorno (PAPER ≤10, TESTNET/LIVE ≤5)."""
-        cap = _LEVERAGE_CAP[self.environment]
+        cap = _LEVERAGE_CAP.get(self.environment)
+        if cap is None:
+            raise ValueError(f"Sin cap de leverage definido para entorno '{self.environment}'")
         if self.leverage > cap:
             raise ValueError(
                 f"leverage={self.leverage}x supera el cap de {cap}x para {self.environment}"
@@ -288,7 +293,7 @@ class ModelDecision(BaseModel):
                     f"LONG: take_profit={self.take_profit} debe ser mayor que"
                     f" entry_price={self.entry_price}"
                 )
-        if self.decision == DecisionType.SHORT:
+        elif self.decision == DecisionType.SHORT:
             if self.stop_loss <= self.entry_price:
                 raise ValueError(
                     f"SHORT: stop_loss={self.stop_loss} debe ser mayor que"

@@ -10,6 +10,7 @@ motivo en structlog para auditoría.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -20,20 +21,17 @@ from backend.decision_engine.schemas import ModelDecision
 _log = structlog.get_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
 class SchemaGuardResult:
-    """Resultado del guard: éxito o fallo con lista de errores."""
+    """Resultado del guard: éxito o fallo con lista de errores.
 
-    __slots__ = ("ok", "decision", "errors")
+    Inmutable por diseño — representa el veredicto de una validación de
+    seguridad y no debe modificarse después de ser emitido.
+    """
 
-    def __init__(
-        self,
-        ok: bool,
-        decision: ModelDecision | None,
-        errors: list[str],
-    ) -> None:
-        self.ok = ok
-        self.decision = decision
-        self.errors = errors
+    ok: bool
+    decision: ModelDecision | None
+    errors: list[str]
 
     def __bool__(self) -> bool:
         return self.ok
@@ -52,8 +50,8 @@ def validate_gpt_response(raw: dict[str, Any]) -> SchemaGuardResult:
             "schema_guard.accepted",
             decision_id=decision.decision_id,
             symbol=decision.symbol,
-            decision=decision.decision,
-            environment=decision.environment,
+            decision=decision.decision.value,
+            environment=decision.environment.value,
         )
         return SchemaGuardResult(ok=True, decision=decision, errors=[])
     except ValidationError as exc:

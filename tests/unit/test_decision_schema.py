@@ -141,8 +141,9 @@ class TestModelDecisionConstruction:
 
     def test_model_is_frozen(self) -> None:
         d = _build()
+        # Pydantic v2 frozen lanza ValidationError (no AttributeError como dataclasses frozen)
         with pytest.raises(ValidationError):
-            d.symbol = "ETHUSDT"  # frozen model raises at runtime
+            d.symbol = "ETHUSDT"
 
     def test_valid_short_accepted(self) -> None:
         d = _build(
@@ -364,6 +365,21 @@ class TestSlTpCoherence:
                 stop_loss=90000.0,
                 take_profit=85000.0,
             )
+
+    def test_short_tp_above_entry_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="SHORT"):
+            _build(
+                decision="SHORT",
+                entry_price=95000.0,
+                stop_loss=100000.0,
+                take_profit=96000.0,  # TP > entry → inválido para SHORT
+            )
+
+    def test_long_entry_price_zero_with_execute_rejected(self) -> None:
+        """entry_price=0 con execute=True es rechazado por execute_requires_sl_tp
+        (stop_loss=0 no pasa el check stop_loss > 0), documentando el edge case."""
+        with pytest.raises(ValidationError, match="stop_loss > 0"):
+            _build(entry_price=0.0, stop_loss=0.0, take_profit=0.0)
 
     def test_sl_tp_not_checked_when_not_execute(self) -> None:
         d = ModelDecision.model_validate(
