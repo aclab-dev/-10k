@@ -206,9 +206,9 @@ class TestValidateGptResponseHappyPath:
     @pytest.mark.parametrize(
         ("env", "leverage"),
         [
-            ("PAPER", 10),    # cap PAPER = 10x
-            ("TESTNET", 5),   # cap TESTNET = 5x
-            ("LIVE", 5),      # cap LIVE = 5x
+            ("PAPER", 10),  # cap PAPER = 10x
+            ("TESTNET", 5),  # cap TESTNET = 5x
+            ("LIVE", 5),  # cap LIVE = 5x
         ],
     )
     def test_all_environments_accepted_at_cap(self, env: str, leverage: int) -> None:
