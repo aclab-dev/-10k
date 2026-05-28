@@ -395,36 +395,39 @@ class TestGPTClientWithAudit:
     async def test_persists_request_with_invalid_schema_response(
         self, session: Session, bot_run: BotRun
     ) -> None:
-        policy = FailurePolicyConfig(
-            gpt_failure_blocks_new_entries=False,
-            token_budget_failure_blocks_new_entries=False,
-            deterministic_position_management_without_gpt=True,
-            exits_do_not_require_gpt_response=True,
-            every_position_requires_confirmed_sl_tp=True,
-        )
+        """Respuesta fuera de schema → siempre bloquea (raise) + audit persistido.
+
+        Desde la integración del InvalidResponseHandler, las respuestas inválidas
+        siempre levantan GPTResponseValidationError independientemente de la failure
+        policy. La capa de auditoría igual debe persistir la respuesta con
+        is_valid_schema=False antes de que el error se propague.
+        """
+        from unittest.mock import patch
+
+        from sqlalchemy import select
+
+        from backend.decision_engine.gpt_client import GPTResponseValidationError
+
         config = GPTClientConfig(max_retries=0, base_delay_seconds=0.0)
-        client = GPTClient(config=config, failure_policy=policy, api_key=_TEST_API_KEY)
+        client = GPTClient(config=config, failure_policy=_POLICY, api_key=_TEST_API_KEY)
 
         req = _make_req()
         bad_content = json.dumps({"not": "a_valid_decision"})
         mock_resp = _openai_response(bad_content)
 
-        from unittest.mock import patch
-
-        from sqlalchemy import select
-
-        with patch.object(
-            client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+        with (
+            patch.object(
+                client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+            ),
+            pytest.raises(GPTResponseValidationError),
         ):
-            result = await client.request(
+            await client.request(
                 req,
                 RequestPurpose.NEW_ENTRY,
                 session=session,
                 bot_run_id=bot_run.id,
                 symbol="ETHUSDT",
             )
-
-        assert result is None
 
         resp_records = list(
             session.scalars(

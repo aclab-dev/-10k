@@ -14,13 +14,14 @@ import json
 import os
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import httpx
 import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import FailurePolicyConfig, get_config
+from backend.decision_engine.invalid_response_handler import handle_invalid_response
 from backend.decision_engine.schema_guard import (
     SchemaGuardResult,
     validate_gpt_json_string,
@@ -28,6 +29,9 @@ from backend.decision_engine.schema_guard import (
 from backend.decision_engine.schemas import ModelDecision
 from backend.storage.audit import audit_model_request, audit_model_response
 from backend.storage.models import ModelRequest
+
+if TYPE_CHECKING:
+    from backend.token_budget.manager import TokenBudgetManager
 
 _log = structlog.get_logger(__name__)
 
@@ -151,12 +155,15 @@ class GPTClient:
     - Connection pooling: el AsyncClient se instancia una vez y se reutiliza.
     - Retry con backoff exponencial para errores transitorios (rate limit,
       timeout, errores de red, 5xx). Respeta el header Retry-After en 429.
-    - Failure policy (Decisión 08):
+    - Failure policy (Decisión 08) para errores de conectividad:
       - NEW_ENTRY: failure bloquea si gpt_failure_blocks_new_entries=True;
         swallow y retorna None si es False.
       - POSITION_MANAGEMENT: retorna None (fallback determinístico) si
         exits_do_not_require_gpt_response y
         deterministic_position_management_without_gpt son True.
+    - Respuestas inválidas (GPTResponseValidationError) siempre bloquean,
+      independientemente de la failure policy. Una respuesta inválida no es
+      "GPT no disponible" — es GPT devolviendo algo que no podemos ejecutar.
     """
 
     def __init__(
@@ -165,6 +172,7 @@ class GPTClient:
         config: GPTClientConfig | None = None,
         failure_policy: FailurePolicyConfig | None = None,
         api_key: str | None = None,
+        budget_manager: TokenBudgetManager | None = None,
     ) -> None:
         self._config = config or GPTClientConfig()
         self._failure_policy = failure_policy or get_config().failure_policy
@@ -176,6 +184,7 @@ class GPTClient:
             )
         self._api_key = resolved_key
         self._http_client = httpx.AsyncClient(timeout=self._config.timeout_seconds)
+        self._budget_manager = budget_manager
 
     async def aclose(self) -> None:
         """Cierra el connection pool. Llamar al apagar el proceso."""
@@ -201,9 +210,26 @@ class GPTClient:
         (POSITION_MANAGEMENT con deterministic=True, o NEW_ENTRY con
         gpt_failure_blocks_new_entries=False).
 
+        Levanta TokenBudgetExceededError si el budget está agotado y
+        token_budget_failure_blocks_new_entries=True (solo para NEW_ENTRY).
+
         Si se pasa session + bot_run_id + symbol, persiste el request y la
         response en DB para auditoría y reconstrucción completa.
         """
+        # Verificar budget antes de llamar (solo NEW_ENTRY).
+        # Hard block (policy=True): check_budget levanta TokenBudgetExceededError.
+        # Soft block (policy=False): retorna ok=False → no llamamos a OpenAI igualmente.
+        if self._budget_manager is not None and purpose == RequestPurpose.NEW_ENTRY:
+            budget_result = self._budget_manager.check_budget(purpose)
+            if not budget_result.ok:
+                _log.warning(
+                    "token_budget.soft_block",
+                    status=str(budget_result.status),
+                    tokens_used_hour=budget_result.tokens_used_hour,
+                    tokens_used_day=budget_result.tokens_used_day,
+                )
+                return None
+
         model_request_record = None
         if session is not None and bot_run_id is not None and symbol is not None:
             try:
@@ -224,6 +250,27 @@ class GPTClient:
             raw_result = await self._call_with_retry(req)
         except GPTClientError as exc:
             return self._apply_failure_policy(exc, purpose)
+
+        # Registrar consumo tan pronto como tenemos la respuesta HTTP (200),
+        # independientemente de lo que haga la validación de schema después.
+        # Los tokens se consumieron en OpenAI; no registrarlos subestimaría el budget.
+        if self._budget_manager is not None:
+            if raw_result.prompt_tokens is not None and raw_result.completion_tokens is not None:
+                try:
+                    self._budget_manager.record_usage(
+                        prompt_tokens=raw_result.prompt_tokens,
+                        completion_tokens=raw_result.completion_tokens,
+                        model=self._config.model,
+                    )
+                except Exception:
+                    # Un error de DB no debe descartar una decisión GPT válida.
+                    _log.exception("token_budget.record_usage_failed")
+            else:
+                _log.warning(
+                    "token_budget.usage_missing",
+                    model=self._config.model,
+                    note="OpenAI no devolvió campo 'usage'; budget no actualizado",
+                )
 
         result: SchemaGuardResult = validate_gpt_json_string(raw_result.content)
 
@@ -258,15 +305,20 @@ class GPTClient:
                 )
 
         if not result.ok:
-            validation_error = GPTResponseValidationError(
+            # Respuesta inválida: registrar y bloquear siempre — nunca llega a
+            # failure policy porque una respuesta corrupta no es recuperable.
+            handle_invalid_response(
+                raw_result.content, result.errors, request_id=req.prompt_version
+            )
+            raise GPTResponseValidationError(
                 f"Respuesta GPT fuera de schema: {'; '.join(result.errors)}"
             )
-            return self._apply_failure_policy(validation_error, purpose)
 
         if result.decision is None:
             raise GPTResponseValidationError(
                 "SchemaGuardResult.ok=True pero decision=None — invariante roto"
             )
+
         return result.decision
 
     # ------------------------------------------------------------------
@@ -465,7 +517,11 @@ class GPTClient:
         exc: GPTClientError,
         purpose: RequestPurpose,
     ) -> ModelDecision | None:
-        """Aplica failure policy según purpose y config.
+        """Aplica failure policy para errores de conectividad según purpose y config.
+
+        Solo debe llamarse para errores de disponibilidad (timeout, rate limit,
+        5xx, red). GPTResponseValidationError nunca debe pasar por aquí —
+        las respuestas inválidas siempre bloquean sin pasar por la policy.
 
         POSITION_MANAGEMENT con deterministic=True → retorna None.
         NEW_ENTRY con gpt_failure_blocks=True → re-raise.
