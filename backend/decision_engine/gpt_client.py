@@ -26,6 +26,7 @@ from backend.decision_engine.schema_guard import (
 )
 from backend.decision_engine.schemas import ModelDecision
 from backend.storage.audit import audit_model_request, audit_model_response
+from backend.storage.models import ModelRequest
 
 _log = structlog.get_logger(__name__)
 
@@ -51,6 +52,12 @@ class _RawCallResult:
 
 
 def _compute_request_hash(model: str, system_prompt: str, user_prompt: str) -> str:
+    """SHA-256 hash de (model, system_prompt, user_prompt) para deduplicación.
+
+    prompt_version se excluye intencionalmente: el hash identifica contenido,
+    no la etiqueta de versión. Dos llamadas con los mismos prompts pero distinta
+    prompt_version producen el mismo hash por diseño.
+    """
     payload = json.dumps(
         {"model": model, "system_prompt": system_prompt, "user_prompt": user_prompt},
         sort_keys=True,
@@ -196,26 +203,10 @@ class GPTClient:
         Si se pasa session + bot_run_id + symbol, persiste el request y la
         response en DB para auditoría y reconstrucción completa.
         """
-        do_audit = session is not None and bot_run_id is not None and symbol is not None
         model_request_record = None
-
-        if do_audit:
-            context_payload: dict[str, str] = {
-                "system_prompt": req.system_prompt,
-                "user_prompt": req.user_prompt,
-                "prompt_version": req.prompt_version,
-            }
-            request_hash = _compute_request_hash(
-                self._config.model, req.system_prompt, req.user_prompt
-            )
-            model_request_record = audit_model_request(
-                session,  # type: ignore[arg-type]
-                bot_run_id=bot_run_id,  # type: ignore[arg-type]
-                symbol=symbol,  # type: ignore[arg-type]
-                model=self._config.model,
-                context=context_payload,
-                request_hash=request_hash,
-                feature_package_id=feature_package_id,
+        if session is not None and bot_run_id is not None and symbol is not None:
+            model_request_record = self._persist_audit_request(
+                session, req, bot_run_id, symbol, feature_package_id
             )
 
         try:
@@ -225,7 +216,8 @@ class GPTClient:
 
         result: SchemaGuardResult = validate_gpt_json_string(raw_result.content)
 
-        if do_audit and model_request_record is not None:
+        if model_request_record is not None:
+            assert session is not None  # implied: record only exists if session was passed
             normalized = (
                 result.decision.model_dump(mode="json")
                 if result.ok and result.decision is not None
@@ -233,7 +225,7 @@ class GPTClient:
             )
             try:
                 audit_model_response(
-                    session,  # type: ignore[arg-type]
+                    session,
                     model_request_id=model_request_record.id,
                     model=self._config.model,
                     raw_response=raw_result.raw_json,
@@ -264,6 +256,37 @@ class GPTClient:
                 "SchemaGuardResult.ok=True pero decision=None — invariante roto"
             )
         return result.decision
+
+    # ------------------------------------------------------------------
+    # Audit helpers (DB persistence)
+    # ------------------------------------------------------------------
+
+    def _persist_audit_request(
+        self,
+        session: Session,
+        req: GPTRequest,
+        bot_run_id: str,
+        symbol: str,
+        feature_package_id: str | None,
+    ) -> ModelRequest:
+        """Persiste un ModelRequest en DB. Recibe tipos ya narrowados — sin type: ignore."""
+        context_payload: dict[str, str] = {
+            "system_prompt": req.system_prompt,
+            "user_prompt": req.user_prompt,
+            "prompt_version": req.prompt_version,
+        }
+        request_hash = _compute_request_hash(
+            self._config.model, req.system_prompt, req.user_prompt
+        )
+        return audit_model_request(
+            session,
+            bot_run_id=bot_run_id,
+            symbol=symbol,
+            model=self._config.model,
+            context=context_payload,
+            request_hash=request_hash,
+            feature_package_id=feature_package_id,
+        )
 
     # ------------------------------------------------------------------
     # Retry loop
@@ -380,6 +403,9 @@ class GPTClient:
                 f"Status inesperado {status} en model={model}: {response.text[:_MAX_LOG_CHARS]}"
             )
 
+        # Capturar el body tal como llegó del wire ANTES de parsear — preserva
+        # whitespace y orden de keys del JSON original para replay exacto.
+        response_text = response.text
         data = response.json()
         try:
             choice = data["choices"][0]
@@ -411,7 +437,7 @@ class GPTClient:
         )
         return _RawCallResult(
             content=content,
-            raw_json=json.dumps(data),
+            raw_json=response_text,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,

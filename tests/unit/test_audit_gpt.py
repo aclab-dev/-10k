@@ -142,16 +142,17 @@ def _valid_decision_dict() -> dict[str, Any]:
 
 
 def _openai_response(content: str, finish_reason: str = "stop") -> MagicMock:
-    mock_resp = MagicMock(spec=httpx.Response)
-    mock_resp.status_code = 200
-    mock_resp.text = content
-    mock_resp.headers = MagicMock()
-    mock_resp.json.return_value = {
+    full_body = {
         "choices": [
             {"message": {"content": content, "role": "assistant"}, "finish_reason": finish_reason}
         ],
         "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
     }
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.text = json.dumps(full_body)  # wire-original, igual que lo devuelve OpenAI
+    mock_resp.headers = MagicMock()
+    mock_resp.json.return_value = full_body
     return mock_resp
 
 
@@ -375,12 +376,22 @@ class TestGPTClientWithAudit:
 
         from unittest.mock import patch
 
-        with patch.object(
-            client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+        with (
+            patch.object(
+                client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+            ),
+            patch(
+                "backend.decision_engine.gpt_client.audit_model_request"
+            ) as mock_audit_req,
+            patch(
+                "backend.decision_engine.gpt_client.audit_model_response"
+            ) as mock_audit_resp,
         ):
             result = await client.request(req, RequestPurpose.NEW_ENTRY)
 
         assert isinstance(result, ModelDecision)
+        mock_audit_req.assert_not_called()
+        mock_audit_resp.assert_not_called()
 
     async def test_persists_request_with_invalid_schema_response(
         self, session: Session, bot_run: BotRun
@@ -459,3 +470,44 @@ class TestGPTClientWithAudit:
             )
 
         assert isinstance(result, ModelDecision)
+
+    async def test_model_request_persisted_when_audit_response_fails(
+        self, session: Session, bot_run: BotRun
+    ) -> None:
+        """ModelRequest queda persistido aunque audit_model_response explote."""
+        from unittest.mock import patch
+
+        from sqlalchemy import select
+
+        client = _make_gpt_client()
+        req = _make_req()
+        content = json.dumps(_valid_decision_dict())
+        mock_resp = _openai_response(content)
+
+        with (
+            patch.object(
+                client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+            ),
+            patch(
+                "backend.decision_engine.gpt_client.audit_model_response",
+                side_effect=Exception("DB exploded"),
+            ),
+        ):
+            await client.request(
+                req,
+                RequestPurpose.NEW_ENTRY,
+                session=session,
+                bot_run_id=bot_run.id,
+                symbol="SOLUSDT",
+            )
+
+        req_records = list(
+            session.scalars(
+                select(ModelRequest).where(
+                    ModelRequest.bot_run_id == bot_run.id,
+                    ModelRequest.symbol == "SOLUSDT",
+                )
+            )
+        )
+        assert len(req_records) == 1
+        assert req_records[0].request_hash is not None

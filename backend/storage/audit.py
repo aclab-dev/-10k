@@ -213,11 +213,15 @@ def audit_model_request(
     context: dict[str, Any],
     request_hash: str,
     feature_package_id: str | None = None,
-    prompt_tokens_estimate: int | None = None,
     timestamp: datetime | None = None,
     correlation_id: str | None = None,
 ) -> ModelRequest:
-    """Persist a GPT model request and emit a structured log."""
+    """Persist a GPT model request and emit a structured log.
+
+    ``context`` almacena los prompts (system + user) tal como se enviaron
+    al modelo. Asegurarse de que no contengan datos sensibles antes de
+    llegar a entornos LIVE.
+    """
     cid = correlation_id or _correlation_id.get() or str(uuid.uuid4())
 
     record = ModelRequest(
@@ -226,7 +230,6 @@ def audit_model_request(
         symbol=symbol,
         timestamp=timestamp or _now(),
         model=model,
-        prompt_tokens_estimate=prompt_tokens_estimate,
         context=context,
         request_hash=request_hash,
     )
