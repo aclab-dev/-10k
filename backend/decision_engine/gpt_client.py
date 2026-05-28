@@ -17,6 +17,7 @@ import httpx
 import structlog
 
 from backend.core.config import FailurePolicyConfig, get_config
+from backend.decision_engine.invalid_response_handler import handle_invalid_response
 from backend.decision_engine.schema_guard import (
     SchemaGuardResult,
     validate_gpt_json_string,
@@ -114,12 +115,15 @@ class GPTClient:
     - Connection pooling: el AsyncClient se instancia una vez y se reutiliza.
     - Retry con backoff exponencial para errores transitorios (rate limit,
       timeout, errores de red, 5xx). Respeta el header Retry-After en 429.
-    - Failure policy (Decisión 08):
+    - Failure policy (Decisión 08) para errores de conectividad:
       - NEW_ENTRY: failure bloquea si gpt_failure_blocks_new_entries=True;
         swallow y retorna None si es False.
       - POSITION_MANAGEMENT: retorna None (fallback determinístico) si
         exits_do_not_require_gpt_response y
         deterministic_position_management_without_gpt son True.
+    - Respuestas inválidas (GPTResponseValidationError) siempre bloquean,
+      independientemente de la failure policy. Una respuesta inválida no es
+      "GPT no disponible" — es GPT devolviendo algo que no podemos ejecutar.
     """
 
     def __init__(
@@ -166,10 +170,12 @@ class GPTClient:
 
         result: SchemaGuardResult = validate_gpt_json_string(raw)
         if not result.ok:
-            validation_error = GPTResponseValidationError(
+            # Respuesta inválida: registrar y bloquear siempre — nunca llega a
+            # failure policy porque una respuesta corrupta no es recuperable.
+            handle_invalid_response(raw, result.errors, request_id=req.prompt_version)
+            raise GPTResponseValidationError(
                 f"Respuesta GPT fuera de schema: {'; '.join(result.errors)}"
             )
-            return self._apply_failure_policy(validation_error, purpose)
 
         if result.decision is None:
             raise GPTResponseValidationError(
@@ -327,7 +333,11 @@ class GPTClient:
         exc: GPTClientError,
         purpose: RequestPurpose,
     ) -> ModelDecision | None:
-        """Aplica failure policy según purpose y config.
+        """Aplica failure policy para errores de conectividad según purpose y config.
+
+        Solo debe llamarse para errores de disponibilidad (timeout, rate limit,
+        5xx, red). GPTResponseValidationError nunca debe pasar por aquí —
+        las respuestas inválidas siempre bloquean sin pasar por la policy.
 
         POSITION_MANAGEMENT con deterministic=True → retorna None.
         NEW_ENTRY con gpt_failure_blocks=True → re-raise.

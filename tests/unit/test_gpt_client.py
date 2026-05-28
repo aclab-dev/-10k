@@ -509,8 +509,12 @@ async def test_failure_policy_validation_error_new_entry_blocks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failure_policy_validation_error_position_management_returns_none() -> None:
-    """Schema inválido en POSITION_MANAGEMENT → None (fallback determinístico)."""
+async def test_validation_error_always_raises_despite_position_management_fallback() -> None:
+    """Schema inválido en POSITION_MANAGEMENT → raise aunque fallback esté activo.
+
+    La failure policy no aplica a respuestas inválidas — una respuesta corrupta
+    no es 'GPT no disponible'. Siempre bloquea.
+    """
     client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
     bad = json.dumps({"invalid": "schema"})
 
@@ -520,9 +524,58 @@ async def test_failure_policy_validation_error_position_management_returns_none(
         new_callable=AsyncMock,
         return_value=_openai_response(bad),
     ):
-        result = await client.request(_make_request(), RequestPurpose.POSITION_MANAGEMENT)
+        with pytest.raises(GPTResponseValidationError):
+            await client.request(_make_request(), RequestPurpose.POSITION_MANAGEMENT)
 
-    assert result is None
+
+@pytest.mark.asyncio
+async def test_validation_error_always_raises_when_new_entry_blocks_disabled() -> None:
+    """Schema inválido en NEW_ENTRY con blocks=False → raise igual.
+
+    gpt_failure_blocks_new_entries=False silencia errores de conectividad pero
+    nunca respuestas inválidas — una respuesta que no pasa el schema guard
+    no puede derivar en un trade.
+    """
+    policy = FailurePolicyConfig(
+        gpt_failure_blocks_new_entries=False,
+        token_budget_failure_blocks_new_entries=False,
+        deterministic_position_management_without_gpt=True,
+        exits_do_not_require_gpt_response=True,
+        every_position_requires_confirmed_sl_tp=True,
+    )
+    client = _make_client(max_retries=0, failure_policy=policy)
+    bad = json.dumps({"totally": "wrong"})
+
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=_openai_response(bad),
+    ):
+        with pytest.raises(GPTResponseValidationError):
+            await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+
+@pytest.mark.asyncio
+async def test_no_json_response_always_raises_when_blocks_disabled() -> None:
+    """Respuesta no-JSON en NEW_ENTRY con blocks=False → raise GPTResponseValidationError."""
+    policy = FailurePolicyConfig(
+        gpt_failure_blocks_new_entries=False,
+        token_budget_failure_blocks_new_entries=False,
+        deterministic_position_management_without_gpt=True,
+        exits_do_not_require_gpt_response=True,
+        every_position_requires_confirmed_sl_tp=True,
+    )
+    client = _make_client(max_retries=0, failure_policy=policy)
+
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=_openai_response("not json at all <<<"),
+    ):
+        with pytest.raises(GPTResponseValidationError):
+            await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
 
 
 # ---------------------------------------------------------------------------
