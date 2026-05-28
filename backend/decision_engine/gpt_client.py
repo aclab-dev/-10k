@@ -14,6 +14,7 @@ import json
 import os
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import cast
 
 import httpx
 import structlog
@@ -205,9 +206,19 @@ class GPTClient:
         """
         model_request_record = None
         if session is not None and bot_run_id is not None and symbol is not None:
-            model_request_record = self._persist_audit_request(
-                session, req, bot_run_id, symbol, feature_package_id
-            )
+            try:
+                model_request_record = self._persist_audit_request(
+                    session, req, bot_run_id, symbol, feature_package_id
+                )
+            except Exception:
+                # Audit failure before the OpenAI call must not block the trade.
+                # model_request_record stays None → response won't be audited either.
+                _log.error(
+                    "gpt_client.audit_request_failed",
+                    bot_run_id=bot_run_id,
+                    symbol=symbol,
+                    exc_info=True,
+                )
 
         try:
             raw_result = await self._call_with_retry(req)
@@ -217,7 +228,8 @@ class GPTClient:
         result: SchemaGuardResult = validate_gpt_json_string(raw_result.content)
 
         if model_request_record is not None:
-            assert session is not None  # implied: record only exists if session was passed
+            # session is guaranteed non-None: record can only exist if session was passed
+            db_session = cast(Session, session)
             normalized = (
                 result.decision.model_dump(mode="json")
                 if result.ok and result.decision is not None
@@ -225,7 +237,7 @@ class GPTClient:
             )
             try:
                 audit_model_response(
-                    session,
+                    db_session,
                     model_request_id=model_request_record.id,
                     model=self._config.model,
                     raw_response=raw_result.raw_json,

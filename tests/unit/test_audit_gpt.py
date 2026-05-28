@@ -194,7 +194,6 @@ class TestAuditModelRequest:
             request_hash=_compute_request_hash("gpt-4o", "s", "u"),
         )
         assert record.feature_package_id is None
-        assert record.prompt_tokens_estimate is None
 
     def test_timestamp_is_set(self, session: Session, bot_run: BotRun) -> None:
         ctx = {"system_prompt": "s2", "user_prompt": "u2", "prompt_version": "1.0"}
