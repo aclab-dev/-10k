@@ -6,10 +6,15 @@ los callers puedan decidir cómo manejar outputs inválidos sin try/except.
 
 Cualquier respuesta fuera de schema bloquea la ejecución y registra el
 motivo en structlog para auditoría.
+
+Funciones principales:
+- validate_gpt_response(raw: dict)      — recibe dict ya parseado
+- validate_gpt_json_string(raw_json: str) — recibe el string crudo del GPT
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,3 +87,43 @@ def validate_gpt_response(raw: dict[str, Any]) -> SchemaGuardResult:
         except Exception:  # noqa: BLE001
             pass
         return SchemaGuardResult(ok=False, decision=None, errors=[str(exc)])
+
+
+def validate_gpt_json_string(raw_json: str) -> SchemaGuardResult:
+    """Parsea un JSON string crudo del GPT y lo valida contra ModelDecision.
+
+    Punto de entrada principal cuando la respuesta del modelo llega como
+    string (caso habitual). Maneja errores de parseo como fallo de guard,
+    no como excepción, manteniendo el mismo contrato que validate_gpt_response.
+    """
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        snippet = raw_json[:200]
+        try:
+            _log.warning(
+                "schema_guard.blocked",
+                reason="json_parse_error",
+                error=str(exc),
+                raw_snippet=snippet,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return SchemaGuardResult(ok=False, decision=None, errors=[f"json_parse_error: {exc}"])
+
+    if not isinstance(parsed, dict):
+        try:
+            _log.warning(
+                "schema_guard.blocked",
+                reason="not_a_json_object",
+                raw_type=type(parsed).__name__,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return SchemaGuardResult(
+            ok=False,
+            decision=None,
+            errors=[f"Expected a JSON object, got {type(parsed).__name__}"],
+        )
+
+    return validate_gpt_response(parsed)
