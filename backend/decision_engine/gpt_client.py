@@ -9,12 +9,15 @@ se incluye en logs.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from enum import StrEnum
 
 import httpx
 import structlog
+from sqlalchemy.orm import Session
 
 from backend.core.config import FailurePolicyConfig, get_config
 from backend.decision_engine.schema_guard import (
@@ -22,11 +25,37 @@ from backend.decision_engine.schema_guard import (
     validate_gpt_json_string,
 )
 from backend.decision_engine.schemas import ModelDecision
+from backend.storage.audit import audit_model_request, audit_model_response
 
 _log = structlog.get_logger(__name__)
 
 _MAX_LOG_CHARS = 500
 _DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
+
+
+# ---------------------------------------------------------------------------
+# Internal call result
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _RawCallResult:
+    """Resultado interno de una llamada HTTP exitosa a OpenAI."""
+
+    content: str
+    raw_json: str
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    finish_reason: str | None
+
+
+def _compute_request_hash(model: str, system_prompt: str, user_prompt: str) -> str:
+    payload = json.dumps(
+        {"model": model, "system_prompt": system_prompt, "user_prompt": user_prompt},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -152,19 +181,69 @@ class GPTClient:
         self,
         req: GPTRequest,
         purpose: RequestPurpose,
+        *,
+        session: Session | None = None,
+        bot_run_id: str | None = None,
+        symbol: str | None = None,
+        feature_package_id: str | None = None,
     ) -> ModelDecision | None:
         """Llama a GPT y retorna ModelDecision validado.
 
         Retorna None si la failure policy permite continuar sin GPT
         (POSITION_MANAGEMENT con deterministic=True, o NEW_ENTRY con
         gpt_failure_blocks_new_entries=False).
+
+        Si se pasa session + bot_run_id + symbol, persiste el request y la
+        response en DB para auditoría y reconstrucción completa.
         """
+        do_audit = session is not None and bot_run_id is not None and symbol is not None
+        model_request_record = None
+
+        if do_audit:
+            context_payload: dict[str, str] = {
+                "system_prompt": req.system_prompt,
+                "user_prompt": req.user_prompt,
+                "prompt_version": req.prompt_version,
+            }
+            request_hash = _compute_request_hash(
+                self._config.model, req.system_prompt, req.user_prompt
+            )
+            model_request_record = audit_model_request(
+                session,  # type: ignore[arg-type]
+                bot_run_id=bot_run_id,  # type: ignore[arg-type]
+                symbol=symbol,  # type: ignore[arg-type]
+                model=self._config.model,
+                context=context_payload,
+                request_hash=request_hash,
+                feature_package_id=feature_package_id,
+            )
+
         try:
-            raw = await self._call_with_retry(req)
+            raw_result = await self._call_with_retry(req)
         except GPTClientError as exc:
             return self._apply_failure_policy(exc, purpose)
 
-        result: SchemaGuardResult = validate_gpt_json_string(raw)
+        result: SchemaGuardResult = validate_gpt_json_string(raw_result.content)
+
+        if do_audit and model_request_record is not None:
+            normalized = (
+                result.decision.model_dump(mode="json")
+                if result.ok and result.decision is not None
+                else None
+            )
+            audit_model_response(
+                session,  # type: ignore[arg-type]
+                model_request_id=model_request_record.id,
+                model=self._config.model,
+                raw_response=raw_result.raw_json,
+                normalized_response=normalized,
+                prompt_tokens=raw_result.prompt_tokens,
+                completion_tokens=raw_result.completion_tokens,
+                total_tokens=raw_result.total_tokens,
+                finish_reason=raw_result.finish_reason,
+                is_valid_schema=result.ok,
+            )
+
         if not result.ok:
             validation_error = GPTResponseValidationError(
                 f"Respuesta GPT fuera de schema: {'; '.join(result.errors)}"
@@ -181,7 +260,7 @@ class GPTClient:
     # Retry loop
     # ------------------------------------------------------------------
 
-    async def _call_with_retry(self, req: GPTRequest) -> str:
+    async def _call_with_retry(self, req: GPTRequest) -> _RawCallResult:
         cfg = self._config
         last_exc: GPTClientError | None = None
         next_delay: float = 0.0
@@ -225,7 +304,7 @@ class GPTClient:
     # Single HTTP call
     # ------------------------------------------------------------------
 
-    async def _call_once(self, req: GPTRequest) -> str:
+    async def _call_once(self, req: GPTRequest) -> _RawCallResult:
         cfg = self._config
 
         _log.info(
@@ -261,7 +340,7 @@ class GPTClient:
 
         return self._extract_content(response, cfg.model)
 
-    def _extract_content(self, response: httpx.Response, model: str) -> str:
+    def _extract_content(self, response: httpx.Response, model: str) -> _RawCallResult:
         status = response.status_code
 
         if status == 429:
@@ -309,14 +388,26 @@ class GPTClient:
                 f"en model={model}. Aumentar max_tokens o reducir el contexto."
             )
 
+        usage = data.get("usage", {})
+        prompt_tokens: int | None = usage.get("prompt_tokens")
+        completion_tokens: int | None = usage.get("completion_tokens")
+        total_tokens: int | None = usage.get("total_tokens")
+
         _log.info(
             "gpt_client.response",
             model=model,
             finish_reason=finish_reason,
-            prompt_tokens=data.get("usage", {}).get("prompt_tokens"),
-            completion_tokens=data.get("usage", {}).get("completion_tokens"),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
-        return content
+        return _RawCallResult(
+            content=content,
+            raw_json=json.dumps(data),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            finish_reason=finish_reason,
+        )
 
     # ------------------------------------------------------------------
     # Failure policy (Decisión 08)

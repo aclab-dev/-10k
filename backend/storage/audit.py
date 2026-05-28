@@ -39,7 +39,13 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from backend.storage.models import Decision, ErrorRecord, MarketSnapshot
+from backend.storage.models import (
+    Decision,
+    ErrorRecord,
+    MarketSnapshot,
+    ModelRequest,
+    ModelResponse,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -194,6 +200,89 @@ def audit_snapshot(
         correlation_id=cid,
         symbol=symbol,
         close=str(close),
+    )
+    return record
+
+
+def audit_model_request(
+    session: Session,
+    *,
+    bot_run_id: str,
+    symbol: str,
+    model: str,
+    context: dict[str, Any],
+    request_hash: str,
+    feature_package_id: str | None = None,
+    prompt_tokens_estimate: int | None = None,
+    timestamp: datetime | None = None,
+    correlation_id: str | None = None,
+) -> ModelRequest:
+    """Persist a GPT model request and emit a structured log."""
+    cid = correlation_id or _correlation_id.get() or str(uuid.uuid4())
+
+    record = ModelRequest(
+        bot_run_id=bot_run_id,
+        feature_package_id=feature_package_id,
+        symbol=symbol,
+        timestamp=timestamp or _now(),
+        model=model,
+        prompt_tokens_estimate=prompt_tokens_estimate,
+        context=context,
+        request_hash=request_hash,
+    )
+    session.add(record)
+    session.flush()
+
+    _log.info(
+        "audit.model_request",
+        model_request_id=record.id,
+        bot_run_id=bot_run_id,
+        correlation_id=cid,
+        symbol=symbol,
+        model=model,
+        request_hash=request_hash,
+    )
+    return record
+
+
+def audit_model_response(
+    session: Session,
+    *,
+    model_request_id: str,
+    model: str,
+    raw_response: str,
+    normalized_response: dict[str, Any] | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    total_tokens: int | None = None,
+    finish_reason: str | None = None,
+    is_valid_schema: bool = False,
+    timestamp: datetime | None = None,
+) -> ModelResponse:
+    """Persist a GPT model response and emit a structured log."""
+    record = ModelResponse(
+        model_request_id=model_request_id,
+        timestamp=timestamp or _now(),
+        raw_response=raw_response,
+        normalized_response=normalized_response,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        model=model,
+        finish_reason=finish_reason,
+        is_valid_schema=is_valid_schema,
+    )
+    session.add(record)
+    session.flush()
+
+    _log.info(
+        "audit.model_response",
+        model_response_id=record.id,
+        model_request_id=model_request_id,
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        is_valid_schema=is_valid_schema,
     )
     return record
 
