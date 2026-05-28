@@ -338,6 +338,13 @@ class TokenBudgetConfig(BaseModel):
     max_tokens_per_day: int
     alert_at_percent: float
 
+    @field_validator("alert_at_percent")
+    @classmethod
+    def _alert_percent_bounds(cls, v: float) -> float:
+        if not (0.0 < v < 1.0):
+            raise ValueError(f"alert_at_percent debe estar en (0, 1), recibido: {v}")
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Modelo raiz

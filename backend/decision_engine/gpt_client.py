@@ -177,6 +177,27 @@ class GPTClient:
         except GPTClientError as exc:
             return self._apply_failure_policy(exc, purpose)
 
+        # Registrar consumo tan pronto como tenemos la respuesta HTTP (200),
+        # independientemente de lo que haga la validación de schema después.
+        # Los tokens se consumieron en OpenAI; no registrarlos subestimaría el budget.
+        if self._budget_manager is not None:
+            if usage is not None:
+                try:
+                    self._budget_manager.record_usage(
+                        prompt_tokens=usage["prompt_tokens"],
+                        completion_tokens=usage["completion_tokens"],
+                        model=self._config.model,
+                    )
+                except Exception:
+                    # Un error de DB no debe descartar una decisión GPT válida.
+                    _log.exception("token_budget.record_usage_failed")
+            else:
+                _log.warning(
+                    "token_budget.usage_missing",
+                    model=self._config.model,
+                    note="OpenAI no devolvió campo 'usage'; budget no actualizado",
+                )
+
         result: SchemaGuardResult = validate_gpt_json_string(raw)
         if not result.ok:
             validation_error = GPTResponseValidationError(
@@ -187,14 +208,6 @@ class GPTClient:
         if result.decision is None:
             raise GPTResponseValidationError(
                 "SchemaGuardResult.ok=True pero decision=None — invariante roto"
-            )
-
-        # Registrar uso real post-llamada exitosa
-        if self._budget_manager is not None and usage is not None:
-            self._budget_manager.record_usage(
-                prompt_tokens=usage["prompt_tokens"],
-                completion_tokens=usage["completion_tokens"],
-                model=self._config.model,
             )
 
         return result.decision

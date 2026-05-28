@@ -139,13 +139,22 @@ class TokenBudgetManager:
         model_request_id: str | None = None,
     ) -> TokenUsage:
         """Persiste el consumo de tokens de una llamada GPT exitosa."""
+        total = prompt_tokens + completion_tokens
+        if total > self._config.max_tokens_per_request:
+            _log.warning(
+                "token_budget.request_limit_exceeded",
+                bot_run_id=self._bot_run_id,
+                model=model,
+                total_tokens=total,
+                max_tokens_per_request=self._config.max_tokens_per_request,
+            )
         record = TokenUsage(
             bot_run_id=self._bot_run_id,
             model_request_id=model_request_id,
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
+            total_tokens=total,
         )
         saved = self._repo.save(record)
         _log.info(
