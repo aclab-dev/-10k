@@ -22,7 +22,7 @@ from backend.token_budget.schemas import BudgetStatus
 _CFG = TokenBudgetConfig(
     max_tokens_per_request=4000,
     max_tokens_per_hour=1000,
-    max_tokens_per_day=5000,
+    max_tokens_per_24h=5000,
     alert_at_percent=0.8,
 )
 
@@ -200,7 +200,7 @@ class TestCheckBudgetNewEntry:
         mgr = _make_manager(session, run.id)
         result = mgr.check_budget(RequestPurpose.NEW_ENTRY)
         assert result.limit_hour == _CFG.max_tokens_per_hour
-        assert result.limit_day == _CFG.max_tokens_per_day
+        assert result.limit_day == _CFG.max_tokens_per_24h
 
 
 # ---------------------------------------------------------------------------

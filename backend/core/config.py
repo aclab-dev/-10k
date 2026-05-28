@@ -335,7 +335,7 @@ class BacktestingBiasGuardConfig(BaseModel):
 class TokenBudgetConfig(BaseModel):
     max_tokens_per_request: int
     max_tokens_per_hour: int
-    max_tokens_per_day: int
+    max_tokens_per_24h: int
     alert_at_percent: float
 
     @field_validator("alert_at_percent")

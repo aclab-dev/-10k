@@ -168,9 +168,19 @@ class GPTClient:
         Levanta TokenBudgetExceededError si el budget está agotado y
         token_budget_failure_blocks_new_entries=True (solo para NEW_ENTRY).
         """
-        # Verificar budget antes de llamar (solo NEW_ENTRY)
+        # Verificar budget antes de llamar (solo NEW_ENTRY).
+        # Hard block (policy=True): check_budget levanta TokenBudgetExceededError.
+        # Soft block (policy=False): retorna ok=False → no llamamos a OpenAI igualmente.
         if self._budget_manager is not None and purpose == RequestPurpose.NEW_ENTRY:
-            self._budget_manager.check_budget(purpose)
+            budget_result = self._budget_manager.check_budget(purpose)
+            if not budget_result.ok:
+                _log.warning(
+                    "token_budget.soft_block",
+                    status=str(budget_result.status),
+                    tokens_used_hour=budget_result.tokens_used_hour,
+                    tokens_used_day=budget_result.tokens_used_day,
+                )
+                return None
 
         try:
             raw, usage = await self._call_with_retry(req)

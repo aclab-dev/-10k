@@ -61,21 +61,26 @@ class TokenBudgetManager:
         cfg = self._config
 
         if purpose == RequestPurpose.POSITION_MANAGEMENT:
+            # Decisión 08: position management nunca es bloqueado por presupuesto.
+            # tokens_used_hour/day se dejan en 0 intencionalmente — no se consulta
+            # la DB porque esos valores no son significativos para este purpose y
+            # la llamada debe ser lo más rápida posible.
             return BudgetCheckResult(
                 ok=True,
                 status=BudgetStatus.NORMAL,
                 tokens_used_hour=0,
                 tokens_used_day=0,
                 limit_hour=cfg.max_tokens_per_hour,
-                limit_day=cfg.max_tokens_per_day,
+                limit_day=cfg.max_tokens_per_24h,
             )
 
         now = datetime.now(UTC)
         used_hour = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=1))
+        # Ventana deslizante de 24h (no día calendario) — ver max_tokens_per_24h en config.
         used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
 
         hour_exceeded = used_hour >= cfg.max_tokens_per_hour
-        day_exceeded = used_day >= cfg.max_tokens_per_day
+        day_exceeded = used_day >= cfg.max_tokens_per_24h
 
         if hour_exceeded or day_exceeded:
             _log.warning(
@@ -84,13 +89,13 @@ class TokenBudgetManager:
                 tokens_used_hour=used_hour,
                 limit_hour=cfg.max_tokens_per_hour,
                 tokens_used_day=used_day,
-                limit_day=cfg.max_tokens_per_day,
+                limit_day=cfg.max_tokens_per_24h,
             )
             if self._failure_policy.token_budget_failure_blocks_new_entries:
                 raise TokenBudgetExceededError(
                     f"Token budget excedido: "
                     f"hora={used_hour}/{cfg.max_tokens_per_hour}, "
-                    f"día={used_day}/{cfg.max_tokens_per_day}"
+                    f"día={used_day}/{cfg.max_tokens_per_24h}"
                 )
             return BudgetCheckResult(
                 ok=False,
@@ -98,12 +103,12 @@ class TokenBudgetManager:
                 tokens_used_hour=used_hour,
                 tokens_used_day=used_day,
                 limit_hour=cfg.max_tokens_per_hour,
-                limit_day=cfg.max_tokens_per_day,
+                limit_day=cfg.max_tokens_per_24h,
             )
 
         alert = cfg.alert_at_percent
         near_hour = used_hour >= alert * cfg.max_tokens_per_hour
-        near_day = used_day >= alert * cfg.max_tokens_per_day
+        near_day = used_day >= alert * cfg.max_tokens_per_24h
         status = BudgetStatus.WARNING if (near_hour or near_day) else BudgetStatus.NORMAL
 
         if status == BudgetStatus.WARNING:
@@ -113,7 +118,7 @@ class TokenBudgetManager:
                 tokens_used_hour=used_hour,
                 limit_hour=cfg.max_tokens_per_hour,
                 tokens_used_day=used_day,
-                limit_day=cfg.max_tokens_per_day,
+                limit_day=cfg.max_tokens_per_24h,
                 alert_at_percent=alert,
             )
 
@@ -123,7 +128,7 @@ class TokenBudgetManager:
             tokens_used_hour=used_hour,
             tokens_used_day=used_day,
             limit_hour=cfg.max_tokens_per_hour,
-            limit_day=cfg.max_tokens_per_day,
+            limit_day=cfg.max_tokens_per_24h,
         )
 
     # ------------------------------------------------------------------
