@@ -40,6 +40,7 @@ _POLICY_DEFAULT = FailurePolicyConfig(
     every_position_requires_confirmed_sl_tp=True,
 )
 
+# Política con todos los flags en False — GPT falla nunca bloquea
 _POLICY_GPT_NEVER_BLOCKS = FailurePolicyConfig(
     gpt_failure_blocks_new_entries=False,
     token_budget_failure_blocks_new_entries=False,
@@ -138,7 +139,7 @@ def _valid_decision_dict() -> dict[str, Any]:
     }
 
 
-def _openai_response(content: str, status: int = 200) -> MagicMock:
+def _openai_response(content: str, status: int = 200, finish_reason: str = "stop") -> MagicMock:
     """Crea un mock de httpx.Response para una respuesta de OpenAI Chat."""
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = status
@@ -148,7 +149,7 @@ def _openai_response(content: str, status: int = 200) -> MagicMock:
         "choices": [
             {
                 "message": {"content": content, "role": "assistant"},
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
             }
         ],
         "usage": {"prompt_tokens": 100, "completion_tokens": 50},
@@ -160,7 +161,8 @@ def _error_response(status: int, body: str = "error") -> MagicMock:
     mock_resp = MagicMock(spec=httpx.Response)
     mock_resp.status_code = status
     mock_resp.text = body
-    mock_resp.headers = {}
+    mock_resp.headers = MagicMock()
+    mock_resp.headers.get.return_value = None
     return mock_resp
 
 
@@ -172,6 +174,16 @@ def _rate_limit_response(retry_after: str | None = None) -> MagicMock:
     mock_resp.headers.get.side_effect = lambda k, d=None: (
         retry_after if k == "Retry-After" and retry_after else d
     )
+    return mock_resp
+
+
+def _empty_choices_response() -> MagicMock:
+    """Respuesta 200 pero con choices vacío — estructura inesperada."""
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.text = ""
+    mock_resp.headers = MagicMock()
+    mock_resp.json.return_value = {"choices": [], "usage": {}}
     return mock_resp
 
 
@@ -187,7 +199,6 @@ def test_missing_api_key_raises() -> None:
             GPTClient(
                 config=GPTClientConfig(),
                 failure_policy=_POLICY_DEFAULT,
-                # api_key omitido y env vacío
             )
 
 
@@ -209,9 +220,7 @@ async def test_request_success_returns_model_decision() -> None:
     content = json.dumps(_valid_decision_dict())
     mock_resp = _openai_response(content)
 
-    with patch(
-        "httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_resp
-    ):
+    with patch.object(client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp):
         result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
 
     assert isinstance(result, ModelDecision)
@@ -230,8 +239,11 @@ async def test_retry_on_rate_limit_succeeds_on_second_attempt() -> None:
     content = json.dumps(_valid_decision_dict())
 
     side_effects = [_rate_limit_response(), _openai_response(content)]
-    with patch(
-        "httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=side_effects
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        side_effect=side_effects,
     ):
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
@@ -247,8 +259,11 @@ async def test_retry_after_header_sets_delay() -> None:
     content = json.dumps(_valid_decision_dict())
 
     side_effects = [_rate_limit_response(retry_after="7"), _openai_response(content)]
-    with patch(
-        "httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=side_effects
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        side_effect=side_effects,
     ):
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
@@ -262,10 +277,6 @@ async def test_retry_on_timeout_succeeds_on_second_attempt() -> None:
     """Timeout en primer intento → reintenta → éxito en segundo."""
     client = _make_client(max_retries=2, base_delay=0.0)
     content = json.dumps(_valid_decision_dict())
-
-    async def _post_side_effect(*args: Any, **kwargs: Any) -> Any:
-        raise httpx.TimeoutException("timed out")
-
     call_count = 0
 
     async def _post_with_recovery(*args: Any, **kwargs: Any) -> Any:
@@ -275,8 +286,9 @@ async def test_retry_on_timeout_succeeds_on_second_attempt() -> None:
             raise httpx.TimeoutException("timed out")
         return _openai_response(content)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         side_effect=_post_with_recovery,
     ):
@@ -297,8 +309,11 @@ async def test_retry_on_server_error_succeeds_on_second_attempt() -> None:
         _error_response(500, "Internal Server Error"),
         _openai_response(content),
     ]
-    with patch(
-        "httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=side_effects
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        side_effect=side_effects,
     ):
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
@@ -316,8 +331,9 @@ async def test_exhausted_retries_rate_limit_raises() -> None:
     """Retries agotados con 429 en NEW_ENTRY → raise GPTRateLimitError."""
     client = _make_client(max_retries=2, base_delay=0.0)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_rate_limit_response(),
     ):
@@ -331,8 +347,9 @@ async def test_exhausted_retries_server_error_raises() -> None:
     """Retries agotados con 500 en NEW_ENTRY → raise GPTClientError."""
     client = _make_client(max_retries=1, base_delay=0.0)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_error_response(503),
     ):
@@ -351,8 +368,9 @@ async def test_no_retry_on_auth_error() -> None:
     """401 → GPTAuthError sin reintento (1 sola llamada HTTP)."""
     client = _make_client(max_retries=3, base_delay=0.0)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_error_response(401),
     ) as mock_post:
@@ -369,8 +387,9 @@ async def test_no_retry_on_validation_error() -> None:
     bad_content = "not valid json {{{"
     mock_resp = _openai_response(bad_content)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=mock_resp,
     ) as mock_post:
@@ -387,8 +406,9 @@ async def test_no_retry_on_schema_mismatch() -> None:
     bad_schema = json.dumps({"foo": "bar"})
     mock_resp = _openai_response(bad_schema)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=mock_resp,
     ) as mock_post:
@@ -405,11 +425,12 @@ async def test_no_retry_on_schema_mismatch() -> None:
 
 @pytest.mark.asyncio
 async def test_failure_policy_new_entry_blocks_on_error() -> None:
-    """NEW_ENTRY + gpt_failure_blocks_new_entries=true → raise (no swallow)."""
+    """NEW_ENTRY + gpt_failure_blocks_new_entries=True → raise."""
     client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_rate_limit_response(),
     ):
@@ -418,29 +439,52 @@ async def test_failure_policy_new_entry_blocks_on_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failure_policy_position_management_returns_none() -> None:
-    """POSITION_MANAGEMENT + deterministic=true → retorna None en vez de raise."""
-    client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
+async def test_failure_policy_new_entry_swallowed_when_blocks_disabled() -> None:
+    """NEW_ENTRY + gpt_failure_blocks_new_entries=False → retorna None (swallow)."""
+    policy = FailurePolicyConfig(
+        gpt_failure_blocks_new_entries=False,
+        token_budget_failure_blocks_new_entries=False,
+        deterministic_position_management_without_gpt=True,
+        exits_do_not_require_gpt_response=True,
+        every_position_requires_confirmed_sl_tp=True,
+    )
+    client = _make_client(max_retries=0, failure_policy=policy)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_rate_limit_response(),
     ):
-        result = await client.request(
-            _make_request(), RequestPurpose.POSITION_MANAGEMENT
-        )
+        result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_failure_policy_position_management_returns_none() -> None:
+    """POSITION_MANAGEMENT + deterministic=True → retorna None en vez de raise."""
+    client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
+
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=_rate_limit_response(),
+    ):
+        result = await client.request(_make_request(), RequestPurpose.POSITION_MANAGEMENT)
 
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_failure_policy_position_management_raises_when_policy_disabled() -> None:
-    """POSITION_MANAGEMENT con deterministic=false → raise igual."""
+    """POSITION_MANAGEMENT con deterministic=False → raise igual."""
     client = _make_client(max_retries=0, failure_policy=_POLICY_GPT_NEVER_BLOCKS)
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_rate_limit_response(),
     ):
@@ -450,12 +494,13 @@ async def test_failure_policy_position_management_raises_when_policy_disabled() 
 
 @pytest.mark.asyncio
 async def test_failure_policy_validation_error_new_entry_blocks() -> None:
-    """Schema inválido en NEW_ENTRY → raise GPTResponseValidationError (no swallow)."""
+    """Schema inválido en NEW_ENTRY → raise GPTResponseValidationError."""
     client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
     bad = json.dumps({"invalid": "schema"})
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_openai_response(bad),
     ):
@@ -464,21 +509,18 @@ async def test_failure_policy_validation_error_new_entry_blocks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failure_policy_validation_error_position_management_returns_none() -> (
-    None
-):
+async def test_failure_policy_validation_error_position_management_returns_none() -> None:
     """Schema inválido en POSITION_MANAGEMENT → None (fallback determinístico)."""
     client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT)
     bad = json.dumps({"invalid": "schema"})
 
-    with patch(
-        "httpx.AsyncClient.post",
+    with patch.object(
+        client._http_client,
+        "post",
         new_callable=AsyncMock,
         return_value=_openai_response(bad),
     ):
-        result = await client.request(
-            _make_request(), RequestPurpose.POSITION_MANAGEMENT
-        )
+        result = await client.request(_make_request(), RequestPurpose.POSITION_MANAGEMENT)
 
     assert result is None
 
@@ -520,3 +562,19 @@ def test_extract_content_rate_limit_without_retry_after() -> None:
     with pytest.raises(GPTRateLimitError) as exc_info:
         client._extract_content(mock_resp, "gpt-4o")
     assert exc_info.value.retry_after_seconds is None
+
+
+def test_extract_content_empty_choices_raises() -> None:
+    """choices: [] → GPTClientError con mensaje de estructura inesperada."""
+    client = _make_client()
+    mock_resp = _empty_choices_response()
+    with pytest.raises(GPTClientError, match="estructura inesperada"):
+        client._extract_content(mock_resp, "gpt-4o")
+
+
+def test_extract_content_finish_reason_length_raises() -> None:
+    """finish_reason='length' → GPTClientError (respuesta truncada)."""
+    client = _make_client()
+    mock_resp = _openai_response("partial content...", finish_reason="length")
+    with pytest.raises(GPTClientError, match="truncada"):
+        client._extract_content(mock_resp, "gpt-4o")

@@ -111,11 +111,15 @@ class GPTClient:
 
     Implementa:
     - Timeout configurable por llamada.
+    - Connection pooling: el AsyncClient se instancia una vez y se reutiliza.
     - Retry con backoff exponencial para errores transitorios (rate limit,
       timeout, errores de red, 5xx). Respeta el header Retry-After en 429.
-    - Failure policy (Decisión 08): failure en NEW_ENTRY bloquea el ciclo;
-      failure en POSITION_MANAGEMENT retorna None para que el caller use
-      lógica determinística en su lugar.
+    - Failure policy (Decisión 08):
+      - NEW_ENTRY: failure bloquea si gpt_failure_blocks_new_entries=True;
+        swallow y retorna None si es False.
+      - POSITION_MANAGEMENT: retorna None (fallback determinístico) si
+        exits_do_not_require_gpt_response y
+        deterministic_position_management_without_gpt son True.
     """
 
     def __init__(
@@ -134,6 +138,11 @@ class GPTClient:
                 "Setear la variable de entorno antes de inicializar GPTClient."
             )
         self._api_key = resolved_key
+        self._http_client = httpx.AsyncClient(timeout=self._config.timeout_seconds)
+
+    async def aclose(self) -> None:
+        """Cierra el connection pool. Llamar al apagar el proceso."""
+        await self._http_client.aclose()
 
     # ------------------------------------------------------------------
     # Public API
@@ -146,9 +155,9 @@ class GPTClient:
     ) -> ModelDecision | None:
         """Llama a GPT y retorna ModelDecision validado.
 
-        Retorna None si purpose=POSITION_MANAGEMENT y la llamada falla con
-        failure policy deterministic=true. Re-raise GPTClientError si
-        purpose=NEW_ENTRY con gpt_failure_blocks_new_entries=true.
+        Retorna None si la failure policy permite continuar sin GPT
+        (POSITION_MANAGEMENT con deterministic=True, o NEW_ENTRY con
+        gpt_failure_blocks_new_entries=False).
         """
         try:
             raw = await self._call_with_retry(req)
@@ -162,7 +171,10 @@ class GPTClient:
             )
             return self._apply_failure_policy(validation_error, purpose)
 
-        assert result.decision is not None
+        if result.decision is None:
+            raise GPTResponseValidationError(
+                "SchemaGuardResult.ok=True pero decision=None — invariante roto"
+            )
         return result.decision
 
     # ------------------------------------------------------------------
@@ -205,7 +217,8 @@ class GPTClient:
                     cfg.max_delay_seconds,
                 )
 
-        assert last_exc is not None
+        if last_exc is None:
+            raise GPTClientError("Retry loop terminó sin excepción ni resultado")
         raise last_exc
 
     # ------------------------------------------------------------------
@@ -222,23 +235,23 @@ class GPTClient:
         )
 
         try:
-            async with httpx.AsyncClient(timeout=cfg.timeout_seconds) as client:
-                response = await client.post(
-                    f"{cfg.api_base_url}/chat/completions",
-                    json={
-                        "model": cfg.model,
-                        "messages": [
-                            {"role": "system", "content": req.system_prompt},
-                            {"role": "user", "content": req.user_prompt},
-                        ],
-                        "max_tokens": cfg.max_tokens,
-                        "temperature": cfg.temperature,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                )
+            response = await self._http_client.post(
+                f"{cfg.api_base_url}/chat/completions",
+                json={
+                    "model": cfg.model,
+                    "messages": [
+                        {"role": "system", "content": req.system_prompt},
+                        {"role": "user", "content": req.user_prompt},
+                    ],
+                    "max_tokens": cfg.max_tokens,
+                    "temperature": cfg.temperature,
+                    "response_format": {"type": "json_object"},
+                },
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
         except httpx.TimeoutException as exc:
             raise GPTTimeoutError(
                 f"Timeout tras {cfg.timeout_seconds}s en model={cfg.model}"
@@ -266,29 +279,40 @@ class GPTClient:
 
         if status in (401, 403):
             raise GPTAuthError(
-                f"Auth error {status} en model={model}: "
-                f"{response.text[:_MAX_LOG_CHARS]}"
+                f"Auth error {status} en model={model}: {response.text[:_MAX_LOG_CHARS]}"
             )
 
         if status >= 500:
             raise GPTClientError(
-                f"OpenAI server error {status} en model={model}: "
-                f"{response.text[:_MAX_LOG_CHARS]}"
+                f"OpenAI server error {status} en model={model}: {response.text[:_MAX_LOG_CHARS]}"
             )
 
         if status != 200:
             raise GPTClientError(
-                f"Status inesperado {status} en model={model}: "
-                f"{response.text[:_MAX_LOG_CHARS]}"
+                f"Status inesperado {status} en model={model}: {response.text[:_MAX_LOG_CHARS]}"
             )
 
         data = response.json()
-        content: str = data["choices"][0]["message"]["content"]
+        try:
+            choice = data["choices"][0]
+            content: str = choice["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            raise GPTClientError(
+                f"Respuesta OpenAI con estructura inesperada en model={model}: "
+                f"{str(data)[:_MAX_LOG_CHARS]}"
+            ) from exc
+
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "length":
+            raise GPTClientError(
+                f"Respuesta truncada por max_tokens={self._config.max_tokens} "
+                f"en model={model}. Aumentar max_tokens o reducir el contexto."
+            )
 
         _log.info(
             "gpt_client.response",
             model=model,
-            finish_reason=data["choices"][0].get("finish_reason"),
+            finish_reason=finish_reason,
             prompt_tokens=data.get("usage", {}).get("prompt_tokens"),
             completion_tokens=data.get("usage", {}).get("completion_tokens"),
         )
@@ -305,8 +329,10 @@ class GPTClient:
     ) -> ModelDecision | None:
         """Aplica failure policy según purpose y config.
 
-        POSITION_MANAGEMENT con deterministic=true → retorna None (fallback
-        determinístico). NEW_ENTRY con gpt_failure_blocks=true → re-raise.
+        POSITION_MANAGEMENT con deterministic=True → retorna None.
+        NEW_ENTRY con gpt_failure_blocks=True → re-raise.
+        NEW_ENTRY con gpt_failure_blocks=False → retorna None (swallow).
+        POSITION_MANAGEMENT con policy desactivada → re-raise.
         """
         policy = self._failure_policy
 
@@ -322,16 +348,24 @@ class GPTClient:
                     error=str(exc),
                 )
                 return None
+            # Policy desactivada → re-raise
+            raise exc
 
-        if (
-            purpose == RequestPurpose.NEW_ENTRY
-            and policy.gpt_failure_blocks_new_entries
-        ):
+        # NEW_ENTRY
+        if policy.gpt_failure_blocks_new_entries:
             _log.error(
                 "gpt_client.failure_blocks_entry",
                 purpose=str(purpose),
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
+            raise exc
 
-        raise exc
+        # NEW_ENTRY con blocks=False → swallow y continuar sin GPT
+        _log.warning(
+            "gpt_client.failure_swallowed_new_entry",
+            purpose=str(purpose),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return None
