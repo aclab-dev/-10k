@@ -25,8 +25,8 @@ from backend.decision_engine.schemas import ModelDecision
 
 _log = structlog.get_logger(__name__)
 
-_OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 _MAX_LOG_CHARS = 500
+_DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +45,7 @@ class GPTClientConfig:
     max_delay_seconds: float = 60.0
     max_tokens: int = 2000
     temperature: float = 0.1
+    api_base_url: str = _DEFAULT_API_BASE_URL
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +224,7 @@ class GPTClient:
         try:
             async with httpx.AsyncClient(timeout=cfg.timeout_seconds) as client:
                 response = await client.post(
-                    _OPENAI_CHAT_URL,
+                    f"{cfg.api_base_url}/chat/completions",
                     json={
                         "model": cfg.model,
                         "messages": [
