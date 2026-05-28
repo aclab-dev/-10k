@@ -327,29 +327,25 @@ class TestGPTClientWithAudit:
         content = json.dumps(_valid_decision_dict())
         mock_resp = _openai_response(content)
 
-        with MagicMock() as _:
-            from unittest.mock import patch
+        from unittest.mock import patch
 
-            with patch.object(
-                client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
-            ):
-                result = await client.request(
-                    req,
-                    RequestPurpose.NEW_ENTRY,
-                    session=session,
-                    bot_run_id=bot_run.id,
-                    symbol="BTCUSDT",
-                )
+        from sqlalchemy import select
+
+        with patch.object(
+            client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+        ):
+            result = await client.request(
+                req,
+                RequestPurpose.NEW_ENTRY,
+                session=session,
+                bot_run_id=bot_run.id,
+                symbol="BTCUSDT",
+            )
 
         assert isinstance(result, ModelDecision)
 
-        # Verificar ModelRequest persistido
-        from sqlalchemy import select
-
         req_records = list(
-            session.scalars(
-                select(ModelRequest).where(ModelRequest.bot_run_id == bot_run.id)
-            )
+            session.scalars(select(ModelRequest).where(ModelRequest.bot_run_id == bot_run.id))
         )
         assert len(req_records) == 1
         mr = req_records[0]
@@ -360,9 +356,7 @@ class TestGPTClientWithAudit:
 
         # Verificar ModelResponse persistido
         resp_records = list(
-            session.scalars(
-                select(ModelResponse).where(ModelResponse.model_request_id == mr.id)
-            )
+            session.scalars(select(ModelResponse).where(ModelResponse.model_request_id == mr.id))
         )
         assert len(resp_records) == 1
         resp = resp_records[0]
@@ -424,9 +418,9 @@ class TestGPTClientWithAudit:
 
         resp_records = list(
             session.scalars(
-                select(ModelResponse).join(
-                    ModelRequest, ModelResponse.model_request_id == ModelRequest.id
-                ).where(
+                select(ModelResponse)
+                .join(ModelRequest, ModelResponse.model_request_id == ModelRequest.id)
+                .where(
                     ModelRequest.bot_run_id == bot_run.id,
                     ModelRequest.symbol == "ETHUSDT",
                 )
@@ -435,3 +429,33 @@ class TestGPTClientWithAudit:
         assert len(resp_records) == 1
         assert resp_records[0].is_valid_schema is False
         assert resp_records[0].normalized_response is None
+
+    async def test_returns_decision_when_audit_response_fails(
+        self, session: Session, bot_run: BotRun
+    ) -> None:
+        """audit_model_response falla → ModelDecision se retorna igual (trading > audit)."""
+        from unittest.mock import patch
+
+        client = _make_gpt_client()
+        req = _make_req()
+        content = json.dumps(_valid_decision_dict())
+        mock_resp = _openai_response(content)
+
+        with (
+            patch.object(
+                client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
+            ),
+            patch(
+                "backend.decision_engine.gpt_client.audit_model_response",
+                side_effect=Exception("DB exploded"),
+            ),
+        ):
+            result = await client.request(
+                req,
+                RequestPurpose.NEW_ENTRY,
+                session=session,
+                bot_run_id=bot_run.id,
+                symbol="BNBUSDT",
+            )
+
+        assert isinstance(result, ModelDecision)

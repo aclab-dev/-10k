@@ -231,18 +231,27 @@ class GPTClient:
                 if result.ok and result.decision is not None
                 else None
             )
-            audit_model_response(
-                session,  # type: ignore[arg-type]
-                model_request_id=model_request_record.id,
-                model=self._config.model,
-                raw_response=raw_result.raw_json,
-                normalized_response=normalized,
-                prompt_tokens=raw_result.prompt_tokens,
-                completion_tokens=raw_result.completion_tokens,
-                total_tokens=raw_result.total_tokens,
-                finish_reason=raw_result.finish_reason,
-                is_valid_schema=result.ok,
-            )
+            try:
+                audit_model_response(
+                    session,  # type: ignore[arg-type]
+                    model_request_id=model_request_record.id,
+                    model=self._config.model,
+                    raw_response=raw_result.raw_json,
+                    normalized_response=normalized,
+                    prompt_tokens=raw_result.prompt_tokens,
+                    completion_tokens=raw_result.completion_tokens,
+                    total_tokens=raw_result.total_tokens,
+                    finish_reason=raw_result.finish_reason,
+                    is_valid_schema=result.ok,
+                )
+            except Exception:
+                # Audit failure never discards a valid ModelDecision — trading
+                # correctness takes priority over audit completeness.
+                _log.error(
+                    "gpt_client.audit_response_failed",
+                    model_request_id=model_request_record.id,
+                    exc_info=True,
+                )
 
         if not result.ok:
             validation_error = GPTResponseValidationError(
