@@ -12,6 +12,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
@@ -22,6 +23,9 @@ from backend.decision_engine.schema_guard import (
     validate_gpt_json_string,
 )
 from backend.decision_engine.schemas import ModelDecision
+
+if TYPE_CHECKING:
+    from backend.token_budget.manager import TokenBudgetManager
 
 _log = structlog.get_logger(__name__)
 
@@ -128,6 +132,7 @@ class GPTClient:
         config: GPTClientConfig | None = None,
         failure_policy: FailurePolicyConfig | None = None,
         api_key: str | None = None,
+        budget_manager: TokenBudgetManager | None = None,
     ) -> None:
         self._config = config or GPTClientConfig()
         self._failure_policy = failure_policy or get_config().failure_policy
@@ -139,6 +144,7 @@ class GPTClient:
             )
         self._api_key = resolved_key
         self._http_client = httpx.AsyncClient(timeout=self._config.timeout_seconds)
+        self._budget_manager = budget_manager
 
     async def aclose(self) -> None:
         """Cierra el connection pool. Llamar al apagar el proceso."""
@@ -158,9 +164,16 @@ class GPTClient:
         Retorna None si la failure policy permite continuar sin GPT
         (POSITION_MANAGEMENT con deterministic=True, o NEW_ENTRY con
         gpt_failure_blocks_new_entries=False).
+
+        Levanta TokenBudgetExceededError si el budget está agotado y
+        token_budget_failure_blocks_new_entries=True (solo para NEW_ENTRY).
         """
+        # Verificar budget antes de llamar (solo NEW_ENTRY)
+        if self._budget_manager is not None and purpose == RequestPurpose.NEW_ENTRY:
+            self._budget_manager.check_budget(purpose)
+
         try:
-            raw = await self._call_with_retry(req)
+            raw, usage = await self._call_with_retry(req)
         except GPTClientError as exc:
             return self._apply_failure_policy(exc, purpose)
 
@@ -175,13 +188,22 @@ class GPTClient:
             raise GPTResponseValidationError(
                 "SchemaGuardResult.ok=True pero decision=None — invariante roto"
             )
+
+        # Registrar uso real post-llamada exitosa
+        if self._budget_manager is not None and usage is not None:
+            self._budget_manager.record_usage(
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                model=self._config.model,
+            )
+
         return result.decision
 
     # ------------------------------------------------------------------
     # Retry loop
     # ------------------------------------------------------------------
 
-    async def _call_with_retry(self, req: GPTRequest) -> str:
+    async def _call_with_retry(self, req: GPTRequest) -> tuple[str, dict[str, int] | None]:
         cfg = self._config
         last_exc: GPTClientError | None = None
         next_delay: float = 0.0
@@ -225,7 +247,7 @@ class GPTClient:
     # Single HTTP call
     # ------------------------------------------------------------------
 
-    async def _call_once(self, req: GPTRequest) -> str:
+    async def _call_once(self, req: GPTRequest) -> tuple[str, dict[str, int] | None]:
         cfg = self._config
 
         _log.info(
@@ -261,7 +283,9 @@ class GPTClient:
 
         return self._extract_content(response, cfg.model)
 
-    def _extract_content(self, response: httpx.Response, model: str) -> str:
+    def _extract_content(
+        self, response: httpx.Response, model: str
+    ) -> tuple[str, dict[str, int] | None]:
         status = response.status_code
 
         if status == 429:
@@ -309,14 +333,23 @@ class GPTClient:
                 f"en model={model}. Aumentar max_tokens o reducir el contexto."
             )
 
+        usage_data = data.get("usage", {})
+        pt = usage_data.get("prompt_tokens")
+        ct = usage_data.get("completion_tokens")
+        usage: dict[str, int] | None = (
+            {"prompt_tokens": int(pt), "completion_tokens": int(ct)}
+            if pt is not None and ct is not None
+            else None
+        )
+
         _log.info(
             "gpt_client.response",
             model=model,
             finish_reason=finish_reason,
-            prompt_tokens=data.get("usage", {}).get("prompt_tokens"),
-            completion_tokens=data.get("usage", {}).get("completion_tokens"),
+            prompt_tokens=pt,
+            completion_tokens=ct,
         )
-        return content
+        return content, usage
 
     # ------------------------------------------------------------------
     # Failure policy (Decisión 08)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 
 from backend.storage.models import ErrorRecord, KillSwitchEvent, SystemEvent, TokenUsage
@@ -102,3 +104,12 @@ class TokenUsageRepository(BaseRepository[TokenUsage]):
             .limit(limit)
         )
         return list(self._session.scalars(stmt))
+
+    def tokens_in_window(self, bot_run_id: str, since: datetime) -> int:
+        """Sum of total_tokens recorded for bot_run_id from `since` to now."""
+        stmt = select(func.sum(TokenUsage.total_tokens)).where(
+            TokenUsage.bot_run_id == bot_run_id,
+            TokenUsage.timestamp >= since,
+        )
+        result = self._session.scalar(stmt)
+        return int(result) if result is not None else 0

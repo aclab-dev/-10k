@@ -332,6 +332,13 @@ class BacktestingBiasGuardConfig(BaseModel):
     require_regime_performance: bool
 
 
+class TokenBudgetConfig(BaseModel):
+    max_tokens_per_request: int
+    max_tokens_per_hour: int
+    max_tokens_per_day: int
+    alert_at_percent: float
+
+
 # ---------------------------------------------------------------------------
 # Modelo raiz
 # ---------------------------------------------------------------------------
@@ -354,6 +361,7 @@ class AppConfig(BaseModel):
     position_management: PositionManagementConfig
     failure_policy: FailurePolicyConfig
     backtesting_bias_guard: BacktestingBiasGuardConfig
+    token_budget: TokenBudgetConfig
 
     # Campos de infra no presentes en el YAML (solo via env vars)
     database_url: str = ""
