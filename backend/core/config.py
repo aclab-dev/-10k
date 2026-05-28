@@ -332,6 +332,20 @@ class BacktestingBiasGuardConfig(BaseModel):
     require_regime_performance: bool
 
 
+class TokenBudgetConfig(BaseModel):
+    max_tokens_per_request: int
+    max_tokens_per_hour: int
+    max_tokens_per_24h: int
+    alert_at_percent: float
+
+    @field_validator("alert_at_percent")
+    @classmethod
+    def _alert_percent_bounds(cls, v: float) -> float:
+        if not (0.0 < v < 1.0):
+            raise ValueError(f"alert_at_percent debe estar en (0, 1), recibido: {v}")
+        return v
+
+
 # ---------------------------------------------------------------------------
 # Modelo raiz
 # ---------------------------------------------------------------------------
@@ -354,6 +368,7 @@ class AppConfig(BaseModel):
     position_management: PositionManagementConfig
     failure_policy: FailurePolicyConfig
     backtesting_bias_guard: BacktestingBiasGuardConfig
+    token_budget: TokenBudgetConfig
 
     # Campos de infra no presentes en el YAML (solo via env vars)
     database_url: str = ""
