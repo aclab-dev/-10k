@@ -128,12 +128,12 @@ def test_handle_record_response_type_set() -> None:
 
 
 def test_handle_record_errors_preserved() -> None:
-    """errors del record coinciden con los pasados."""
+    """errors del record coinciden con los pasados (como tuple inmutable)."""
     errors = ["symbol: Field required", "decision: Field required"]
     with capture_logs():
         record = handle_invalid_response("{}", errors)
 
-    assert record.errors == errors
+    assert record.errors == tuple(errors)
 
 
 def test_handle_record_request_id_none_by_default() -> None:

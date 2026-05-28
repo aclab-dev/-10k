@@ -47,7 +47,7 @@ class InvalidResponseRecord:
     record_id: uuid.UUID
     timestamp_utc: datetime
     response_type: InvalidResponseType
-    errors: list[str]
+    errors: tuple[str, ...]
     raw_content_preview: str
     request_id: str | None = None
 
@@ -83,7 +83,8 @@ def handle_invalid_response(
     """Registra y logea una respuesta GPT inválida. No lanza excepciones.
 
     El caller debe raise GPTResponseValidationError después de esta llamada.
-    Garantiza auditoría incluso si el logger falla (best-effort logging).
+    El logging es best-effort: si el logger falla, la excepción se silencia
+    para no ocultar el error original.
     """
     response_type = classify_errors(errors)
     preview = raw_content[:_MAX_PREVIEW_CHARS]
@@ -91,7 +92,7 @@ def handle_invalid_response(
         record_id=uuid.uuid4(),
         timestamp_utc=datetime.now(UTC),
         response_type=response_type,
-        errors=errors,
+        errors=tuple(errors),
         raw_content_preview=preview,
         request_id=request_id,
     )
