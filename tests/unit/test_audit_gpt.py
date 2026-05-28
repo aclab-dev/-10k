@@ -379,12 +379,8 @@ class TestGPTClientWithAudit:
             patch.object(
                 client._http_client, "post", new_callable=AsyncMock, return_value=mock_resp
             ),
-            patch(
-                "backend.decision_engine.gpt_client.audit_model_request"
-            ) as mock_audit_req,
-            patch(
-                "backend.decision_engine.gpt_client.audit_model_response"
-            ) as mock_audit_resp,
+            patch("backend.decision_engine.gpt_client.audit_model_request") as mock_audit_req,
+            patch("backend.decision_engine.gpt_client.audit_model_response") as mock_audit_resp,
         ):
             result = await client.request(req, RequestPurpose.NEW_ENTRY)
 

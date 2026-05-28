@@ -339,9 +339,7 @@ class GPTClient:
             "user_prompt": req.user_prompt,
             "prompt_version": req.prompt_version,
         }
-        request_hash = _compute_request_hash(
-            self._config.model, req.system_prompt, req.user_prompt
-        )
+        request_hash = _compute_request_hash(self._config.model, req.system_prompt, req.user_prompt)
         return audit_model_request(
             session,
             bot_run_id=bot_run_id,
