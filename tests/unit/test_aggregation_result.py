@@ -204,11 +204,15 @@ class TestContributingSourcesValidation:
             _sources(**{field: 1.01})
 
     def test_all_boundary_zeros_accepted(self) -> None:
-        s = _sources(quant_score=0.0, gpt_context_score=0.0, regime_factor=0.0, volatility_factor=0.0)
+        s = _sources(
+            quant_score=0.0, gpt_context_score=0.0, regime_factor=0.0, volatility_factor=0.0
+        )
         assert s.quant_score == 0.0
 
     def test_all_boundary_ones_accepted(self) -> None:
-        s = _sources(quant_score=1.0, gpt_context_score=1.0, regime_factor=1.0, volatility_factor=1.0)
+        s = _sources(
+            quant_score=1.0, gpt_context_score=1.0, regime_factor=1.0, volatility_factor=1.0
+        )
         assert s.volatility_factor == 1.0
 
     def test_contributing_sources_is_frozen(self) -> None:
@@ -237,7 +241,9 @@ class TestToDbKwargs:
         assert kwargs["final_action"] == result.final_action.value
 
     def test_contributing_sources_mapped_correctly(self) -> None:
-        sources = _sources(quant_score=0.9, gpt_context_score=0.75, regime_factor=0.6, volatility_factor=0.4)
+        sources = _sources(
+            quant_score=0.9, gpt_context_score=0.75, regime_factor=0.6, volatility_factor=0.4
+        )
         result = _result(contributing_sources=sources)
         kwargs = result.to_db_kwargs(str(uuid.uuid4()))
 
