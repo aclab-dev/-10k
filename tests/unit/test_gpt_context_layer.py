@@ -824,6 +824,82 @@ class TestRateLimit:
 
 
 # ===========================================================================
+# Tests: errores de servidor (5xx)
+# ===========================================================================
+
+
+class TestServerError:
+    @pytest.mark.asyncio
+    async def test_server_error_exhausted_retries_raises(self) -> None:
+        """500 en todos los intentos → GPTClientError."""
+        budget = _make_budget_manager()
+        client = _make_client(max_retries=1, base_delay=0.0, budget_manager=budget)
+
+        with patch.object(
+            client._http_client,
+            "post",
+            new_callable=AsyncMock,
+            return_value=_server_error_http_response(500),
+        ):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(GPTClientError):
+                    await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+    @pytest.mark.asyncio
+    async def test_server_error_then_success_returns_model_decision(self) -> None:
+        """500 en primer intento, éxito en segundo → ModelDecision."""
+        budget = _make_budget_manager()
+        client = _make_client(max_retries=2, base_delay=0.0, budget_manager=budget)
+        content = json.dumps(_valid_decision_dict())
+        side_effects = [_server_error_http_response(500), _openai_http_response(content)]
+
+        with patch.object(
+            client._http_client,
+            "post",
+            new_callable=AsyncMock,
+            side_effect=side_effects,
+        ):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+        assert isinstance(result, ModelDecision)
+
+    @pytest.mark.asyncio
+    async def test_server_error_position_management_returns_none(self) -> None:
+        """500 en POSITION_MANAGEMENT con deterministic=True → None (no raise)."""
+        budget = _make_budget_manager()
+        client = _make_client(max_retries=0, failure_policy=_POLICY_DEFAULT, budget_manager=budget)
+
+        with patch.object(
+            client._http_client,
+            "post",
+            new_callable=AsyncMock,
+            return_value=_server_error_http_response(503),
+        ):
+            result = await client.request(_make_request(), RequestPurpose.POSITION_MANAGEMENT)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_server_error_new_entry_permissive_policy_returns_none(self) -> None:
+        """500 en NEW_ENTRY con gpt_failure_blocks_new_entries=False → None."""
+        budget = _make_budget_manager()
+        client = _make_client(
+            max_retries=0, failure_policy=_POLICY_PERMISSIVE, budget_manager=budget
+        )
+
+        with patch.object(
+            client._http_client,
+            "post",
+            new_callable=AsyncMock,
+            return_value=_server_error_http_response(502),
+        ):
+            result = await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+        assert result is None
+
+
+# ===========================================================================
 # Tests: token budget excedido
 # ===========================================================================
 
@@ -946,11 +1022,14 @@ class TestPromptBuilderIntegration:
             assert key in user, f"Sección '{key}' ausente en el user prompt"
 
     def test_prompt_includes_account_context(self) -> None:
-        """User prompt incluye el estado de cuenta."""
+        """User prompt incluye el estado de cuenta: entorno, balance y límite de margen."""
         builder = PromptBuilder()
         _, user = builder.build(_prompt_context())
         assert "PAPER" in user
-        assert "10 USDT" in user
+        # balance_usdt=100.0 → formateado como "100.00 USDT"
+        assert "100.00 USDT" in user
+        # límite de margen está hardcodeado en el PromptBuilder como restricción de seguridad
+        assert "Margen máximo por operación: 10 USDT" in user
 
     def test_prompt_includes_market_regime(self) -> None:
         """User prompt incluye el régimen de mercado."""
