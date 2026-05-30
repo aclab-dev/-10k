@@ -262,9 +262,8 @@ class TestDirectionMismatch:
             regime=_regime(),
             volatility=_volatility(),
         )
-        # SHORT no puede ejecutarse sin SL/TP válidos; usamos NO_OPERAR para simplificar
-        # El aggregator recibe la dirección; la contradicción aplica igual
         assert result.final_action == DecisionType.NO_OPERAR
+        assert any("direction_mismatch" in c for c in result.contradictions_detected)
 
     def test_aligned_long_no_direction_contradiction(self) -> None:
         agg = DecisionAggregator()
@@ -402,8 +401,13 @@ class TestGptNoOperar:
 
 
 class TestLowAggregatedScore:
-    def test_unclear_regime_and_high_volatility_may_drop_below_threshold(self) -> None:
-        """Régimen UNCLEAR + alta volatilidad + quant débil puede caer bajo el umbral."""
+    def test_unclear_regime_and_high_volatility_drops_below_threshold(self) -> None:
+        """Régimen UNCLEAR + alta volatilidad + quant débil cae bajo el umbral mínimo.
+
+        Score esperado (valores fijos):
+          quant=0.41, gpt=0.71, regime=0.20 (UNCLEAR), vol=1.0-0.95^1.5*0.60≈0.444
+          score ≈ 0.40*0.41 + 0.30*0.71 + 0.20*0.20 + 0.10*0.444 ≈ 0.461
+        """
         agg = DecisionAggregator()
         result = agg.aggregate(
             gpt_decision=_gpt_long_decision(confidence=0.71),
@@ -411,9 +415,8 @@ class TestLowAggregatedScore:
             regime=_regime(primary=PrimaryRegime.UNCLEAR),
             volatility=_volatility(volatility_score=0.95),
         )
-        # Con UNCLEAR (factor=0.20) y alta volatilidad el score puede caer bajo 0.50
-        if result.aggregated_score < _MIN_SCORE_TO_TRADE:
-            assert result.final_action == DecisionType.NO_OPERAR
+        assert result.aggregated_score < _MIN_SCORE_TO_TRADE
+        assert result.final_action == DecisionType.NO_OPERAR
 
 
 # ---------------------------------------------------------------------------
@@ -428,14 +431,14 @@ class TestScoreWeighting:
         qs = _quant_package(signal_strength_score=0.60)
         gpt = _gpt_long_decision(confidence=0.80)
         reg = _regime(primary=PrimaryRegime.TRENDING)  # factor = 0.85
-        vol = _volatility(volatility_score=0.30)  # factor = 1.0 - 0.30*0.30 = 0.91
+        vol = _volatility(volatility_score=0.30)  # factor = 1.0 - 0.30^1.5 * 0.60 ≈ 0.901
 
         result = agg.aggregate(gpt_decision=gpt, quant_signals=qs, regime=reg, volatility=vol)
 
         expected_quant = 0.60
         expected_gpt = 0.80
         expected_regime = _REGIME_FACTOR[PrimaryRegime.TRENDING]
-        expected_vol = 1.0 - 0.30 * 0.30
+        expected_vol = 1.0 - 0.30**1.5 * 0.60
         expected_score = (
             _W_QUANT * expected_quant
             + _W_GPT * expected_gpt

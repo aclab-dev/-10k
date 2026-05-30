@@ -50,10 +50,18 @@ Regímenes favorables para operar → factor alto:
 
 ## Score de volatilidad (volatility_factor)
 
-Directo de VolatilityAssessmentPackage.volatility_score, invertido para
-penalizar alta volatilidad cuando es extrema:
-  - volatility_score ≤ 0.70 → volatility_factor = 1.0 - volatility_score * 0.30
-  - volatility_score > 0.70 → volatility_factor = 1.0 - volatility_score * 0.60
+Penaliza progresivamente la alta volatilidad usando una fórmula cuadrática continua:
+
+    volatility_factor = 1.0 - volatility_score ** 1.5 * 0.60
+
+Rango resultante: [0.40, 1.0]
+  - volatility_score = 0.0 → 1.00 (sin penalización)
+  - volatility_score = 0.5 → 0.79
+  - volatility_score = 0.7 → 0.65
+  - volatility_score = 1.0 → 0.40 (penalización máxima)
+
+La fórmula cuadrática garantiza continuidad (sin saltos) y penalización
+creciente: cada décima adicional de volatilidad pesa más que la anterior.
 """
 
 from __future__ import annotations
@@ -200,16 +208,17 @@ class DecisionAggregator:
 
     @staticmethod
     def _compute_volatility_factor(va: VolatilityAssessmentPackage) -> float:
-        """Factor de volatilidad: penaliza entornos de alta volatilidad extrema.
+        """Factor de volatilidad: penaliza progresivamente la alta volatilidad.
 
-        Alta volatilidad implica riesgo de slippage y liquidación. Se penaliza
-        progresivamente: ligera penalización para volatilidad normal/alta,
-        penalización fuerte para volatilidad extrema (> 0.70).
+        Usa una fórmula cuadrática continua para evitar saltos abruptos:
+            volatility_factor = 1.0 - volatility_score ** 1.5 * 0.60
+
+        Alta volatilidad implica mayor riesgo de slippage, spread y liquidación.
+        La penalización crece de forma acelerada (cuadrática), reflejando que el
+        riesgo no es lineal con la volatilidad.
         """
-        score = va.volatility_score
-        if score <= 0.70:
-            return 1.0 - score * 0.30
-        return max(1.0 - score * 0.60, 0.0)
+        score: float = va.volatility_score
+        return max(1.0 - float(score**1.5) * 0.60, 0.0)
 
     @staticmethod
     def _net_quant_direction(qs: QuantSignalsPackage) -> float | None:
@@ -257,10 +266,18 @@ class DecisionAggregator:
             )
 
         # 3. Intensidad quant insuficiente
-        strength = qs.signal_strength_score
-        if strength is not None and strength < _MIN_STRENGTH_SCORE:
+        # Usa el mismo quant_score efectivo que el aggregator para mantener consistencia
+        # auditável: si el fallback (señales individuales) da un score bajo, también
+        # se reporta la contradicción.
+        effective_strength = (
+            qs.signal_strength_score
+            if qs.signal_strength_score is not None
+            else self._compute_quant_score(qs)
+        )
+        if effective_strength < _MIN_STRENGTH_SCORE:
             found.append(
-                f"low_quant_strength: signal_strength_score={strength:.3f} < {_MIN_STRENGTH_SCORE}"
+                f"low_quant_strength: effective_strength={effective_strength:.3f}"
+                f" < {_MIN_STRENGTH_SCORE}"
             )
 
         # 4. Baja confianza GPT
