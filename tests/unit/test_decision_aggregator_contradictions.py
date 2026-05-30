@@ -148,7 +148,9 @@ def _gpt(
         partial_close_plan="none",
         max_time_in_trade_minutes=120,
     )
-    # SHORT: stop_loss > entry_price (stop arriba), take_profit < entry_price (target abajo)
+    # Los valores de pricing a continuación son arbitrarios y solo existen para satisfacer
+    # las validaciones del schema ModelDecision (ej. SHORT requiere stop_loss > entry_price).
+    # No prueban lógica de precios — eso corresponde a los tests del Risk Engine.
     entry_price = 0.0 if no_entry else 95000.0
     stop_loss = 0.0 if no_entry else (100000.0 if is_short else 90000.0)
     take_profit = 0.0 if no_entry else (85000.0 if is_short else 105000.0)
@@ -469,9 +471,8 @@ class TestRegimenUnclear:
     def test_unclear_regime_does_not_block_strong_signals(self) -> None:
         """UNCLEAR reduce el score pero no bloquea si quant y GPT son muy fuertes.
 
-        Score esperado (sin contradicciones):
-          quant=0.90, gpt=0.95, regime=0.20 (UNCLEAR), vol_score=0.10→factor≈0.981
-          score ≈ 0.40*0.90 + 0.30*0.95 + 0.20*0.20 + 0.10*0.981 ≈ 0.783
+        Con señales muy fuertes (quant=0.90, gpt=0.95) el score queda bien por encima
+        del umbral mínimo incluso con el factor de régimen más bajo (UNCLEAR=0.20).
         """
         agg = DecisionAggregator()
         result = agg.aggregate(
@@ -493,9 +494,8 @@ class TestRegimenUnclear:
     def test_unclear_regime_with_moderate_signals_drops_below_threshold(self) -> None:
         """UNCLEAR + señales moderadas + alta volatilidad → score < umbral mínimo.
 
-        Score esperado (sin contradicciones):
-          quant=0.40, gpt=0.70, regime=0.20 (UNCLEAR), vol_score=0.80→factor≈0.571
-          score ≈ 0.40*0.40 + 0.30*0.70 + 0.20*0.20 + 0.10*0.571 ≈ 0.467
+        Parámetros en el límite mínimo de sus umbrales de contradicción (sin dispararlos),
+        pero la combinación de régimen desfavorable y alta volatilidad hunde el score.
         """
         agg = DecisionAggregator()
         result = agg.aggregate(
@@ -528,10 +528,6 @@ class TestNoOperarPorScore:
 
         Todos los parámetros están exactamente en el límite de sus umbrales de
         contradicción (sin dispararlos), pero el score cae bajo el mínimo.
-
-        Score esperado:
-          quant=0.40, gpt=0.70, regime=0.20 (UNCLEAR), vol_score=0.80→factor≈0.571
-          score ≈ 0.16 + 0.21 + 0.04 + 0.057 ≈ 0.467
         """
         agg = DecisionAggregator()
         result = agg.aggregate(
@@ -550,18 +546,14 @@ class TestNoOperarPorScore:
         assert result.contradictions_detected == []
         assert result.aggregated_score < _MIN_SCORE_TO_TRADE
 
-    def test_score_rejection_is_independent_of_regime(self) -> None:
-        """Score bajo en régimen TRENDING también genera NO_OPERAR si no hay contradicciones.
+    def test_high_volatility_regime_drops_score_below_threshold(self) -> None:
+        """HIGH_VOLATILITY + volatilidad extrema + quant/gpt en mínimos → score < 0.50.
 
-        Fuerza score bajo poniendo vol extrema (factor≈0.40) con quant y gpt mínimos.
+        HIGH_VOLATILITY tiene factor 0.40 (el segundo más bajo después de UNCLEAR).
+        Con volatilidad máxima (factor≈0.40) y parámetros en sus umbrales mínimos
+        el score cae por debajo del umbral sin disparar ninguna contradicción.
         """
         agg = DecisionAggregator()
-        # quant=0.40, gpt=0.70, TRENDING→0.85, vol_score=1.0→factor=0.40
-        # score = 0.16 + 0.21 + 0.17 + 0.04 = 0.58 → sobre umbral con TRENDING
-        # Necesitamos RANGING (0.55) para bajar más:
-        # score = 0.16 + 0.21 + 0.11 + 0.04 = 0.52 → aún sobre umbral
-        # HIGH_VOLATILITY (0.40):
-        # score = 0.16 + 0.21 + 0.08 + 0.04 = 0.49 → bajo umbral ✓
         result = agg.aggregate(
             gpt_decision=_gpt(decision="LONG", confidence=0.70),
             quant_signals=_quant(
