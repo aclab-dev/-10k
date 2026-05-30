@@ -387,9 +387,10 @@ class TestDesacuerdoTotal:
         )
         combined = " ".join(result.contradictions_detected)
         # Cada mensaje debe contener el valor numérico que lo disparó.
-        assert "0.80" in combined or "0.800" in combined  # conflict_score
-        assert "0.25" in combined or "0.250" in combined  # strength
-        assert "0.50" in combined or "0.500" in combined  # confidence
+        assert "0.800" in combined  # conflict_score (:.3f → "0.800")
+        assert "0.250" in combined  # strength
+        assert "0.500" in combined  # confidence
+        assert "-0.700" in combined  # net direction signal (direction_mismatch message)
 
 
 # ---------------------------------------------------------------------------
@@ -421,8 +422,12 @@ class TestSenalesDebilesCombinadas:
         assert not any("direction_mismatch" in c for c in result.contradictions_detected)
         assert not any("quant_internal_conflict" in c for c in result.contradictions_detected)
 
-    def test_weak_signals_with_strong_regime_still_no_operar(self) -> None:
-        """Régimen TRENDING favorable no puede compensar señales débiles de ambas fuentes."""
+    def test_weak_signals_blocked_by_contradictions_regardless_of_regime(self) -> None:
+        """Señales débiles disparan low_quant_strength + low_gpt_confidence incluso con TRENDING.
+
+        TRENDING (factor 0.85) es el régimen más favorable, pero las contradicciones
+        bloquean la operación antes de que el score sea evaluado.
+        """
         agg = DecisionAggregator()
         result = agg.aggregate(
             gpt_decision=_gpt(decision="LONG", confidence=0.65),
@@ -437,6 +442,9 @@ class TestSenalesDebilesCombinadas:
             volatility=_vol(volatility_score=0.10),
         )
         assert result.final_action == DecisionType.NO_OPERAR
+        assert any("low_quant_strength" in c for c in result.contradictions_detected)
+        assert any("low_gpt_confidence" in c for c in result.contradictions_detected)
+        assert len(result.contradictions_detected) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +512,7 @@ class TestRegimenUnclear:
         )
         assert result.final_action == DecisionType.NO_OPERAR
         assert result.aggregated_score < _MIN_SCORE_TO_TRADE
+        assert result.contradictions_detected == []
 
 
 # ---------------------------------------------------------------------------
@@ -568,3 +577,138 @@ class TestNoOperarPorScore:
         assert result.final_action == DecisionType.NO_OPERAR
         assert result.contradictions_detected == []
         assert result.aggregated_score < _MIN_SCORE_TO_TRADE
+
+
+# ---------------------------------------------------------------------------
+# Boundary: umbral de dirección ±0.20
+# ---------------------------------------------------------------------------
+
+
+class TestDirectionMismatchBoundary:
+    """Verifica el umbral exacto de direction_mismatch (±0.20, estricto)."""
+
+    def test_net_just_below_threshold_fires_long(self) -> None:
+        """net = -0.21 < -0.20 → direction_mismatch dispara con GPT=LONG."""
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="LONG", confidence=0.82),
+            quant_signals=_quant(
+                momentum_signal=-0.21,
+                mean_reversion_signal=-0.21,
+                breakout_signal=-0.21,
+                signal_strength_score=0.65,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert any("direction_mismatch" in c for c in result.contradictions_detected)
+
+    def test_net_below_threshold_does_not_fire_long(self) -> None:
+        """net = -0.19 > -0.20 → direction_mismatch NO dispara con GPT=LONG.
+
+        Se usa -0.19 en lugar de -0.20 exacto para evitar la ambigüedad de representación
+        de punto flotante: (-0.20 × 3) / 3 puede resultar en -0.200...01 en IEEE 754.
+        """
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="LONG", confidence=0.82),
+            quant_signals=_quant(
+                momentum_signal=-0.19,
+                mean_reversion_signal=-0.19,
+                breakout_signal=-0.19,
+                signal_strength_score=0.65,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert not any("direction_mismatch" in c for c in result.contradictions_detected)
+
+    def test_net_just_above_threshold_fires_short(self) -> None:
+        """net = +0.21 > +0.20 → direction_mismatch dispara con GPT=SHORT."""
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="SHORT", confidence=0.82),
+            quant_signals=_quant(
+                momentum_signal=0.21,
+                mean_reversion_signal=0.21,
+                breakout_signal=0.21,
+                signal_strength_score=0.65,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert any("direction_mismatch" in c for c in result.contradictions_detected)
+
+    def test_net_below_threshold_does_not_fire_short(self) -> None:
+        """net = +0.19 < +0.20 → direction_mismatch NO dispara con GPT=SHORT.
+
+        Se usa +0.19 por el mismo motivo de punto flotante que en el caso LONG.
+        """
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="SHORT", confidence=0.82),
+            quant_signals=_quant(
+                momentum_signal=0.19,
+                mean_reversion_signal=0.19,
+                breakout_signal=0.19,
+                signal_strength_score=0.65,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert not any("direction_mismatch" in c for c in result.contradictions_detected)
+
+
+# ---------------------------------------------------------------------------
+# Fallback de quant_score cuando signal_strength_score es None
+# ---------------------------------------------------------------------------
+
+
+class TestLowQuantStrengthFallback:
+    """low_quant_strength también se detecta usando el fallback de señales individuales."""
+
+    def test_none_strength_score_with_weak_individual_signals_fires(self) -> None:
+        """signal_strength_score=None y señales individuales débiles → low_quant_strength.
+
+        El aggregator hace fallback al promedio de abs(señales individuales disponibles).
+        Fallback efectivo = mean([|0.20|, |0.25|, |0.30|]) = 0.25 < 0.40 → dispara.
+        """
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="LONG", confidence=0.82),
+            quant_signals=_quant(
+                signal_strength_score=None,
+                momentum_signal=0.20,
+                mean_reversion_signal=0.25,
+                breakout_signal=0.30,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert any("low_quant_strength" in c for c in result.contradictions_detected)
+        assert result.final_action == DecisionType.NO_OPERAR
+
+    def test_none_strength_score_with_strong_individual_signals_does_not_fire(self) -> None:
+        """signal_strength_score=None pero señales individuales fuertes → no low_quant_strength.
+
+        Fallback efectivo = mean([|0.60|, |0.70|, |0.80|]) = 0.70 ≥ 0.40 → no dispara.
+        """
+        agg = DecisionAggregator()
+        result = agg.aggregate(
+            gpt_decision=_gpt(decision="LONG", confidence=0.82),
+            quant_signals=_quant(
+                signal_strength_score=None,
+                momentum_signal=0.60,
+                mean_reversion_signal=0.70,
+                breakout_signal=0.80,
+                signal_conflict_score=0.10,
+            ),
+            regime=_regime(),
+            volatility=_vol(),
+        )
+        assert not any("low_quant_strength" in c for c in result.contradictions_detected)
