@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from backend.decision_engine.schemas import DecisionType
-from backend.market_data.schemas import _ALLOWED_SYMBOLS
+from backend.market_data.schemas import ALLOWED_SYMBOLS
 
 AGGREGATION_VERSION = "1.0"
 
@@ -93,8 +93,8 @@ class DecisionAggregationResult(BaseModel):
     @field_validator("symbol")
     @classmethod
     def symbol_allowed(cls, v: str) -> str:
-        if v not in _ALLOWED_SYMBOLS:
-            raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(_ALLOWED_SYMBOLS)}")
+        if v not in ALLOWED_SYMBOLS:
+            raise ValueError(f"Símbolo '{v}' no permitido. Válidos: {sorted(ALLOWED_SYMBOLS)}")
         return v
 
     @field_validator("timestamp_utc")
@@ -109,13 +109,18 @@ class DecisionAggregationResult(BaseModel):
     # ------------------------------------------------------------------
 
     def to_db_kwargs(self, bot_run_id: str) -> dict[str, Any]:
-        """Devuelve un dict listo para crear un registro en decision_aggregations."""
+        """Devuelve un dict listo para crear un registro en decision_aggregations.
+
+        Args:
+            bot_run_id: UUID del BotRun activo. El caller es responsable de
+                pasar un UUID válido; la columna bot_run_id tiene FK a bot_runs.id.
+        """
         return {
             "id": self.aggregation_id,
             "bot_run_id": bot_run_id,
             "decision_id": self.decision_id,
             "symbol": self.symbol,
-            "timestamp": self.timestamp_utc,
+            "timestamp": self.timestamp_utc,  # columna DB: timestamp (sin sufijo _utc)
             "quant_score": self.contributing_sources.quant_score,
             "gpt_confidence": self.contributing_sources.gpt_context_score,
             "regime_factor": self.contributing_sources.regime_factor,
