@@ -91,11 +91,11 @@ class RiskValidationResult(BaseModel):
     adjusted_parameters: AdjustedParameters | None = None
 
     # Snapshot de pérdidas acumuladas al momento de la validación
-    daily_loss_at_check_usdt: Decimal | None = None
-    total_loss_at_check_usdt: Decimal | None = None
+    daily_loss_at_check_usdt: Decimal | None = Field(default=None, ge=Decimal("0"))
+    total_loss_at_check_usdt: Decimal | None = Field(default=None, ge=Decimal("0"))
 
     # Motivos de la decisión: rule_name → explicación legible
-    reasons: dict[str, str]
+    reasons: dict[str, str] = Field(min_length=1)
 
     version: str = RISK_VALIDATION_VERSION
 
@@ -159,10 +159,14 @@ class RiskValidationResult(BaseModel):
         """Devuelve un dict listo para crear un registro en risk_validations.
 
         Args:
-            bot_run_id: UUID del BotRun activo. El caller es responsable de
-                pasar un UUID válido; la columna tiene FK a bot_runs.id.
+            bot_run_id: UUID del BotRun activo con FK a bot_runs.id.
         """
+        try:
+            uuid.UUID(bot_run_id)
+        except ValueError as exc:
+            raise ValueError(f"'{bot_run_id}' no es un UUID válido.") from exc
         adj = self.adjusted_parameters
+        # `version` excluido intencionalmente: confirmar columna en ORM (F10/F11).
         return {
             "id": self.validation_id,
             "bot_run_id": bot_run_id,

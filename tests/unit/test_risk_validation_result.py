@@ -121,10 +121,28 @@ class TestRiskValidationResultConstruction:
         assert result.daily_loss_at_check_usdt == Decimal("2.5")
         assert result.total_loss_at_check_usdt == Decimal("7.0")
 
+    def test_negative_loss_fields_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _result(daily_loss_at_check_usdt=Decimal("-0.01"))
+        with pytest.raises(ValidationError):
+            _result(total_loss_at_check_usdt=Decimal("-0.01"))
+
+    def test_zero_loss_fields_accepted(self) -> None:
+        result = _result(
+            daily_loss_at_check_usdt=Decimal("0"),
+            total_loss_at_check_usdt=Decimal("0"),
+        )
+        assert result.daily_loss_at_check_usdt == Decimal("0")
+        assert result.total_loss_at_check_usdt == Decimal("0")
+
     def test_reasons_stored(self) -> None:
         reasons = {"sl_check": "SL presente", "margin_cap": "dentro del límite"}
         result = _result(reasons=reasons)
         assert result.reasons == reasons
+
+    def test_empty_reasons_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _result(reasons={})
 
     def test_is_frozen(self) -> None:
         result = _result()
@@ -265,7 +283,7 @@ class TestAdjustedParametersCoherence:
             _result(decision=RiskDecision.APPROVE, adjusted_parameters=None)
 
     def test_adjust_down_without_adjusted_parameters_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="APPROVE"):
+        with pytest.raises(ValidationError, match="ADJUST_DOWN"):
             _result(decision=RiskDecision.ADJUST_DOWN, adjusted_parameters=None)
 
     def test_block_without_adjusted_parameters_accepted(self) -> None:
@@ -390,3 +408,8 @@ class TestToDbKwargs:
         result = _block(reasons=reasons)
         kwargs = result.to_db_kwargs(str(uuid.uuid4()))
         assert kwargs["reasons"] == reasons
+
+    def test_invalid_bot_run_id_raises(self) -> None:
+        result = _result()
+        with pytest.raises(ValueError, match="UUID"):
+            result.to_db_kwargs("not-a-uuid")
