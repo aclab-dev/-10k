@@ -283,6 +283,44 @@ class TestAdjustedParametersCoherence:
         )
         assert result.adjusted_parameters.margin_usdt == Decimal("2.0")
 
+    def test_adjust_down_with_identical_parameters_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="ADJUST_DOWN"):
+            _result(
+                decision=RiskDecision.ADJUST_DOWN,
+                original_margin_usdt=Decimal("5.0"),
+                original_leverage=5,
+                adjusted_parameters=_adj(margin_usdt=Decimal("5.0"), leverage=5),
+            )
+
+    def test_adjust_down_only_margin_reduced_accepted(self) -> None:
+        result = _result(
+            decision=RiskDecision.ADJUST_DOWN,
+            original_margin_usdt=Decimal("8.0"),
+            original_leverage=5,
+            adjusted_parameters=_adj(margin_usdt=Decimal("5.0"), leverage=5),
+        )
+        assert result.adjusted_parameters is not None
+        assert result.adjusted_parameters.margin_usdt < result.original_margin_usdt
+
+    def test_adjust_down_only_leverage_reduced_accepted(self) -> None:
+        result = _result(
+            decision=RiskDecision.ADJUST_DOWN,
+            original_margin_usdt=Decimal("5.0"),
+            original_leverage=8,
+            adjusted_parameters=_adj(margin_usdt=Decimal("5.0"), leverage=5),
+        )
+        assert result.adjusted_parameters is not None
+        assert result.adjusted_parameters.leverage < result.original_leverage
+
+    def test_adjust_down_with_higher_adjusted_values_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="ADJUST_DOWN"):
+            _result(
+                decision=RiskDecision.ADJUST_DOWN,
+                original_margin_usdt=Decimal("3.0"),
+                original_leverage=3,
+                adjusted_parameters=_adj(margin_usdt=Decimal("5.0"), leverage=5),
+            )
+
 
 # ---------------------------------------------------------------------------
 # Serialización — to_db_kwargs

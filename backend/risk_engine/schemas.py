@@ -141,6 +141,14 @@ class RiskValidationResult(BaseModel):
             raise ValueError(
                 "adjusted_parameters es obligatorio cuando decision es APPROVE o ADJUST_DOWN."
             )
+        if self.decision == RiskDecision.ADJUST_DOWN and self.adjusted_parameters is not None:
+            reduced_margin = self.adjusted_parameters.margin_usdt < self.original_margin_usdt
+            reduced_leverage = self.adjusted_parameters.leverage < self.original_leverage
+            if not (reduced_margin or reduced_leverage):
+                raise ValueError(
+                    "ADJUST_DOWN requiere que al menos un parámetro (margin o leverage) "
+                    "sea menor al original."
+                )
         return self
 
     # ------------------------------------------------------------------
