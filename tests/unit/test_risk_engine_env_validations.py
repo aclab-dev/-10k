@@ -167,6 +167,7 @@ class TestUnrecognizedEnvironment:
             check_leverage_cap(5, "")  # type: ignore[arg-type]
 
     def test_none_raises_value_error(self) -> None:
+        # None → str(None).upper() → "NONE" → Environment("NONE") falla → "no reconocido".
         with pytest.raises(ValueError, match="no reconocido"):
             check_leverage_cap(5, None)  # type: ignore[arg-type]
 

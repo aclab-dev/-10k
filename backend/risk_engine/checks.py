@@ -44,7 +44,7 @@ def check_leverage_cap(
             environment = Environment(str(environment).upper())
         except ValueError as exc:
             raise ValueError(
-                f"Entorno no reconocido: '{original_env!r}'. "
+                f"Entorno no reconocido: {original_env!r}. "
                 f"Valores válidos: {[e.value for e in Environment]}"
             ) from exc
 
