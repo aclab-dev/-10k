@@ -3,7 +3,7 @@
 import pytest
 
 from backend.core.config import Environment
-from backend.risk_engine.checks import _LEVERAGE_CAPS, check_leverage_cap
+from backend.risk_engine.checks import check_leverage_cap
 
 # ---------------------------------------------------------------------------
 # PAPER — cap 10x
@@ -82,17 +82,20 @@ class TestLiveInitialLeverageCap:
         assert "inicial" in result["leverage_cap_live_initial"]
 
     def test_default_applies_most_restrictive_cap(self) -> None:
-        # El default debe ser siempre el cap más bajo entre LIVE_INITIAL y LIVE_ABSOLUTE.
-        # Si alguien cambia el default a False, este test falla y lo hace visible.
-        live_initial_cap = _LEVERAGE_CAPS["LIVE_INITIAL"]
-        live_absolute_cap = _LEVERAGE_CAPS["LIVE_ABSOLUTE"]
-        assert live_initial_cap <= live_absolute_cap, (
-            "LIVE_INITIAL debe ser <= LIVE_ABSOLUTE para que el default sea el más restrictivo"
-        )
-        # Con el default, un leverage que viola INITIAL pero no ABSOLUTE debe bloquearse.
-        result = check_leverage_cap(live_initial_cap + 1, Environment.LIVE)
+        # El default (is_live_initial=True) debe aplicar el cap más bajo.
+        # 4x viola LIVE inicial (3x) pero no LIVE absoluto (5x).
+        # Si el default cambia a False, este test falla y lo hace visible.
+        result = check_leverage_cap(4, Environment.LIVE)
         assert result is not None
         assert "leverage_cap_live_initial" in result
+
+    def test_live_initial_cap_is_below_absolute(self) -> None:
+        # Invariante: el cap inicial debe ser <= el absoluto para que el default sea seguro.
+        # 3x pasa LIVE inicial; 5x pasa LIVE absoluto — si se invierten, este test falla.
+        assert check_leverage_cap(3, Environment.LIVE, is_live_initial=True) is None
+        assert check_leverage_cap(3, Environment.LIVE, is_live_initial=False) is None
+        assert check_leverage_cap(4, Environment.LIVE, is_live_initial=True) is not None
+        assert check_leverage_cap(4, Environment.LIVE, is_live_initial=False) is None
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +124,7 @@ class TestLiveAbsoluteLeverageCap:
 
 
 # ---------------------------------------------------------------------------
-# Leverage inválido (≤ 0)
+# Leverage inválido (≤ 0 o tipo incorrecto)
 # ---------------------------------------------------------------------------
 
 
@@ -137,6 +140,15 @@ class TestInvalidLeverage:
     def test_negative_leverage_raises_in_live(self) -> None:
         with pytest.raises(ValueError, match="entero positivo"):
             check_leverage_cap(-1, Environment.LIVE)
+
+    def test_float_leverage_raises(self) -> None:
+        with pytest.raises(ValueError, match="entero"):
+            check_leverage_cap(2.5, Environment.PAPER)  # type: ignore[arg-type]
+
+    def test_bool_leverage_raises(self) -> None:
+        # bool es subclase de int en Python; debe rechazarse explícitamente.
+        with pytest.raises(ValueError, match="entero"):
+            check_leverage_cap(True, Environment.PAPER)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +172,11 @@ class TestUnrecognizedEnvironment:
     def test_numeric_string_raises(self) -> None:
         with pytest.raises(ValueError, match="no reconocido"):
             check_leverage_cap(5, "123")  # type: ignore[arg-type]
+
+    def test_live_initial_key_is_not_a_valid_environment(self) -> None:
+        # "LIVE_INITIAL" es una key interna de _LEVERAGE_CAPS, no un valor de Environment.
+        with pytest.raises(ValueError, match="no reconocido"):
+            check_leverage_cap(3, "LIVE_INITIAL")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

@@ -21,23 +21,24 @@ _LEVERAGE_CAPS: dict[str, int] = {
 def check_leverage_cap(
     leverage: int,
     environment: Environment | str,
-    # Default conservador: siempre el cap más bajo (LIVE inicial = 3x).
-    # Cambiar a False solo cuando el bot haya superado la fase inicial.
     is_live_initial: bool = True,
 ) -> dict[str, str] | None:
     """Valida que el leverage propuesto respete el cap del entorno activo.
 
     Args:
-        leverage: Leverage propuesto. Debe ser un entero >= 1.
-        environment: Entorno operativo. Debe ser un valor de Environment.
-        is_live_initial: En LIVE, True aplica cap inicial (3x, el más
-            restrictivo); False aplica cap absoluto (5x). Default True.
+        leverage: Leverage propuesto. Debe ser un entero >= 1 (no bool, no float).
+        environment: Entorno operativo. Debe ser un valor de Environment o su
+            equivalente en string ("PAPER", "TESTNET", "LIVE"). Strings como
+            "LIVE_INITIAL" no son entornos válidos y levantan ValueError.
+        is_live_initial: En LIVE, True aplica el cap inicial (3x, el más
+            restrictivo); False aplica el cap absoluto (5x). Default True —
+            cambiar a False solo cuando el bot haya superado la fase inicial.
 
     Returns:
         None si el leverage es aceptable, o un dict de reasons si debe bloquearse.
 
     Raises:
-        ValueError: Si leverage <= 0, o si el entorno no es reconocido.
+        ValueError: Si leverage no es un int positivo, o si el entorno no es reconocido.
     """
     if not isinstance(environment, Environment):
         if environment is None:
@@ -50,6 +51,10 @@ def check_leverage_cap(
                 f"Valores válidos: {[e.value for e in Environment]}"
             ) from exc
 
+    if isinstance(leverage, bool) or not isinstance(leverage, int):
+        raise ValueError(
+            f"leverage debe ser un entero, recibido: {type(leverage).__name__}."
+        )
     if leverage <= 0:
         raise ValueError(f"leverage debe ser un entero positivo, recibido: {leverage}.")
 
