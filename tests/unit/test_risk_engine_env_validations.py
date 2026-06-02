@@ -167,7 +167,7 @@ class TestUnrecognizedEnvironment:
             check_leverage_cap(5, "")  # type: ignore[arg-type]
 
     def test_none_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="None"):
+        with pytest.raises(ValueError, match="no reconocido"):
             check_leverage_cap(5, None)  # type: ignore[arg-type]
 
     def test_numeric_string_raises(self) -> None:
@@ -175,9 +175,18 @@ class TestUnrecognizedEnvironment:
             check_leverage_cap(5, "123")  # type: ignore[arg-type]
 
     def test_live_initial_key_is_not_a_valid_environment(self) -> None:
-        # "LIVE_INITIAL" es una key interna de _LEVERAGE_CAPS, no un valor de Environment.
+        # "LIVE_INITIAL" es una key interna de _LEVERAGE_CAP_*, no un valor de Environment.
         with pytest.raises(ValueError, match="no reconocido"):
             check_leverage_cap(3, "LIVE_INITIAL")  # type: ignore[arg-type]
+
+    def test_is_live_initial_false_in_paper_raises(self) -> None:
+        # is_live_initial solo aplica en LIVE; pasarlo como False en otro entorno es caller error.
+        with pytest.raises(ValueError, match="solo aplica en Environment.LIVE"):
+            check_leverage_cap(5, Environment.PAPER, is_live_initial=False)
+
+    def test_is_live_initial_false_in_testnet_raises(self) -> None:
+        with pytest.raises(ValueError, match="solo aplica en Environment.LIVE"):
+            check_leverage_cap(5, Environment.TESTNET, is_live_initial=False)
 
 
 # ---------------------------------------------------------------------------

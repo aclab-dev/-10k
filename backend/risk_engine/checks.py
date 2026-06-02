@@ -39,13 +39,12 @@ def check_leverage_cap(
         ValueError: Si leverage no es un int positivo, o si el entorno no es reconocido.
     """
     if not isinstance(environment, Environment):
-        if environment is None:
-            raise ValueError("environment no puede ser None.")
+        original_env = environment
         try:
             environment = Environment(str(environment).upper())
         except ValueError as exc:
             raise ValueError(
-                f"Entorno no reconocido: '{environment}'. "
+                f"Entorno no reconocido: '{original_env!r}'. "
                 f"Valores válidos: {[e.value for e in Environment]}"
             ) from exc
 
@@ -55,6 +54,11 @@ def check_leverage_cap(
         )
     if leverage <= 0:
         raise ValueError(f"leverage debe ser un entero positivo, recibido: {leverage}.")
+
+    if environment != Environment.LIVE and not is_live_initial:
+        raise ValueError(
+            f"is_live_initial solo aplica en Environment.LIVE, recibido: {environment.value}."
+        )
 
     if environment == Environment.PAPER:
         cap = _LEVERAGE_CAP_PAPER
