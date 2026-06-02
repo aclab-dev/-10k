@@ -1,4 +1,4 @@
-﻿"""Tests unitarios — Risk Engine: validaciones F9 (sección 4.10.9)."""
+"""Tests unitarios — Risk Engine: validaciones F9 (sección 4.10.9)."""
 
 from __future__ import annotations
 
@@ -444,6 +444,7 @@ class TestRiskEngineApprove:
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         from datetime import timedelta
+
         assert result.timestamp_utc.utcoffset() == timedelta(0)
 
     def test_approve_records_loss_snapshot(self) -> None:
@@ -627,8 +628,12 @@ class TestRiskEngineAdjustDown:
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         expected_rules = (
-            "sl_required", "tp_or_exit_plan", "daily_drawdown",
-            "total_drawdown", "margin_cap", "leverage_cap",
+            "sl_required",
+            "tp_or_exit_plan",
+            "daily_drawdown",
+            "total_drawdown",
+            "margin_cap",
+            "leverage_cap",
         )
         for rule in expected_rules:
             assert rule in result.reasons
