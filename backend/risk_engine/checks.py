@@ -49,9 +49,7 @@ def check_leverage_cap(
             ) from exc
 
     if isinstance(leverage, bool) or not isinstance(leverage, int):
-        raise ValueError(
-            f"leverage debe ser un entero, recibido: {type(leverage).__name__}."
-        )
+        raise ValueError(f"leverage debe ser un entero, recibido: {type(leverage).__name__}.")
     if leverage <= 0:
         raise ValueError(f"leverage debe ser un entero positivo, recibido: {leverage}.")
 
