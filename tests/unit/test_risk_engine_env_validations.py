@@ -3,7 +3,7 @@
 import pytest
 
 from backend.core.config import Environment
-from backend.risk_engine.checks import check_leverage_cap  # noqa: E402
+from backend.risk_engine.checks import _LEVERAGE_CAPS, check_leverage_cap
 
 # ---------------------------------------------------------------------------
 # PAPER — cap 10x
@@ -81,9 +81,16 @@ class TestLiveInitialLeverageCap:
         assert result is not None
         assert "inicial" in result["leverage_cap_live_initial"]
 
-    def test_default_is_initial(self) -> None:
-        # Por defecto is_live_initial=True → cap 3x
-        result = check_leverage_cap(4, Environment.LIVE)
+    def test_default_applies_most_restrictive_cap(self) -> None:
+        # El default debe ser siempre el cap más bajo entre LIVE_INITIAL y LIVE_ABSOLUTE.
+        # Si alguien cambia el default a False, este test falla y lo hace visible.
+        live_initial_cap = _LEVERAGE_CAPS["LIVE_INITIAL"]
+        live_absolute_cap = _LEVERAGE_CAPS["LIVE_ABSOLUTE"]
+        assert live_initial_cap <= live_absolute_cap, (
+            "LIVE_INITIAL debe ser <= LIVE_ABSOLUTE para que el default sea el más restrictivo"
+        )
+        # Con el default, un leverage que viola INITIAL pero no ABSOLUTE debe bloquearse.
+        result = check_leverage_cap(live_initial_cap + 1, Environment.LIVE)
         assert result is not None
         assert "leverage_cap_live_initial" in result
 
@@ -114,6 +121,25 @@ class TestLiveAbsoluteLeverageCap:
 
 
 # ---------------------------------------------------------------------------
+# Leverage inválido (≤ 0)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidLeverage:
+    def test_zero_leverage_raises(self) -> None:
+        with pytest.raises(ValueError, match="entero positivo"):
+            check_leverage_cap(0, Environment.PAPER)
+
+    def test_negative_leverage_raises(self) -> None:
+        with pytest.raises(ValueError, match="entero positivo"):
+            check_leverage_cap(-5, Environment.PAPER)
+
+    def test_negative_leverage_raises_in_live(self) -> None:
+        with pytest.raises(ValueError, match="entero positivo"):
+            check_leverage_cap(-1, Environment.LIVE)
+
+
+# ---------------------------------------------------------------------------
 # Entorno no reconocido
 # ---------------------------------------------------------------------------
 
@@ -127,8 +153,8 @@ class TestUnrecognizedEnvironment:
         with pytest.raises(ValueError, match="no reconocido"):
             check_leverage_cap(5, "")  # type: ignore[arg-type]
 
-    def test_none_raises(self) -> None:
-        with pytest.raises((ValueError, AttributeError)):
+    def test_none_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="None"):
             check_leverage_cap(5, None)  # type: ignore[arg-type]
 
     def test_numeric_string_raises(self) -> None:
