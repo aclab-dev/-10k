@@ -10,12 +10,10 @@ from typing import assert_never
 from backend.core.config import Environment
 
 # Caps de leverage por entorno (reglas no negociables — sección 2 del proyecto)
-_LEVERAGE_CAPS: dict[str, int] = {
-    "PAPER": 10,
-    "TESTNET": 5,
-    "LIVE_INITIAL": 3,
-    "LIVE_ABSOLUTE": 5,
-}
+_LEVERAGE_CAP_PAPER = 10
+_LEVERAGE_CAP_TESTNET = 5
+_LEVERAGE_CAP_LIVE_INITIAL = 3
+_LEVERAGE_CAP_LIVE_ABSOLUTE = 5
 
 
 def check_leverage_cap(
@@ -59,17 +57,17 @@ def check_leverage_cap(
         raise ValueError(f"leverage debe ser un entero positivo, recibido: {leverage}.")
 
     if environment == Environment.PAPER:
-        cap = _LEVERAGE_CAPS["PAPER"]
+        cap = _LEVERAGE_CAP_PAPER
         rule = "leverage_cap_paper"
     elif environment == Environment.TESTNET:
-        cap = _LEVERAGE_CAPS["TESTNET"]
+        cap = _LEVERAGE_CAP_TESTNET
         rule = "leverage_cap_testnet"
     elif environment == Environment.LIVE:
         if is_live_initial:
-            cap = _LEVERAGE_CAPS["LIVE_INITIAL"]
+            cap = _LEVERAGE_CAP_LIVE_INITIAL
             rule = "leverage_cap_live_initial"
         else:
-            cap = _LEVERAGE_CAPS["LIVE_ABSOLUTE"]
+            cap = _LEVERAGE_CAP_LIVE_ABSOLUTE
             rule = "leverage_cap_live_absolute"
     else:
         assert_never(environment)

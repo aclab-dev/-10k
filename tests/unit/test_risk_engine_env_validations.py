@@ -90,8 +90,9 @@ class TestLiveInitialLeverageCap:
         assert "leverage_cap_live_initial" in result
 
     def test_live_initial_cap_is_below_absolute(self) -> None:
-        # Invariante: el cap inicial debe ser <= el absoluto para que el default sea seguro.
-        # 3x pasa LIVE inicial; 5x pasa LIVE absoluto — si se invierten, este test falla.
+        # Invariante de seguridad: cap inicial SIEMPRE < cap absoluto en LIVE.
+        # Si esto falla, revisar _LEVERAGE_CAP_LIVE_INITIAL/_LEVERAGE_CAP_LIVE_ABSOLUTE
+        # antes de cambiar el test — el fallo indica un cambio de regla de negocio.
         assert check_leverage_cap(3, Environment.LIVE, is_live_initial=True) is None
         assert check_leverage_cap(3, Environment.LIVE, is_live_initial=False) is None
         assert check_leverage_cap(4, Environment.LIVE, is_live_initial=True) is not None
