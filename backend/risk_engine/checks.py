@@ -242,7 +242,10 @@ def check_liquidation_safety(
         return CheckResult(
             outcome=CheckOutcome.BLOCK,
             rule="liquidation_safety",
-            reason="SL ausente o cero: check_liquidation_safety requiere stop_loss > 0 cuando execute=True.",
+            reason=(
+                "SL ausente o cero: check_liquidation_safety requiere stop_loss > 0 "
+                "cuando execute=True."
+            ),
         )
 
     liq_dist = decision.liquidation_distance_percent_estimated

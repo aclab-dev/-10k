@@ -1,4 +1,7 @@
-"""Tests unitarios para check_leverage_cap y leverage_cap_for_env — validaciones por entorno (F9 [71])."""
+"""Tests unitarios para check_leverage_cap y leverage_cap_for_env.
+
+Validaciones de leverage por entorno operativo (F9 [71]).
+"""
 
 from backend.core.config import Environment, get_config
 from backend.risk_engine.checks import CheckOutcome, check_leverage_cap, leverage_cap_for_env
@@ -24,7 +27,8 @@ class TestLeverageCapForEnv:
 
     def test_live_returns_absolute_cap(self) -> None:
         cfg = _cfg()
-        assert leverage_cap_for_env(cfg, Environment.LIVE) == cfg.leverage.max_leverage_live_absolute
+        cap = cfg.leverage.max_leverage_live_absolute
+        assert leverage_cap_for_env(cfg, Environment.LIVE) == cap
 
 
 # ---------------------------------------------------------------------------
