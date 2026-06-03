@@ -444,8 +444,7 @@ def check_anti_martingala(
             )
         if last_trade_margin_usdt <= Decimal("0"):
             raise ValueError(
-                f"last_trade_margin_usdt debe ser positivo, "
-                f"recibido: {last_trade_margin_usdt}."
+                f"last_trade_margin_usdt debe ser positivo, recibido: {last_trade_margin_usdt}."
             )
 
     # Sin historial suficiente: no se puede detectar el patrón → no bloquear
