@@ -632,6 +632,7 @@ class TestRiskEngineAdjustDown:
             "tp_or_exit_plan",
             "daily_drawdown",
             "total_drawdown",
+            "liquidation_safety",
             "margin_cap",
             "leverage_cap",
         )
@@ -695,3 +696,45 @@ class TestRiskEnginePreconditions:
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         with pytest.raises((ValidationError, TypeError)):
             result.decision = RiskDecision.BLOCK  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Tests: engine — integración check_liquidation_safety
+# ---------------------------------------------------------------------------
+
+
+class TestRiskEngineLiquidationSafetyIntegration:
+    def test_approve_includes_liquidation_safety_in_reasons(self) -> None:
+        cfg = _config()
+        decision = _long_decision()  # liq_dist=18%, SL conservador → PASS
+        aggregation = _aggregation(decision)
+        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.APPROVE
+        assert "liquidation_safety" in result.reasons
+
+    def test_block_when_liquidation_distance_unknown(self) -> None:
+        cfg = _config()  # block_if_liquidation_unknown=True por defecto
+        decision = _long_decision(liquidation_distance_percent_estimated=0.0)
+        aggregation = _aggregation(decision)
+        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.BLOCK
+        assert "liquidation_unknown" in result.reasons
+
+    def test_block_when_sl_past_liquidation_price(self) -> None:
+        cfg = _config()  # block_if_stop_after_liquidation=True por defecto
+        # LONG: entry=95000, liq_dist=18% → liq_price≈77900; SL en 77000 está past liq
+        decision = _long_decision()
+        object.__setattr__(decision, "stop_loss", 77000.0)
+        aggregation = _aggregation(decision)
+        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.BLOCK
+        assert "sl_after_liquidation" in result.reasons
+
+    def test_liquidation_check_disabled_does_not_block(self) -> None:
+        cfg = _config()
+        custom_liq = cfg.liquidation_safety.model_copy(update={"enabled": False})
+        cfg_disabled = cfg.model_copy(update={"liquidation_safety": custom_liq})
+        decision = _long_decision(liquidation_distance_percent_estimated=0.0)
+        aggregation = _aggregation(decision)
+        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg_disabled)
+        assert result.decision == RiskDecision.APPROVE

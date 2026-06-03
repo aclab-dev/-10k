@@ -236,6 +236,15 @@ def check_liquidation_safety(
             reason="NO_OPERAR: no hay trade que validar.",
         )
 
+    # check_sl_required bloquea esto upstream, pero como función pura independiente
+    # puede recibir execute=True con sl=0 sin pasar por ese filtro.
+    if decision.execute and decision.stop_loss <= 0:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule="liquidation_safety",
+            reason="SL ausente o cero: check_liquidation_safety requiere stop_loss > 0 cuando execute=True.",
+        )
+
     liq_dist = decision.liquidation_distance_percent_estimated
 
     if liq_dist == 0.0:
@@ -302,6 +311,17 @@ def check_liquidation_safety(
 
     # Rule 6: SL-to-liq buffer
     buffer_pct = _sl_buffer_percent(sl, liq_price, direction)
+    if buffer_pct < 0:
+        # Asimetría de punto flotante: _sl_is_past_liquidation devolvió False
+        # pero el SL está en o más allá de la liquidación.
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule="sl_after_liquidation",
+            reason=(
+                f"{direction}: buffer SL→liquidación negativo ({buffer_pct:.4f}%): "
+                "el SL está en o más allá del precio de liquidación estimado."
+            ),
+        )
     if buffer_pct < config.min_buffer_stop_to_liquidation_percent:
         return CheckResult(
             outcome=CheckOutcome.ADJUST_DOWN,

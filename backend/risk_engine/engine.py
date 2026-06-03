@@ -25,6 +25,7 @@ from backend.risk_engine.checks import (
     CheckResult,
     check_daily_drawdown,
     check_leverage_cap,
+    check_liquidation_safety,
     check_margin_cap,
     check_sl_required,
     check_total_drawdown,
@@ -84,6 +85,7 @@ def validate(
         check_tp_or_exit_plan(decision),
         check_daily_drawdown(daily_loss_usdt, initial_balance, config.risk.max_daily_loss_percent),
         check_total_drawdown(total_loss_usdt, initial_balance, config.risk.max_total_loss_percent),
+        check_liquidation_safety(decision, config.liquidation_safety),
     ]
 
     block_reasons: dict[str, str] = {
