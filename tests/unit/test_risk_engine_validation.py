@@ -663,7 +663,14 @@ class TestRiskEngineAdjustDown:
 
 
 class TestRiskEnginePreconditions:
-    def test_raises_when_execute_false(self) -> None:
+    def test_returns_no_operar_when_execute_false(self) -> None:
+        """Desde [75] F9: execute=False ya no lanza ValueError; retorna NO_OPERAR.
+
+        NO_OPERAR (sin edge, Aggregator) y BLOCK (Risk Engine) son estados distintos.
+        validate() propaga NO_OPERAR sin evaluar reglas de riesgo.
+        """
+        from backend.risk_engine.schemas import RiskDecision
+
         cfg = _config()
         decision = _long_decision(
             decision="NO_OPERAR",
@@ -675,8 +682,8 @@ class TestRiskEnginePreconditions:
             net_risk_reward=0.0,
         )
         aggregation = _aggregation(decision)
-        with pytest.raises(ValueError, match="execute=True"):
-            validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.NO_OPERAR
 
     def test_raises_when_margin_zero(self) -> None:
         cfg = _config()
