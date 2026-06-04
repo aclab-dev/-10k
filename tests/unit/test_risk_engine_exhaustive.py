@@ -51,6 +51,21 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _bypass_validation(decision: ModelDecision, **overrides: object) -> ModelDecision:
+    """Crea una copia de ModelDecision eludiendo todos los validadores de Pydantic.
+
+    Usar ÚNICAMENTE en tests de defensa en profundidad (guard-failure scenario):
+    simula qué ocurre si el JSON Schema Guard falla upstream y el engine recibe
+    un objeto con datos inválidos que nunca podría producir model_validate().
+
+    Implementación: model_construct() es la API oficial de Pydantic v2 para
+    construir instancias sin ejecutar field validators ni model validators.
+    """
+    fields = {f: getattr(decision, f) for f in ModelDecision.model_fields}
+    fields.update(overrides)
+    return ModelDecision.model_construct(**fields)
+
+
 def _quant_signals() -> QuantSignalsSection:
     return QuantSignalsSection(
         momentum=MomentumInterpretation.BULLISH,
@@ -456,15 +471,18 @@ class TestRiskEngineLive:
 
 
 class TestRiskEngineBlockViaSlRequired:
-    def test_block_when_sl_is_zero_and_execute_true(self) -> None:
-        """SL=0 con execute=True → check_sl_required falla → BLOCK.
+    """Tests de defensa en profundidad: engine con stop_loss=0 y execute=True.
 
-        ModelDecision valida stop_loss > 0 cuando execute=True, por lo que este
-        estado es imposible en producción vía model_validate. Usamos model_copy
-        para verificar defensa en profundidad en el engine.
-        """
+    ModelDecision.model_validate() lanza ValidationError para este estado, por lo
+    que es inalcanzable en el flujo normal de producción. Estos tests verifican
+    que el engine rechaza correctamente la operación aunque el JSON Schema Guard
+    falle upstream. Se usa _bypass_validation() para construir el escenario.
+    """
+
+    def test_block_when_sl_is_zero_and_execute_true(self) -> None:
         cfg = _config()
-        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
+        # Guard-failure scenario: stop_loss=0 nunca llega aquí en producción.
+        decision = _bypass_validation(_long_decision(), stop_loss=0.0)
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.BLOCK
@@ -472,19 +490,19 @@ class TestRiskEngineBlockViaSlRequired:
 
     def test_sl_required_block_has_no_adjusted_parameters(self) -> None:
         cfg = _config()
-        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
+        decision = _bypass_validation(_long_decision(), stop_loss=0.0)
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.adjusted_parameters is None
 
     def test_sl_required_block_includes_all_check_reasons_for_audit(self) -> None:
-        """Auditoría: BLOCK incluye todos los checks evaluados, no solo el fallido.
+        """Auditoría: el engine no hace short-circuit por diseño.
 
-        El engine no hace short-circuit por diseño: evalúa todos los checks y
-        acumula los resultados en reasons para tener trazabilidad completa de auditoría.
+        Evalúa todos los checks y acumula sus resultados en reasons para tener
+        trazabilidad completa de auditoría — contrato garantizado por diseño.
         """
         cfg = _config()
-        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
+        decision = _bypass_validation(_long_decision(), stop_loss=0.0)
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert "sl_required" in result.reasons
@@ -499,13 +517,15 @@ class TestRiskEngineBlockViaSlRequired:
 
 
 class TestRiskEngineBlockViaTpOrExitPlan:
-    def test_block_when_no_tp_and_no_exit_plan(self) -> None:
-        """Sin TP ni plan de salida con execute=True → BLOCK.
+    """Tests de defensa en profundidad: engine con take_profit=0 y execute=True.
 
-        ModelDecision valida take_profit > entry_price para LONG, por lo que
-        take_profit=0 es imposible en producción vía model_validate. Usamos
-        model_copy para verificar defensa en profundidad en el engine.
-        """
+    ModelDecision valida take_profit > entry_price para LONG (e inverso para SHORT),
+    por lo que take_profit=0 es inalcanzable en producción vía model_validate.
+    Estos tests verifican que el engine aplica su propio check tp_or_exit_plan
+    aunque el JSON Schema Guard falle upstream. Se usa _bypass_validation().
+    """
+
+    def test_block_when_no_tp_and_no_exit_plan(self) -> None:
         cfg = _config()
         plan = _position_plan(
             use_trailing_stop=False,
@@ -513,8 +533,10 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
-            update={"take_profit": 0.0}
+        # Guard-failure scenario: take_profit=0 nunca llega aquí en producción.
+        decision = _bypass_validation(
+            _long_decision(position_management_plan=plan.model_dump()),
+            take_profit=0.0,
         )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
@@ -529,8 +551,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
-            update={"take_profit": 0.0}
+        decision = _bypass_validation(
+            _long_decision(position_management_plan=plan.model_dump()),
+            take_profit=0.0,
         )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
@@ -545,8 +568,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
-            update={"take_profit": 0.0}
+        decision = _bypass_validation(
+            _long_decision(position_management_plan=plan.model_dump()),
+            take_profit=0.0,
         )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
@@ -561,8 +585,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=60,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
-            update={"take_profit": 0.0}
+        decision = _bypass_validation(
+            _long_decision(position_management_plan=plan.model_dump()),
+            take_profit=0.0,
         )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
