@@ -1,14 +1,21 @@
 """Risk Engine — sección 4.10.9 del PDF maestro.
 
 Recibe un DecisionAggregationResult + el ModelDecision original y emite un
-RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK.
+RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.
 
-Orden de precedencia:
-1. Checks BLOCK (drawdown, SL ausente, TP/exit plan ausente).
+Distinción crítica (regla no negociable del proyecto):
+- NO_OPERAR: el Decision Aggregator no encontró edge (decision.execute=False).
+  El Risk Engine propaga la decisión sin evaluarla. No es un rechazo.
+- BLOCK: el Risk Engine rechazó un trade ejecutable (decision.execute=True)
+  porque violó una o más reglas de riesgo.
+
+Orden de precedencia para trades ejecutables:
+1. Fase NO_OPERAR: si execute=False → retorno inmediato con NO_OPERAR.
+2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación).
    Cualquier falla → BLOCK inmediato.
-2. Checks ADJUST_DOWN (margin cap, leverage cap).
+3. Fase ADJUST_DOWN: margin cap, leverage cap.
    Al menos una falla → ADJUST_DOWN con parámetros reducidos.
-3. Sin fallas → APPROVE con los parámetros originales.
+4. Sin fallas → APPROVE con los parámetros originales.
 """
 
 from __future__ import annotations
@@ -41,11 +48,10 @@ def validate(
     total_loss_usdt: Decimal,
     config: AppConfig,
 ) -> RiskValidationResult:
-    """Valida el DecisionAggregationResult y emite un RiskValidationResult.
+    """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
 
-    Precondiciones:
-    - decision.execute debe ser True (el engine solo procesa decisiones ejecutables).
-    - decision.margin_usdt debe ser > 0.
+    Maneja tanto decisiones NO_OPERAR (sin edge, Aggregator) como decisiones
+    ejecutables (execute=True), propagando cada una con su estado correcto.
 
     Args:
         aggregation: resultado del Decision Aggregator (F8).
@@ -55,16 +61,34 @@ def validate(
         config: configuración de la aplicación.
 
     Returns:
-        RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK.
+        RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.
 
     Raises:
-        ValueError: si execute=False o margin_usdt ≤ 0.
+        ValueError: si decision.execute=True y margin_usdt ≤ 0.
     """
+    # -----------------------------------------------------------------------
+    # Fase 0: NO_OPERAR — el Aggregator no encontró edge, no hay trade que validar.
+    # Propagar sin evaluar reglas de riesgo. Distinto a BLOCK.
+    # -----------------------------------------------------------------------
     if not decision.execute:
-        raise ValueError(
-            "validate() requiere decision.execute=True; "
-            "el Risk Engine solo procesa decisiones ejecutables."
+        return RiskValidationResult(
+            aggregation_id=aggregation.aggregation_id,
+            symbol=decision.symbol,
+            timestamp_utc=datetime.now(UTC),
+            decision=RiskDecision.NO_OPERAR,
+            original_margin_usdt=Decimal(str(decision.margin_usdt)),
+            original_leverage=decision.leverage,
+            adjusted_parameters=None,
+            daily_loss_at_check_usdt=daily_loss_usdt,
+            total_loss_at_check_usdt=total_loss_usdt,
+            reasons={
+                "no_operar": (
+                    "Aggregator no encontró edge suficiente para operar (execute=False). "
+                    "El Risk Engine no evalúa el trade; propaga la decisión para auditoría."
+                )
+            },
         )
+
     if decision.margin_usdt <= 0:
         raise ValueError(
             f"decision.margin_usdt debe ser > 0 para decisiones ejecutables, "
