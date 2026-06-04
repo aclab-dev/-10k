@@ -457,11 +457,14 @@ class TestRiskEngineLive:
 
 class TestRiskEngineBlockViaSlRequired:
     def test_block_when_sl_is_zero_and_execute_true(self) -> None:
-        """SL=0 con execute=True → check_sl_required falla → BLOCK."""
+        """SL=0 con execute=True → check_sl_required falla → BLOCK.
+
+        ModelDecision valida stop_loss > 0 cuando execute=True, por lo que este
+        estado es imposible en producción vía model_validate. Usamos model_copy
+        para verificar defensa en profundidad en el engine.
+        """
         cfg = _config()
-        decision = _long_decision()
-        # Bypass frozen model — simular decisión con SL inválido
-        object.__setattr__(decision, "stop_loss", 0.0)
+        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.BLOCK
@@ -469,20 +472,21 @@ class TestRiskEngineBlockViaSlRequired:
 
     def test_sl_required_block_has_no_adjusted_parameters(self) -> None:
         cfg = _config()
-        decision = _long_decision()
-        object.__setattr__(decision, "stop_loss", 0.0)
+        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.adjusted_parameters is None
 
     def test_sl_required_block_includes_all_check_reasons_for_audit(self) -> None:
-        """Auditoría: BLOCK incluye todos los checks evaluados, no solo el fallido."""
+        """Auditoría: BLOCK incluye todos los checks evaluados, no solo el fallido.
+
+        El engine no hace short-circuit por diseño: evalúa todos los checks y
+        acumula los resultados en reasons para tener trazabilidad completa de auditoría.
+        """
         cfg = _config()
-        decision = _long_decision()
-        object.__setattr__(decision, "stop_loss", 0.0)
+        decision = _long_decision().model_copy(update={"stop_loss": 0.0})
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
-        # Todos los checks BLOCK son evaluados y expuestos en reasons
         assert "sl_required" in result.reasons
         assert "tp_or_exit_plan" in result.reasons
         assert "daily_drawdown" in result.reasons
@@ -496,7 +500,12 @@ class TestRiskEngineBlockViaSlRequired:
 
 class TestRiskEngineBlockViaTpOrExitPlan:
     def test_block_when_no_tp_and_no_exit_plan(self) -> None:
-        """Sin TP ni plan de salida con execute=True → BLOCK."""
+        """Sin TP ni plan de salida con execute=True → BLOCK.
+
+        ModelDecision valida take_profit > entry_price para LONG, por lo que
+        take_profit=0 es imposible en producción vía model_validate. Usamos
+        model_copy para verificar defensa en profundidad en el engine.
+        """
         cfg = _config()
         plan = _position_plan(
             use_trailing_stop=False,
@@ -504,9 +513,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump())
-        # Bypass frozen model para forzar take_profit=0
-        object.__setattr__(decision, "take_profit", 0.0)
+        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
+            update={"take_profit": 0.0}
+        )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.BLOCK
@@ -520,8 +529,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump())
-        object.__setattr__(decision, "take_profit", 0.0)
+        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
+            update={"take_profit": 0.0}
+        )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.adjusted_parameters is None
@@ -535,8 +545,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump())
-        object.__setattr__(decision, "take_profit", 0.0)
+        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
+            update={"take_profit": 0.0}
+        )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
@@ -550,8 +561,9 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=60,
         )
-        decision = _long_decision(position_management_plan=plan.model_dump())
-        object.__setattr__(decision, "take_profit", 0.0)
+        decision = _long_decision(position_management_plan=plan.model_dump()).model_copy(
+            update={"take_profit": 0.0}
+        )
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE

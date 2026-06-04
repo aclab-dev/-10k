@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import pytest
+
 from backend.core.config import Environment, get_config
 from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_adjusted_margin
+from backend.risk_engine.checks import leverage_cap_for_env
 
 # ---------------------------------------------------------------------------
 # compute_adjusted_margin
@@ -67,7 +70,7 @@ class TestComputeAdjustedMargin:
 # ---------------------------------------------------------------------------
 
 
-def _cfg():
+def _config():
     return get_config()
 
 
@@ -77,18 +80,18 @@ class TestComputeAdjustedLeverage:
     # ---- PAPER (cap 10x por defecto) ----
 
     def test_paper_below_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         result = compute_adjusted_leverage(5, cfg, Environment.PAPER)
         assert result == 5
 
     def test_paper_at_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_paper
         result = compute_adjusted_leverage(cap, cfg, Environment.PAPER)
         assert result == cap
 
     def test_paper_above_cap_returns_cap(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_paper
         result = compute_adjusted_leverage(cap + 1, cfg, Environment.PAPER)
         assert result == cap
@@ -96,47 +99,47 @@ class TestComputeAdjustedLeverage:
     # ---- TESTNET (cap 5x por defecto) ----
 
     def test_testnet_below_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         result = compute_adjusted_leverage(3, cfg, Environment.TESTNET)
         assert result == 3
 
     def test_testnet_at_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_testnet
         result = compute_adjusted_leverage(cap, cfg, Environment.TESTNET)
         assert result == cap
 
     def test_testnet_above_cap_returns_cap(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_testnet
         result = compute_adjusted_leverage(cap + 1, cfg, Environment.TESTNET)
         assert result == cap
 
     def test_testnet_paper_cap_exceeds_testnet(self) -> None:
         """Un leverage válido para PAPER puede exceder el cap de TESTNET."""
-        cfg = _cfg()
+        cfg = _config()
         paper_cap = cfg.leverage.max_leverage_paper
         testnet_cap = cfg.leverage.max_leverage_testnet
-        # Solo relevante si PAPER es más permisivo que TESTNET
-        if paper_cap > testnet_cap:
-            result = compute_adjusted_leverage(paper_cap, cfg, Environment.TESTNET)
-            assert result == testnet_cap
+        if paper_cap <= testnet_cap:
+            pytest.skip("PAPER cap <= TESTNET cap en esta config — escenario no aplica")
+        result = compute_adjusted_leverage(paper_cap, cfg, Environment.TESTNET)
+        assert result == testnet_cap
 
     # ---- LIVE (cap absoluto 5x por defecto) ----
 
     def test_live_below_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         result = compute_adjusted_leverage(1, cfg, Environment.LIVE)
         assert result == 1
 
     def test_live_at_cap_returns_original(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_live_absolute
         result = compute_adjusted_leverage(cap, cfg, Environment.LIVE)
         assert result == cap
 
     def test_live_above_cap_returns_cap(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         cap = cfg.leverage.max_leverage_live_absolute
         result = compute_adjusted_leverage(cap + 1, cfg, Environment.LIVE)
         assert result == cap
@@ -144,16 +147,14 @@ class TestComputeAdjustedLeverage:
     # ---- Invariantes ----
 
     def test_result_is_int(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         for env in (Environment.PAPER, Environment.TESTNET, Environment.LIVE):
             result = compute_adjusted_leverage(5, cfg, env)
             assert isinstance(result, int)
 
     def test_result_never_exceeds_cap_for_any_env(self) -> None:
-        cfg = _cfg()
+        cfg = _config()
         for env in (Environment.PAPER, Environment.TESTNET, Environment.LIVE):
-            from backend.risk_engine.checks import leverage_cap_for_env
-
             cap = leverage_cap_for_env(cfg, env)
             for lev in (1, 3, cap, cap + 1, cap + 5):
                 result = compute_adjusted_leverage(lev, cfg, env)
@@ -161,7 +162,7 @@ class TestComputeAdjustedLeverage:
 
     def test_result_never_exceeds_original(self) -> None:
         """El ajuste solo puede reducir, nunca aumentar el leverage original."""
-        cfg = _cfg()
+        cfg = _config()
         for original in (1, 3, 5, 7, 10):
             for env in (Environment.PAPER, Environment.TESTNET, Environment.LIVE):
                 result = compute_adjusted_leverage(original, cfg, env)
