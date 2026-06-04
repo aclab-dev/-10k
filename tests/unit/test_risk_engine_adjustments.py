@@ -9,11 +9,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from backend.core.config import Environment, get_config
 from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_adjusted_margin
-
 
 # ---------------------------------------------------------------------------
 # compute_adjusted_margin
