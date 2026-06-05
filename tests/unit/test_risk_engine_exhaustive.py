@@ -911,9 +911,9 @@ class TestAntiMartingalaAntiAveragingPipeline:
             last_trade_margin_usdt=Decimal("5.0"),
         )
         reason = result.reasons["anti_martingala"]
-        assert "8" in reason
-        assert "5" in reason
-        assert "-3" in reason
+        assert "8.0" in reason
+        assert "5.0" in reason
+        assert "-3.0" in reason
 
     def test_engine_anti_averaging_reason_contains_pnl(self) -> None:
         """El reason de anti_averaging incluye el PnL de la posición."""
