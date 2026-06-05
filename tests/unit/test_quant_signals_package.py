@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from backend.quant_signals.schemas import SIGNAL_VERSION, QuantSignalsPackage
+from backend.quant_signals.schemas import SIGNAL_VERSION, QuantSignalsPackage, RawFeatureRefs
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +82,7 @@ class TestQuantSignalsPackageConstruction:
             signal_strength_score=0.7,
             signal_conflict_score=0.2,
             signal_confidence=0.85,
-            raw_feature_refs={"rsi_14": 62.5},
+            raw_feature_refs={"momentum": {"method": "tanh_roc", "signal": 0.5}},
         )
         assert pkg.momentum_signal == 0.8
         assert pkg.signal_confidence == 0.85
@@ -390,7 +390,10 @@ class TestToDbKwargs:
         assert raw["version"] == SIGNAL_VERSION
 
     def test_raw_feature_refs_included_when_present(self) -> None:
-        refs = {"rsi_14": 62.5, "ema_diff": 0.003}
+        refs: RawFeatureRefs = {
+            "momentum": {"method": "tanh_roc", "signal": 0.5},
+            "breakout": {"method": "range_breakout", "signal": -0.2},
+        }
         pkg = _package(raw_feature_refs=refs)
         kwargs = pkg.to_db_kwargs(str(uuid.uuid4()))
         assert kwargs["raw_signals"]["raw_feature_refs"] == refs
@@ -405,3 +408,44 @@ class TestToDbKwargs:
         pkg = _package(timestamp_utc=ts)
         kwargs = pkg.to_db_kwargs(str(uuid.uuid4()))
         assert kwargs["timestamp"] == ts
+
+
+# ---------------------------------------------------------------------------
+# RawFeatureRefs typing
+# ---------------------------------------------------------------------------
+
+
+class TestRawFeatureRefsTyping:
+    def test_none_by_default(self) -> None:
+        pkg = _package()
+        assert pkg.raw_feature_refs is None
+
+    def test_known_keys_accepted(self) -> None:
+        refs: RawFeatureRefs = {
+            "momentum": {"method": "tanh_roc", "signal": 0.8},
+            "breakout": {"method": "range_breakout", "signal": 0.3},
+            "order_flow_imbalance": {"method": "ofi", "signal": -0.1},
+            "liquidity_sweeps": {"method": "multi_tf_wick_imbalance", "signal": 0.5},
+        }
+        pkg = _package(raw_feature_refs=refs)
+        assert pkg.raw_feature_refs is not None
+        assert pkg.raw_feature_refs["momentum"]["signal"] == 0.8
+        assert pkg.raw_feature_refs["breakout"]["signal"] == 0.3
+
+    def test_partial_refs_accepted(self) -> None:
+        refs: RawFeatureRefs = {"momentum": {"method": "tanh_roc", "signal": 0.5}}
+        pkg = _package(raw_feature_refs=refs)
+        assert pkg.raw_feature_refs is not None
+        assert "momentum" in pkg.raw_feature_refs
+
+    def test_unknown_keys_are_stripped_by_pydantic(self) -> None:
+        # Pydantic v2 descarta claves no declaradas en TypedDict: el campo
+        # queda vacío (falsy) y to_db_kwargs no lo incluye en raw_signals.
+        pkg = _package(raw_feature_refs={"unknown_signal": {"val": 1.0}})  # type: ignore[arg-type]
+        assert not pkg.raw_feature_refs
+
+    def test_raw_feature_refs_is_immutable(self) -> None:
+        refs: RawFeatureRefs = {"momentum": {"method": "tanh_roc", "signal": 0.5}}
+        pkg = _package(raw_feature_refs=refs)
+        with pytest.raises((TypeError, AttributeError, ValidationError)):
+            pkg.raw_feature_refs = None  # type: ignore[misc]

@@ -94,7 +94,7 @@ def calculate_momentum(snapshot: MarketSnapshot) -> MomentumResult:
     # la aritmética float puede producir valores marginalmente fuera del rango.
     signal = max(-1.0, min(1.0, raw_signal))
 
-    rationale: dict[str, Any] = {
+    rationale: MomentumRationale = {
         "method": "weighted_tanh_roc",
         "timeframes": {
             tf: {

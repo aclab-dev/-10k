@@ -33,14 +33,16 @@ class RawFeatureRefs(TypedDict, total=False):
     (mean_reversion, funding, open_interest) no tienen entrada aquí.
     """
 
-    momentum: dict[str, Any]
-    breakout: dict[str, Any]
-    order_flow_imbalance: dict[str, Any]
-    liquidity_sweeps: dict[str, Any]
+    # Any permite asignar cualquier *Rationale TypedDict sin coerción de mypy.
+    # La estructura interna de cada rationale la garantiza el módulo de la señal.
+    momentum: Any
+    breakout: Any
+    order_flow_imbalance: Any
+    liquidity_sweeps: Any
     # Reservados para cuando las señales escalar añadan rationale:
-    mean_reversion: dict[str, Any]
-    funding: dict[str, Any]
-    open_interest: dict[str, Any]
+    mean_reversion: Any
+    funding: Any
+    open_interest: Any
 
 
 # ---------------------------------------------------------------------------

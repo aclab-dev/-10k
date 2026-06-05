@@ -81,7 +81,7 @@ def calculate_order_flow_imbalance(snapshot: MarketSnapshot) -> OrderFlowResult:
     raw_signal = sum(_TF_WEIGHTS[tf] * per_tf_ofi[tf] for tf in ORDER_FLOW_TIMEFRAMES)
     signal = max(-1.0, min(1.0, raw_signal))
 
-    rationale: dict[str, Any] = {
+    rationale: OrderFlowRationale = {
         "method": "weighted_close_position_in_range",
         "timeframes": {
             tf: {

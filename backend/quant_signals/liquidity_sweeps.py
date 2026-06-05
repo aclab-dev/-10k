@@ -283,7 +283,7 @@ def calculate_liquidity_sweeps(snapshot: MarketSnapshot) -> LiquiditySweepResult
     )
     signal = max(-1.0, min(1.0, raw_signal))
 
-    rationale: dict[str, Any] = {
+    rationale: LiquiditySweepRationale = {
         "method": "multi_tf_wick_imbalance",
         "timeframes": per_tf,
         "signal": signal,
