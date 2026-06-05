@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from backend.market_data.schemas import MarketSnapshot
 
@@ -38,6 +38,16 @@ _TF_MINUTES: Final[dict[str, int]] = {"5m": 5, "1h": 60, "4h": 240}
 BREAKOUT_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "1h", "4h")
 
 
+class BreakoutRationale(TypedDict):
+    """Estructura del campo rationale de BreakoutResult."""
+
+    method: str
+    range: dict[str, Any]  # box_top, box_bottom, last_price, position, breakout_pct
+    volume: dict[str, Any]  # tasas por TF, vol_ratio, volume_factor
+    raw_breakout: float  # señal antes del factor de volumen
+    signal: float
+
+
 @dataclass(frozen=True)
 class BreakoutResult:
     """Output del cálculo de señal breakout detection."""
@@ -45,7 +55,7 @@ class BreakoutResult:
     # Señal en [-1.0, 1.0]. Positivo = ruptura alcista, negativo = bajista.
     # Valores cercanos a 0 indican precio dentro del rango sin ruptura clara.
     signal: float
-    rationale: dict[str, Any]  # desglose auditable
+    rationale: BreakoutRationale
 
 
 def _vol_rate(volume: Decimal, minutes: int) -> float:
@@ -108,7 +118,7 @@ def calculate_breakout(snapshot: MarketSnapshot) -> BreakoutResult:
 
     signal = max(-1.0, min(1.0, raw_breakout * volume_factor))
 
-    rationale: dict[str, Any] = {
+    rationale: BreakoutRationale = {
         "method": "4h_range_breakout_with_volume_confirmation",
         "range": {
             "box_top": box_top,

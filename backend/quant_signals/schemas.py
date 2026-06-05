@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,6 +23,26 @@ from backend.market_data.schemas import _ALLOWED_SYMBOLS
 SIGNAL_VERSION = "1.0"
 
 _ALLOWED_TIMEFRAMES = frozenset({"5m", "15m", "1h", "4h"})
+
+
+class RawFeatureRefs(TypedDict, total=False):
+    """Rationales auditables por señal, indexados por nombre de señal.
+
+    Todos los campos son opcionales (total=False): solo las señales que exponen
+    rationale detallado los pueblan. Las señales que retornan solo float
+    (mean_reversion, funding, open_interest) no tienen entrada aquí.
+    """
+
+    # Any permite asignar cualquier *Rationale TypedDict sin coerción de mypy.
+    # La estructura interna de cada rationale la garantiza el módulo de la señal.
+    momentum: Any
+    breakout: Any
+    order_flow_imbalance: Any
+    liquidity_sweeps: Any
+    # Reservados para cuando las señales escalar añadan rationale:
+    mean_reversion: Any
+    funding: Any
+    open_interest: Any
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +82,7 @@ class QuantSignalsPackage(BaseModel):
     signal_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
     # Metadatos y versionado
-    raw_feature_refs: dict[str, Any] | None = None
+    raw_feature_refs: RawFeatureRefs | None = None
     version: str = SIGNAL_VERSION
 
     model_config = {"frozen": True}

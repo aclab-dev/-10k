@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from backend.market_data.schemas import CandleData, MarketSnapshot
 
@@ -37,6 +37,14 @@ _TF_ROC_THRESHOLD: Final[dict[str, float]] = {
 MOMENTUM_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
 
 
+class MomentumRationale(TypedDict):
+    """Estructura del campo rationale de MomentumResult."""
+
+    method: str
+    timeframes: dict[str, Any]  # tf → {roc, normalized, weight, threshold}
+    signal: float
+
+
 @dataclass(frozen=True)
 class MomentumResult:
     """Output del cálculo de señal momentum."""
@@ -45,7 +53,7 @@ class MomentumResult:
     # Negativo = bearish, positivo = bullish. No refleja momentum entre velas
     # consecutivas: si el precio subió ayer y hoy abre flat, esta señal vale 0.
     signal: float
-    rationale: dict[str, Any]  # desglose auditable por timeframe
+    rationale: MomentumRationale
 
 
 def _roc(candle: CandleData) -> float:
@@ -86,7 +94,7 @@ def calculate_momentum(snapshot: MarketSnapshot) -> MomentumResult:
     # la aritmética float puede producir valores marginalmente fuera del rango.
     signal = max(-1.0, min(1.0, raw_signal))
 
-    rationale: dict[str, Any] = {
+    rationale: MomentumRationale = {
         "method": "weighted_tanh_roc",
         "timeframes": {
             tf: {

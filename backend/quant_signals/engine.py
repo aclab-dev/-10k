@@ -13,7 +13,7 @@ from backend.quant_signals.mean_reversion import compute_mean_reversion_signal
 from backend.quant_signals.momentum import MOMENTUM_TIMEFRAMES, calculate_momentum
 from backend.quant_signals.open_interest import compute_open_interest_signal
 from backend.quant_signals.order_flow import ORDER_FLOW_TIMEFRAMES, calculate_order_flow_imbalance
-from backend.quant_signals.schemas import QuantSignalsPackage
+from backend.quant_signals.schemas import QuantSignalsPackage, RawFeatureRefs
 
 
 def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
@@ -44,10 +44,10 @@ def compute_quant_signals(snapshot: MarketSnapshot) -> QuantSignalsPackage:
         open_interest_signal=compute_open_interest_signal(snapshot),
         order_flow_imbalance_signal=ofi_result.signal,
         liquidity_sweep_signal=sweep_result.signal,
-        raw_feature_refs={
-            "momentum": momentum_result.rationale,
-            "breakout": breakout_result.rationale,
-            "order_flow_imbalance": ofi_result.rationale,
-            "liquidity_sweeps": sweep_result.rationale,
-        },
+        raw_feature_refs=RawFeatureRefs(
+            momentum=momentum_result.rationale,
+            breakout=breakout_result.rationale,
+            order_flow_imbalance=ofi_result.rationale,
+            liquidity_sweeps=sweep_result.rationale,
+        ),
     )
