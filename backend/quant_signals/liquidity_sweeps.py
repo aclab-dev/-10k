@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from backend.market_data.schemas import CandleData, MarketSnapshot
 
@@ -63,12 +63,20 @@ _HISTORICAL_WEIGHT: Final[float] = 0.6
 LIQUIDITY_SWEEP_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
 
 
+class LiquiditySweepRationale(TypedDict):
+    """Estructura del campo rationale de LiquiditySweepResult."""
+
+    method: str
+    timeframes: dict[str, Any]  # tf → métricas proxy + históricas + detection_method
+    signal: float
+
+
 @dataclass(frozen=True)
 class LiquiditySweepResult:
     """Output del cálculo de señal liquidity sweeps."""
 
     signal: float  # [-1.0, 1.0]. Positivo = bullish sweep, negativo = bearish sweep.
-    rationale: dict[str, Any]  # desglose auditable por timeframe
+    rationale: LiquiditySweepRationale
 
 
 # ---------------------------------------------------------------------------

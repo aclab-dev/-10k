@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 
 from backend.market_data.schemas import CandleData, MarketSnapshot
 
@@ -30,12 +30,20 @@ _TF_WEIGHTS: Final[dict[str, float]] = {
 ORDER_FLOW_TIMEFRAMES: Final[tuple[str, ...]] = ("5m", "15m", "1h", "4h")
 
 
+class OrderFlowRationale(TypedDict):
+    """Estructura del campo rationale de OrderFlowResult."""
+
+    method: str
+    timeframes: dict[str, Any]  # tf → {ofi, weight}
+    signal: float
+
+
 @dataclass(frozen=True)
 class OrderFlowResult:
     """Output del cálculo de señal order flow imbalance."""
 
     signal: float
-    rationale: dict[str, Any]
+    rationale: OrderFlowRationale
 
 
 def _candle_ofi(candle: CandleData) -> float:
