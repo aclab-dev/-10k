@@ -83,12 +83,23 @@ class CandleData(BaseModel):
 
 
 class Candles(BaseModel):
-    """Candles por timeframe requeridos por el contrato 4.10.1."""
+    """Candles por timeframe requeridos por el contrato 4.10.1.
+
+    Los campos history_* son opcionales: contienen velas anteriores (orden
+    cronológico ascendente, la más reciente al final) para señales que
+    requieren contexto histórico como liquidity sweeps sobre niveles reales.
+    """
 
     tf_5m: CandleData
     tf_15m: CandleData
     tf_1h: CandleData
     tf_4h: CandleData
+
+    # Ventanas rolling opcionales por TF (inmutables: tuple, no list)
+    history_5m: tuple[CandleData, ...] = Field(default_factory=tuple)
+    history_15m: tuple[CandleData, ...] = Field(default_factory=tuple)
+    history_1h: tuple[CandleData, ...] = Field(default_factory=tuple)
+    history_4h: tuple[CandleData, ...] = Field(default_factory=tuple)
 
     model_config = {"frozen": True}
 
