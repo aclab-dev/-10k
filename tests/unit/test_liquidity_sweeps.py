@@ -19,6 +19,8 @@ from backend.market_data.schemas import (
 )
 from backend.quant_signals.liquidity_sweeps import (
     LiquiditySweepResult,
+    _find_swing_highs,
+    _find_swing_lows,
     calculate_liquidity_sweeps,
 )
 
@@ -112,6 +114,10 @@ def _snapshot(
     tf_15m: CandleData | None = None,
     tf_1h: CandleData | None = None,
     tf_4h: CandleData | None = None,
+    history_5m: tuple[CandleData, ...] = (),
+    history_15m: tuple[CandleData, ...] = (),
+    history_1h: tuple[CandleData, ...] = (),
+    history_4h: tuple[CandleData, ...] = (),
 ) -> MarketSnapshot:
     tf_5m = tf_5m or _doji()
     tf_15m = tf_15m or _doji()
@@ -131,7 +137,16 @@ def _snapshot(
         ask=ask,
         spread_absolute=ask - bid,
         spread_percent=(ask - bid) / bid * 100,
-        candles=Candles(tf_5m=tf_5m, tf_15m=tf_15m, tf_1h=tf_1h, tf_4h=tf_4h),
+        candles=Candles(
+            tf_5m=tf_5m,
+            tf_15m=tf_15m,
+            tf_1h=tf_1h,
+            tf_4h=tf_4h,
+            history_5m=history_5m,
+            history_15m=history_15m,
+            history_1h=history_1h,
+            history_4h=history_4h,
+        ),
         volume=Decimal("1000"),
         account_balance_usdt=Decimal("500"),
         open_positions_count=0,
@@ -142,6 +157,19 @@ def _snapshot(
         clock_skew_ms=0,
         data_freshness_status=DataFreshnessStatus.FRESH,
         coherence_status=CoherenceStatus.OK,
+    )
+
+
+def _flat_candle(price: float) -> CandleData:
+    """Vela plana (sin mechas) en torno a un precio dado."""
+    d = Decimal(str(price))
+    return CandleData(
+        open=d,
+        high=d * Decimal("1.001"),
+        low=d * Decimal("0.999"),
+        close=d,
+        volume=Decimal("500"),
+        n_candles=1,
     )
 
 
@@ -380,3 +408,210 @@ class TestLiquiditySweepRationale:
     def test_result_type_is_liquidity_sweep_result(self) -> None:
         result = calculate_liquidity_sweeps(_snapshot())
         assert isinstance(result, LiquiditySweepResult)
+
+    def test_rationale_has_detection_method_per_tf(self) -> None:
+        result = calculate_liquidity_sweeps(_snapshot())
+        for tf_data in result.rationale["timeframes"].values():
+            assert "detection_method" in tf_data
+            assert tf_data["detection_method"] in ("wick_proxy", "historical_levels")
+
+
+# ---------------------------------------------------------------------------
+# Swing level detection
+# ---------------------------------------------------------------------------
+
+
+def _make_history(lows: list[float], highs: list[float]) -> tuple[CandleData, ...]:
+    """Construye una tupla de CandleData con los lows/highs especificados."""
+    candles = []
+    for low, high in zip(lows, highs, strict=True):
+        mid = (low + high) / 2
+        d_low = Decimal(str(low))
+        d_high = Decimal(str(high))
+        d_mid = Decimal(str(round(mid, 2)))
+        candles.append(
+            CandleData(
+                open=d_mid,
+                high=d_high,
+                low=d_low,
+                close=d_mid,
+                volume=Decimal("500"),
+                n_candles=1,
+            )
+        )
+    return tuple(candles)
+
+
+class TestSwingLevelDetection:
+    def test_swing_low_detected(self) -> None:
+        # Pivote claro en el índice 3 (lookback=3 → necesita 3 velas a cada lado)
+        lows = [100.0, 99.0, 98.0, 95.0, 98.0, 99.0, 100.0]
+        highs = [101.0] * 7
+        history = _make_history(lows, highs)
+        result = _find_swing_lows(history, lookback=3)
+        assert 95.0 in result
+
+    def test_swing_high_detected(self) -> None:
+        highs = [100.0, 101.0, 102.0, 105.0, 102.0, 101.0, 100.0]
+        lows = [99.0] * 7
+        history = _make_history(lows, highs)
+        result = _find_swing_highs(history, lookback=3)
+        assert 105.0 in result
+
+    def test_no_swing_lows_when_monotonic_decreasing(self) -> None:
+        lows = [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0]
+        highs = [101.0] * 7
+        history = _make_history(lows, highs)
+        result = _find_swing_lows(history, lookback=3)
+        assert result == []
+
+    def test_no_swing_highs_when_monotonic_increasing(self) -> None:
+        highs = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0]
+        lows = [99.0] * 7
+        history = _make_history(lows, highs)
+        result = _find_swing_highs(history, lookback=3)
+        assert result == []
+
+    def test_insufficient_history_returns_empty(self) -> None:
+        lows = [100.0, 99.0]
+        highs = [101.0] * 2
+        history = _make_history(lows, highs)
+        assert _find_swing_lows(history, lookback=3) == []
+        assert _find_swing_highs(history, lookback=3) == []
+
+
+# ---------------------------------------------------------------------------
+# Detección histórica de sweeps
+# ---------------------------------------------------------------------------
+
+
+def _history_with_swing_low(swing_low_price: float, n: int = 9) -> tuple[CandleData, ...]:
+    """Historia con un swing low claro al centro."""
+    mid = n // 2
+    lows = [swing_low_price + 5.0] * n
+    highs = [swing_low_price + 10.0] * n
+    lows[mid] = swing_low_price  # pivote mínimo
+    return _make_history(lows, highs)
+
+
+def _history_with_swing_high(swing_high_price: float, n: int = 9) -> tuple[CandleData, ...]:
+    """Historia con un swing high claro al centro."""
+    mid = n // 2
+    highs = [swing_high_price - 5.0] * n
+    lows = [swing_high_price - 10.0] * n
+    highs[mid] = swing_high_price  # pivote máximo
+    return _make_history(lows, highs)
+
+
+class TestHistoricalSweepDetection:
+    def test_bullish_sweep_over_swing_low(self) -> None:
+        swing_low = 49000.0
+        history = _history_with_swing_low(swing_low)
+        # Vela actual: low perfora el swing low, close recupera por encima
+        d = Decimal(str(swing_low))
+        sweep_candle = CandleData(
+            open=Decimal(str(swing_low + 200)),
+            high=Decimal(str(swing_low + 400)),
+            low=d - Decimal("100"),  # perfora 100 debajo del nivel
+            close=d + Decimal("150"),  # cierra 150 por encima del nivel
+            volume=Decimal("500"),
+            n_candles=1,
+        )
+        snap = _snapshot(tf_1h=sweep_candle, history_1h=history)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.signal > 0.0
+        assert result.rationale["timeframes"]["1h"]["detection_method"] == "historical_levels"
+        swept = result.rationale["timeframes"]["1h"]["historical"]["swept_low"]
+        assert swept == pytest.approx(swing_low)
+
+    def test_bearish_sweep_over_swing_high(self) -> None:
+        swing_high = 51000.0
+        history = _history_with_swing_high(swing_high)
+        d = Decimal(str(swing_high))
+        sweep_candle = CandleData(
+            open=Decimal(str(swing_high - 200)),
+            high=d + Decimal("100"),  # perfora 100 por encima del nivel
+            low=Decimal(str(swing_high - 400)),
+            close=d - Decimal("150"),  # cierra 150 por debajo del nivel
+            volume=Decimal("500"),
+            n_candles=1,
+        )
+        snap = _snapshot(tf_1h=sweep_candle, history_1h=history)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.signal < 0.0
+        swept = result.rationale["timeframes"]["1h"]["historical"]["swept_high"]
+        assert swept == pytest.approx(swing_high)
+
+    def test_no_sweep_when_level_not_pierced(self) -> None:
+        swing_low = 49000.0
+        history = _history_with_swing_low(swing_low)
+        # Vela que no baja al swing low
+        normal_candle = _flat_candle(50000.0)
+        snap = _snapshot(tf_1h=normal_candle, history_1h=history)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.rationale["timeframes"]["1h"]["historical"]["swept_low"] is None
+        assert result.rationale["timeframes"]["1h"]["historical"]["swept_high"] is None
+
+    def test_no_sweep_when_pierced_but_no_recovery(self) -> None:
+        swing_low = 49000.0
+        history = _history_with_swing_low(swing_low)
+        # Low perfora pero close también queda debajo: no hay recuperación
+        d = Decimal(str(swing_low))
+        no_recovery = CandleData(
+            open=Decimal(str(swing_low + 200)),
+            high=Decimal(str(swing_low + 300)),
+            low=d - Decimal("200"),
+            close=d - Decimal("50"),  # cierra debajo del nivel → no es sweep
+            volume=Decimal("500"),
+            n_candles=1,
+        )
+        snap = _snapshot(tf_1h=no_recovery, history_1h=history)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.rationale["timeframes"]["1h"]["historical"]["swept_low"] is None
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility y fallback
+# ---------------------------------------------------------------------------
+
+
+class TestHistoricalFallback:
+    def test_without_history_uses_wick_proxy(self) -> None:
+        snap = _snapshot(tf_1h=_hammer(wick_pct=0.03))
+        result = calculate_liquidity_sweeps(snap)
+        assert result.rationale["timeframes"]["1h"]["detection_method"] == "wick_proxy"
+
+    def test_insufficient_history_uses_wick_proxy(self) -> None:
+        # 6 velas < _MIN_HISTORY_LEN (7 = 2*_SWING_LOOKBACK+1): loop de swings vacío
+        short_history = tuple(_flat_candle(50000.0) for _ in range(6))
+        snap = _snapshot(tf_1h=_hammer(wick_pct=0.03), history_1h=short_history)
+        result = calculate_liquidity_sweeps(snap)
+        assert result.rationale["timeframes"]["1h"]["detection_method"] == "wick_proxy"
+
+    def test_backward_compat_no_history_same_result(self) -> None:
+        """Con historia vacía el resultado es idéntico a no pasar historia (proxy puro)."""
+        kwargs: dict[str, CandleData] = {
+            "tf_5m": _hammer(wick_pct=0.02),
+            "tf_15m": _doji(),
+            "tf_1h": _shooting_star(wick_pct=0.03),
+            "tf_4h": _hammer(wick_pct=0.04),
+        }
+        snap_no_history = _snapshot(**kwargs)
+        snap_empty_history = _snapshot(
+            **kwargs,
+            history_5m=(),
+            history_15m=(),
+            history_1h=(),
+            history_4h=(),
+        )
+        r1 = calculate_liquidity_sweeps(snap_no_history)
+        r2 = calculate_liquidity_sweeps(snap_empty_history)
+        assert r1.signal == r2.signal
+        for tf in ("5m", "15m", "1h", "4h"):
+            assert r1.rationale["timeframes"][tf]["detection_method"] == "wick_proxy"
+
+    def test_signal_within_bounds_with_history(self) -> None:
+        history = _history_with_swing_low(49000.0)
+        snap = _snapshot(tf_1h=_hammer(wick_pct=0.03), history_1h=history)
+        result = calculate_liquidity_sweeps(snap)
+        assert -1.0 <= result.signal <= 1.0
