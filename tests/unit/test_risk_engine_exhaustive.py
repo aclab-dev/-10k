@@ -772,3 +772,159 @@ class TestRiskValidationResultNoOperarMarginZero:
                 adjusted_parameters=None,
                 reasons={"daily_drawdown": "superado"},
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests de pipeline: anti-martingala y anti-averaging en engine.validate()
+# ---------------------------------------------------------------------------
+
+
+class TestAntiMartingalaAntiAveragingPipeline:
+    """Valida que engine.validate() bloquee patrones martingala y averaging."""
+
+    def test_engine_blocks_martingala(self) -> None:
+        """BLOCK cuando el margen propuesto supera el del último trade perdedor."""
+        cfg = _config()
+        decision = _long_decision(margin_usdt=8.0)
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            last_trade_pnl_usdt=Decimal("-3.0"),
+            last_trade_margin_usdt=Decimal("5.0"),
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "anti_martingala" in result.reasons
+
+    def test_engine_approves_without_martingala_history(self) -> None:
+        """APPROVE cuando no hay historial de trades previos."""
+        cfg = _config()
+        decision = _long_decision(margin_usdt=5.0)
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+        )
+        assert result.decision == RiskDecision.APPROVE
+
+    def test_engine_approves_same_margin_after_loss(self) -> None:
+        """APPROVE cuando el margen propuesto es igual al del último trade perdedor."""
+        cfg = _config()
+        margin = Decimal("5.0")
+        decision = _long_decision(margin_usdt=float(margin))
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            last_trade_pnl_usdt=Decimal("-2.0"),
+            last_trade_margin_usdt=margin,
+        )
+        assert result.decision == RiskDecision.APPROVE
+
+    def test_engine_blocks_averaging_on_losing_position(self) -> None:
+        """BLOCK cuando hay una posición abierta con PnL no realizado negativo."""
+        cfg = _config()
+        decision = _long_decision()
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            open_position_unrealized_pnl_usdt=Decimal("-4.50"),
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "anti_averaging" in result.reasons
+
+    def test_engine_approves_when_position_in_profit(self) -> None:
+        """APPROVE cuando la posición abierta está en ganancia."""
+        cfg = _config()
+        decision = _long_decision()
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            open_position_unrealized_pnl_usdt=Decimal("2.0"),
+        )
+        assert result.decision == RiskDecision.APPROVE
+
+    def test_engine_approves_when_no_open_position(self) -> None:
+        """APPROVE cuando no hay posición abierta (None)."""
+        cfg = _config()
+        decision = _long_decision()
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            open_position_unrealized_pnl_usdt=None,
+        )
+        assert result.decision == RiskDecision.APPROVE
+
+    def test_engine_blocks_both_simultaneously(self) -> None:
+        """BLOCK con ambas reglas fallando a la vez; ambas aparecen en reasons."""
+        cfg = _config()
+        decision = _long_decision(margin_usdt=8.0)
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            last_trade_pnl_usdt=Decimal("-3.0"),
+            last_trade_margin_usdt=Decimal("5.0"),
+            open_position_unrealized_pnl_usdt=Decimal("-2.0"),
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "anti_martingala" in result.reasons
+        assert "anti_averaging" in result.reasons
+
+    def test_engine_anti_martingala_reason_contains_values(self) -> None:
+        """El reason de anti_martingala incluye los valores relevantes."""
+        cfg = _config()
+        decision = _long_decision(margin_usdt=8.0)
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            last_trade_pnl_usdt=Decimal("-3.0"),
+            last_trade_margin_usdt=Decimal("5.0"),
+        )
+        reason = result.reasons["anti_martingala"]
+        assert "8.0" in reason
+        assert "5.0" in reason
+        assert "-3.0" in reason
+
+    def test_engine_anti_averaging_reason_contains_pnl(self) -> None:
+        """El reason de anti_averaging incluye el PnL de la posición."""
+        cfg = _config()
+        decision = _long_decision()
+        aggregation = _aggregation(decision)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            open_position_unrealized_pnl_usdt=Decimal("-4.50"),
+        )
+        assert "-4.50" in result.reasons["anti_averaging"]

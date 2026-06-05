@@ -30,6 +30,8 @@ from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_a
 from backend.risk_engine.checks import (
     CheckOutcome,
     CheckResult,
+    check_anti_averaging,
+    check_anti_martingala,
     check_daily_drawdown,
     check_leverage_cap,
     check_liquidation_safety,
@@ -47,6 +49,9 @@ def validate(
     daily_loss_usdt: Decimal,
     total_loss_usdt: Decimal,
     config: AppConfig,
+    last_trade_pnl_usdt: Decimal | None = None,
+    last_trade_margin_usdt: Decimal | None = None,
+    open_position_unrealized_pnl_usdt: Decimal | None = None,
 ) -> RiskValidationResult:
     """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
 
@@ -59,6 +64,13 @@ def validate(
         daily_loss_usdt: pérdida realizada en el día corriente (≥0, en USDT).
         total_loss_usdt: pérdida total acumulada del bot (≥0, en USDT).
         config: configuración de la aplicación.
+        last_trade_pnl_usdt: PnL realizado del último trade cerrado (None = sin historial).
+            Fase BLOCK: usado por check_anti_martingala; no aplica en ADJUST_DOWN.
+        last_trade_margin_usdt: Margen del último trade cerrado (None = sin historial).
+            Fase BLOCK: usado por check_anti_martingala; no aplica en ADJUST_DOWN.
+        open_position_unrealized_pnl_usdt: PnL no realizado de la posición abierta
+            en el símbolo (None = sin posición abierta).
+            Fase BLOCK: usado por check_anti_averaging; no aplica en ADJUST_DOWN.
 
     Returns:
         RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.
@@ -110,6 +122,8 @@ def validate(
         check_daily_drawdown(daily_loss_usdt, initial_balance, config.risk.max_daily_loss_percent),
         check_total_drawdown(total_loss_usdt, initial_balance, config.risk.max_total_loss_percent),
         check_liquidation_safety(decision, config.liquidation_safety),
+        check_anti_martingala(original_margin, last_trade_pnl_usdt, last_trade_margin_usdt),
+        check_anti_averaging(open_position_unrealized_pnl_usdt),
     ]
 
     block_reasons: dict[str, str] = {
