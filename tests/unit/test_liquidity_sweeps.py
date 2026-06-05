@@ -114,6 +114,8 @@ def _snapshot(
     tf_15m: CandleData | None = None,
     tf_1h: CandleData | None = None,
     tf_4h: CandleData | None = None,
+    history_5m: tuple[CandleData, ...] = (),
+    history_15m: tuple[CandleData, ...] = (),
     history_1h: tuple[CandleData, ...] = (),
     history_4h: tuple[CandleData, ...] = (),
 ) -> MarketSnapshot:
@@ -140,6 +142,8 @@ def _snapshot(
             tf_15m=tf_15m,
             tf_1h=tf_1h,
             tf_4h=tf_4h,
+            history_5m=history_5m,
+            history_15m=history_15m,
             history_1h=history_1h,
             history_4h=history_4h,
         ),
@@ -578,23 +582,33 @@ class TestHistoricalFallback:
         assert result.rationale["timeframes"]["1h"]["detection_method"] == "wick_proxy"
 
     def test_insufficient_history_uses_wick_proxy(self) -> None:
-        # Solo 3 velas → menos que _MIN_HISTORY_LEN (5)
-        short_history = tuple(_flat_candle(50000.0) for _ in range(3))
+        # 6 velas < _MIN_HISTORY_LEN (7 = 2*_SWING_LOOKBACK+1): loop de swings vacío
+        short_history = tuple(_flat_candle(50000.0) for _ in range(6))
         snap = _snapshot(tf_1h=_hammer(wick_pct=0.03), history_1h=short_history)
         result = calculate_liquidity_sweeps(snap)
         assert result.rationale["timeframes"]["1h"]["detection_method"] == "wick_proxy"
 
     def test_backward_compat_no_history_same_result(self) -> None:
-        """Sin historia, el resultado debe ser idéntico al comportamiento original."""
-        snap = _snapshot(
-            tf_5m=_hammer(wick_pct=0.02),
-            tf_15m=_doji(),
-            tf_1h=_shooting_star(wick_pct=0.03),
-            tf_4h=_hammer(wick_pct=0.04),
+        """Con historia vacía el resultado es idéntico a no pasar historia (proxy puro)."""
+        kwargs: dict[str, CandleData] = {
+            "tf_5m": _hammer(wick_pct=0.02),
+            "tf_15m": _doji(),
+            "tf_1h": _shooting_star(wick_pct=0.03),
+            "tf_4h": _hammer(wick_pct=0.04),
+        }
+        snap_no_history = _snapshot(**kwargs)
+        snap_empty_history = _snapshot(
+            **kwargs,
+            history_5m=(),
+            history_15m=(),
+            history_1h=(),
+            history_4h=(),
         )
-        r1 = calculate_liquidity_sweeps(snap)
-        r2 = calculate_liquidity_sweeps(snap)
+        r1 = calculate_liquidity_sweeps(snap_no_history)
+        r2 = calculate_liquidity_sweeps(snap_empty_history)
         assert r1.signal == r2.signal
+        for tf in ("5m", "15m", "1h", "4h"):
+            assert r1.rationale["timeframes"][tf]["detection_method"] == "wick_proxy"
 
     def test_signal_within_bounds_with_history(self) -> None:
         history = _history_with_swing_low(49000.0)

@@ -54,8 +54,8 @@ _MIN_RANGE: Final[float] = 1e-8
 # Velas a cada lado para clasificar un pivote como swing high/low.
 _SWING_LOOKBACK: Final[int] = 3
 
-# Historia mínima (en velas) para activar detección histórica en un TF.
-_MIN_HISTORY_LEN: Final[int] = 5
+# Mínimo de velas para que el loop range(lookback, n-lookback) tenga al menos un candidato.
+_MIN_HISTORY_LEN: Final[int] = 2 * _SWING_LOOKBACK + 1  # = 7
 
 # Peso del score histórico vs wick-proxy cuando hay historia suficiente.
 _HISTORICAL_WEIGHT: Final[float] = 0.6
@@ -188,7 +188,8 @@ def _historical_score(
                 best_bear = score
                 swept_high = level
 
-    # Señal neta: bullish positivo, bearish negativo
+    # Señal neta: bullish positivo, bearish negativo.
+    # En empate exacto (raro) se prefiere bullish: conservador al alza en mercados de futuros.
     if best_bull >= best_bear:
         net_score = best_bull
     else:
