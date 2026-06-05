@@ -65,9 +65,12 @@ def validate(
         total_loss_usdt: pérdida total acumulada del bot (≥0, en USDT).
         config: configuración de la aplicación.
         last_trade_pnl_usdt: PnL realizado del último trade cerrado (None = sin historial).
+            Fase BLOCK: usado por check_anti_martingala; no aplica en ADJUST_DOWN.
         last_trade_margin_usdt: Margen del último trade cerrado (None = sin historial).
+            Fase BLOCK: usado por check_anti_martingala; no aplica en ADJUST_DOWN.
         open_position_unrealized_pnl_usdt: PnL no realizado de la posición abierta
             en el símbolo (None = sin posición abierta).
+            Fase BLOCK: usado por check_anti_averaging; no aplica en ADJUST_DOWN.
 
     Returns:
         RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.

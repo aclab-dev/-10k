@@ -810,15 +810,14 @@ class TestAntiMartingalaAntiAveragingPipeline:
             Decimal("0"),
             Decimal("0"),
             cfg,
-            last_trade_pnl_usdt=None,
-            last_trade_margin_usdt=None,
         )
         assert result.decision == RiskDecision.APPROVE
 
     def test_engine_approves_same_margin_after_loss(self) -> None:
         """APPROVE cuando el margen propuesto es igual al del último trade perdedor."""
         cfg = _config()
-        decision = _long_decision(margin_usdt=5.0)
+        margin = Decimal("5.0")
+        decision = _long_decision(margin_usdt=float(margin))
         aggregation = _aggregation(decision)
         result = validate(
             aggregation,
@@ -827,7 +826,7 @@ class TestAntiMartingalaAntiAveragingPipeline:
             Decimal("0"),
             cfg,
             last_trade_pnl_usdt=Decimal("-2.0"),
-            last_trade_margin_usdt=Decimal("5.0"),
+            last_trade_margin_usdt=margin,
         )
         assert result.decision == RiskDecision.APPROVE
 
