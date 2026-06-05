@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from backend.risk_engine.checks import (
+    CheckOutcome,
     check_anti_averaging,
     check_anti_martingala,
 )
@@ -26,7 +27,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=None,
             last_trade_margin_usdt=None,
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_no_pnl_history_passes(self) -> None:
         """PnL desconocido (None) aunque haya margen previo → no bloquear."""
@@ -35,7 +36,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=None,
             last_trade_margin_usdt=Decimal("3.0"),
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_no_margin_history_passes(self) -> None:
         """Margen previo desconocido (None) aunque haya PnL → no bloquear."""
@@ -44,7 +45,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-2.0"),
             last_trade_margin_usdt=None,
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_last_trade_profitable_passes(self) -> None:
         """Último trade fue ganador → cualquier margen es aceptable."""
@@ -53,7 +54,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("3.50"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_last_trade_breakeven_passes(self) -> None:
         """Último trade en breakeven (PnL=0) → no hay pérdida, no bloquear."""
@@ -62,7 +63,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("0"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_same_margin_after_loss_passes(self) -> None:
         """Mismo margen tras pérdida → no es martingala (no aumentó)."""
@@ -71,7 +72,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-1.0"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_smaller_margin_after_loss_passes(self) -> None:
         """Margen menor tras pérdida → comportamiento correcto, no bloquear."""
@@ -80,7 +81,7 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-2.0"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     # --- Casos que SÍ deben bloquear ---
 
@@ -91,11 +92,11 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-3.0"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is not None
-        assert "anti_martingala" in result
-        assert "8.0" in result["anti_martingala"]
-        assert "5.0" in result["anti_martingala"]
-        assert "-3.0" in result["anti_martingala"]
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_martingala"
+        assert "8.0" in result.reason
+        assert "5.0" in result.reason
+        assert "-3.0" in result.reason
 
     def test_blocks_any_increase_after_any_loss(self) -> None:
         """Cualquier aumento de margen tras cualquier pérdida es bloqueado."""
@@ -104,8 +105,8 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-0.01"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is not None
-        assert "anti_martingala" in result
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_martingala"
 
     def test_blocks_doubling_down(self) -> None:
         """Caso clásico de doblar la apuesta tras pérdida."""
@@ -114,8 +115,8 @@ class TestCheckAntiMartingala:
             last_trade_pnl_usdt=Decimal("-5.0"),
             last_trade_margin_usdt=Decimal("5.0"),
         )
-        assert result is not None
-        assert "anti_martingala" in result
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_martingala"
 
     # --- Validaciones de tipos / errores ---
 
@@ -181,38 +182,38 @@ class TestCheckAntiAveraging:
     def test_no_open_position_passes(self) -> None:
         """Sin posición abierta no hay nada que promediar."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=None)
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_position_in_profit_passes(self) -> None:
         """Posición abierta en ganancia → no bloquear."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=Decimal("2.50"))
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     def test_position_at_breakeven_passes(self) -> None:
         """Posición en breakeven (PnL=0) → no hay pérdida, no bloquear."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=Decimal("0"))
-        assert result is None
+        assert result.outcome == CheckOutcome.PASS
 
     # --- Casos que SÍ deben bloquear ---
 
     def test_blocks_averaging_on_losing_position(self) -> None:
         """Posición abierta con PnL negativo → promediado detectado, bloquear."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=Decimal("-3.75"))
-        assert result is not None
-        assert "anti_averaging" in result
-        assert "-3.75" in result["anti_averaging"]
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_averaging"
+        assert "-3.75" in result.reason
 
     def test_blocks_on_small_loss(self) -> None:
         """Cualquier pérdida, por pequeña que sea, activa el bloqueo."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=Decimal("-0.01"))
-        assert result is not None
-        assert "anti_averaging" in result
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_averaging"
 
     def test_blocks_on_large_loss(self) -> None:
         """Pérdida grande también es bloqueada."""
         result = check_anti_averaging(open_position_unrealized_pnl_usdt=Decimal("-9.99"))
-        assert result is not None
-        assert "anti_averaging" in result
+        assert result.outcome == CheckOutcome.BLOCK
+        assert result.rule == "anti_averaging"
 
     # --- Validaciones de tipos / errores ---
 

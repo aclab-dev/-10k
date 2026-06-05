@@ -391,7 +391,6 @@ def _sl_buffer_percent(sl: float, liq_price: float, direction: DecisionType) -> 
 
 # ---------------------------------------------------------------------------
 # Checks anti-martingala / anti-averaging (F9 [74])
-# Estas funciones usan interfaz dict | None para integración futura con el engine.
 # ---------------------------------------------------------------------------
 
 
@@ -399,7 +398,7 @@ def check_anti_martingala(
     proposed_margin_usdt: Decimal,
     last_trade_pnl_usdt: Decimal | None,
     last_trade_margin_usdt: Decimal | None,
-) -> dict[str, str] | None:
+) -> CheckResult:
     """Bloquea el patrón martingala: aumentar el margen después de una pérdida.
 
     Detecta el patrón de doblar (o aumentar) la apuesta tras un trade perdedor,
@@ -415,7 +414,7 @@ def check_anti_martingala(
             positivo si se provee.
 
     Returns:
-        None si el trade es aceptable, o un dict de reasons si debe bloquearse.
+        CheckResult con outcome PASS o BLOCK.
 
     Raises:
         ValueError: Si proposed_margin_usdt no es un Decimal positivo, o si
@@ -447,31 +446,48 @@ def check_anti_martingala(
                 f"last_trade_margin_usdt debe ser positivo, recibido: {last_trade_margin_usdt}."
             )
 
-    # Sin historial suficiente: no se puede detectar el patrón → no bloquear
     if last_trade_pnl_usdt is None or last_trade_margin_usdt is None:
-        return None
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule="anti_martingala",
+            reason="Sin historial de trades suficiente: anti-martingala no evaluado.",
+        )
 
-    # Solo aplica cuando el último trade fue perdedor
     if last_trade_pnl_usdt >= Decimal("0"):
-        return None
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule="anti_martingala",
+            reason=(
+                f"Último trade con PnL={last_trade_pnl_usdt} USDT (≥0): "
+                "patrón martingala no aplicable."
+            ),
+        )
 
-    # Patrón martingala: aumentar el margen después de una pérdida
     if proposed_margin_usdt > last_trade_margin_usdt:
-        return {
-            "anti_martingala": (
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule="anti_martingala",
+            reason=(
                 f"Martingala detectada: el último trade cerró con pérdida de "
                 f"{last_trade_pnl_usdt} USDT (margen {last_trade_margin_usdt} USDT) "
                 f"y el margen propuesto ({proposed_margin_usdt} USDT) es mayor. "
                 "Aumentar el tamaño tras una pérdida está prohibido."
-            )
-        }
+            ),
+        )
 
-    return None
+    return CheckResult(
+        outcome=CheckOutcome.PASS,
+        rule="anti_martingala",
+        reason=(
+            f"Margen propuesto ({proposed_margin_usdt} USDT) no supera el último "
+            f"({last_trade_margin_usdt} USDT) tras pérdida: patrón martingala no detectado."
+        ),
+    )
 
 
 def check_anti_averaging(
     open_position_unrealized_pnl_usdt: Decimal | None,
-) -> dict[str, str] | None:
+) -> CheckResult:
     """Bloquea el promediado de pérdidas: operar sobre una posición abierta en rojo.
 
     Evita agregar exposición a una posición que ya está en pérdida no realizada,
@@ -484,7 +500,7 @@ def check_anti_averaging(
             Un valor negativo indica posición en pérdida.
 
     Returns:
-        None si el trade es aceptable, o un dict de reasons si debe bloquearse.
+        CheckResult con outcome PASS o BLOCK.
 
     Raises:
         ValueError: Si open_position_unrealized_pnl_usdt no es Decimal ni None.
@@ -497,18 +513,29 @@ def check_anti_averaging(
             f"recibido: {type(open_position_unrealized_pnl_usdt).__name__}."
         )
 
-    # Sin posición abierta: nada que promediar
     if open_position_unrealized_pnl_usdt is None:
-        return None
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule="anti_averaging",
+            reason="Sin posición abierta: anti-averaging no aplicable.",
+        )
 
-    # Posición en ganancia o breakeven: no bloquear
     if open_position_unrealized_pnl_usdt >= Decimal("0"):
-        return None
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule="anti_averaging",
+            reason=(
+                f"Posición abierta con PnL={open_position_unrealized_pnl_usdt} USDT (≥0): "
+                "anti-averaging no aplicable."
+            ),
+        )
 
-    return {
-        "anti_averaging": (
+    return CheckResult(
+        outcome=CheckOutcome.BLOCK,
+        rule="anti_averaging",
+        reason=(
             f"Promediado de pérdidas detectado: la posición abierta tiene PnL "
             f"no realizado de {open_position_unrealized_pnl_usdt} USDT. "
             "Agregar exposición a una posición perdedora está prohibido."
-        )
-    }
+        ),
+    )
