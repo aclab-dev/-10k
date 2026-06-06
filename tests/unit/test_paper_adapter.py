@@ -315,3 +315,137 @@ def test_market_order_without_price_raises(adapter: PaperAdapter) -> None:
     )
     with pytest.raises(ValueError, match="price > 0"):
         adapter.place_order(req)
+
+
+# ---------------------------------------------------------------------------
+# is_reduce_only — cierre de posición
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_only_closes_position_and_realizes_pnl(adapter: PaperAdapter) -> None:
+    """Bug #2 fix: is_reduce_only debe cerrar la posición y realizar PnL."""
+    adapter.set_leverage("BTCUSDT", 1)
+    # Abrir LONG a 50000
+    open_req = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.001"))
+    adapter.place_order(open_req)
+    balance_after_open = adapter.get_account_state().balance_usdt
+
+    # Cerrar a 51000 → PnL positivo de (51000-50000)*0.001 = 1 USDT (menos slippage)
+    close_req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.001"),
+        price=Decimal("51000"),
+        is_reduce_only=True,
+    )
+    adapter.place_order(close_req)
+
+    # Posición debe estar cerrada
+    assert adapter.get_position("BTCUSDT") is None
+
+    # Balance debe haber aumentado (PnL positivo, menos fee de cierre)
+    state = adapter.get_account_state()
+    assert state.balance_usdt > balance_after_open
+
+
+def test_reduce_only_deducts_fee_from_balance(adapter: PaperAdapter) -> None:
+    """Bug #1 fix: fee siempre se descuenta, incluso en is_reduce_only."""
+    adapter.set_leverage("BTCUSDT", 1)
+    open_req = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.001"))
+    adapter.place_order(open_req)
+
+    balance_before_close = adapter._balance_usdt
+
+    close_req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.001"),
+        price=Decimal("50000"),
+        is_reduce_only=True,
+    )
+    result = adapter.place_order(close_req)
+
+    # El fee debe haberse descontado del balance (además del PnL)
+    assert result.fee_usdt > Decimal("0")
+    # PnL de cierre a mismo precio (con slippage inverso): pequeño, negativo.
+    # Lo relevante: balance cambió respecto del punto previo (fee + PnL realizados).
+    assert adapter._balance_usdt != balance_before_close
+
+
+def test_reduce_only_partial_close(adapter: PaperAdapter) -> None:
+    """Cierre parcial deja el remanente de posición abierta."""
+    adapter.set_leverage("BTCUSDT", 1)
+    open_req = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.002"))
+    adapter.place_order(open_req)
+
+    close_req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.001"),
+        price=Decimal("50000"),
+        is_reduce_only=True,
+    )
+    adapter.place_order(close_req)
+
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    assert pos.quantity == Decimal("0.001")
+
+
+# ---------------------------------------------------------------------------
+# Netting de posiciones
+# ---------------------------------------------------------------------------
+
+
+def test_two_buys_same_symbol_nets_position(adapter: PaperAdapter) -> None:
+    """Bug #3 fix: dos BUY consecutivos deben netear, no sobreescribir."""
+    adapter.set_leverage("BTCUSDT", 1)
+    req1 = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.001"))
+    req2 = _market_order(side=OrderSide.BUY, price=Decimal("52000"), quantity=Decimal("0.001"))
+    adapter.place_order(req1)
+    adapter.place_order(req2)
+
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    assert pos.quantity == Decimal("0.002")
+    # Entry price debe ser promedio ponderado de fill prices (incluyendo slippage)
+    fill1 = Decimal("50000") * (1 + Decimal("5") / Decimal("10000"))
+    fill2 = Decimal("52000") * (1 + Decimal("5") / Decimal("10000"))
+    expected_entry = (fill1 + fill2) / Decimal("2")
+    assert pos.entry_price == expected_entry
+
+
+# ---------------------------------------------------------------------------
+# get_open_orders — aislamiento por símbolo
+# ---------------------------------------------------------------------------
+
+
+def test_get_open_orders_isolates_by_symbol(adapter: PaperAdapter) -> None:
+    """get_open_orders solo retorna órdenes del símbolo solicitado."""
+    btc_req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.001"),
+        price=Decimal("49000"),
+    )
+    eth_req = OrderRequest(
+        symbol="ETHUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.01"),
+        price=Decimal("3000"),
+    )
+    adapter.place_order(btc_req)
+    adapter.place_order(eth_req)
+
+    btc_orders = adapter.get_open_orders("BTCUSDT")
+    eth_orders = adapter.get_open_orders("ETHUSDT")
+
+    assert len(btc_orders) == 1
+    assert btc_orders[0].symbol == "BTCUSDT"
+    assert len(eth_orders) == 1
+    assert eth_orders[0].symbol == "ETHUSDT"

@@ -57,7 +57,7 @@ class OrderRequest(BaseModel):
     side: OrderSide
     order_type: OrderType
     quantity: Decimal = Field(gt=Decimal("0"))
-    price: Decimal | None = Field(default=None, ge=Decimal("0"))
+    price: Decimal | None = Field(default=None, gt=Decimal("0"))
     stop_price: Decimal | None = Field(default=None, ge=Decimal("0"))
     is_reduce_only: bool = False
 
@@ -122,7 +122,7 @@ class PositionState(BaseModel):
     mark_price: Decimal | None = Field(default=None, gt=Decimal("0"))
     unrealized_pnl: Decimal = Field(default=Decimal("0"))
     margin_usdt: Decimal = Field(gt=Decimal("0"))
-    leverage: int = Field(ge=1, le=10)
+    leverage: int = Field(ge=1)  # cap por entorno vive en el adapter, no en el schema
     stop_loss: Decimal | None = Field(default=None, ge=Decimal("0"))
     take_profit: Decimal | None = Field(default=None, ge=Decimal("0"))
     is_simulated: bool

@@ -6,14 +6,23 @@ Todas las órdenes se marcan como is_simulated=True.
 Modelo de simulación:
 - Las órdenes MARKET se completan inmediatamente al precio dado + slippage.
 - Las órdenes LIMIT/STOP_MARKET se registran como PENDING (sin auto-fill).
-- Fees: taker_fee_rate × notional (default: 0.05%).
+- Fees: taker_fee_rate × notional (default: 0.05%). Se descuenta siempre,
+  incluso en órdenes de cierre (is_reduce_only=True).
 - Slippage: slippage_bps × precio (default: 5bps). Aumenta precio en BUY,
   disminuye en SELL.
 - Idempotencia: si se recibe un client_order_id ya conocido, retorna el
   resultado previo sin crear duplicados.
+- Posiciones: modo ONE_WAY. Órdenes en la misma dirección netean (weighted
+  average entry). Órdenes is_reduce_only cierran o reducen la posición y
+  realizan PnL.
 
 Estado: en memoria (sin acceso a DB). La persistencia es responsabilidad
 del Execution Engine.
+
+Nota de thread safety: los dicts internos (_orders, _positions, _leverage)
+no tienen locks. El adapter asume ejecución single-threaded o que el caller
+serializa el acceso. No usar desde múltiples corrutinas concurrentes sin
+sincronización externa.
 """
 
 from __future__ import annotations
@@ -137,7 +146,8 @@ class PaperAdapter(ExchangeAdapter):
 
     def get_open_orders(self, symbol: str) -> list[OrderResult]:
         return [
-            o for o in self._orders.values()
+            o
+            for o in self._orders.values()
             if o.symbol == symbol and o.status == OrderStatus.PENDING
         ]
 
@@ -194,10 +204,13 @@ class PaperAdapter(ExchangeAdapter):
         fee_usdt = notional * self._taker_fee_rate
         slippage_usdt = abs(slippage_amount * request.quantity)
 
-        # Actualizar balance y posición simulada
-        if not request.is_reduce_only:
-            self._update_position(request, fill_price)
-            self._balance_usdt -= fee_usdt
+        # Fee se descuenta siempre, independientemente de is_reduce_only
+        self._balance_usdt -= fee_usdt
+
+        if request.is_reduce_only:
+            self._close_or_reduce_position(request.symbol, request.quantity, fill_price)
+        else:
+            self._open_or_net_position(request, fill_price)
 
         return OrderResult(
             client_order_id=request.client_order_id,
@@ -230,25 +243,109 @@ class PaperAdapter(ExchangeAdapter):
             timestamp_utc=_now(),
         )
 
-    def _update_position(self, request: OrderRequest, fill_price: Decimal) -> None:
+    def _open_or_net_position(self, request: OrderRequest, fill_price: Decimal) -> None:
+        """Abre una nueva posición o netea con la existente en la misma dirección.
+
+        En modo ONE_WAY, si ya hay posición abierta en la misma dirección,
+        recalcula el entry_price como promedio ponderado y suma los márgenes.
+        """
         leverage = self._leverage.get(request.symbol, 1)
-        notional = fill_price * request.quantity
-        margin_usdt = notional / Decimal(leverage)
+        new_notional = fill_price * request.quantity
+        new_margin = new_notional / Decimal(leverage)
 
-        position_side = (
-            OrderSide.BUY if request.side == OrderSide.BUY else OrderSide.SELL
-        )
+        existing = self._positions.get(request.symbol)
 
-        self._positions[request.symbol] = PositionState(
-            symbol=request.symbol,
-            side=position_side,
-            quantity=request.quantity,
-            entry_price=fill_price,
-            unrealized_pnl=Decimal("0"),
-            margin_usdt=margin_usdt,
-            leverage=leverage,
-            is_simulated=True,
-        )
+        if existing is None or existing.side != request.side:
+            # Nueva posición (o cambio de lado, que no debería ocurrir en ONE_WAY)
+            self._positions[request.symbol] = PositionState(
+                symbol=request.symbol,
+                side=request.side,
+                quantity=request.quantity,
+                entry_price=fill_price,
+                unrealized_pnl=Decimal("0"),
+                margin_usdt=new_margin,
+                leverage=leverage,
+                is_simulated=True,
+            )
+        else:
+            # Neteo: promedio ponderado del entry_price
+            total_quantity = existing.quantity + request.quantity
+            weighted_entry = (
+                existing.entry_price * existing.quantity + fill_price * request.quantity
+            ) / total_quantity
+            total_margin = existing.margin_usdt + new_margin
+
+            self._positions[request.symbol] = PositionState(
+                symbol=request.symbol,
+                side=existing.side,
+                quantity=total_quantity,
+                entry_price=weighted_entry,
+                unrealized_pnl=Decimal("0"),
+                margin_usdt=total_margin,
+                leverage=leverage,
+                is_simulated=True,
+            )
+
+    def _close_or_reduce_position(
+        self, symbol: str, quantity: Decimal, fill_price: Decimal
+    ) -> None:
+        """Cierra o reduce una posición existente y realiza el PnL.
+
+        Si quantity >= posición total → cierre completo.
+        Si quantity < posición total → reducción parcial.
+        """
+        existing = self._positions.get(symbol)
+        if existing is None:
+            _log.warning(
+                "paper_adapter.reduce_only_no_position",
+                symbol=symbol,
+                quantity=str(quantity),
+            )
+            return
+
+        # PnL por unidad según dirección de la posición
+        if existing.side == OrderSide.BUY:
+            pnl_per_unit = fill_price - existing.entry_price
+        else:
+            pnl_per_unit = existing.entry_price - fill_price
+
+        closed_qty = min(quantity, existing.quantity)
+        realized_pnl = pnl_per_unit * closed_qty
+
+        # Actualizar balance con el PnL realizado
+        self._balance_usdt += realized_pnl
+
+        if closed_qty >= existing.quantity:
+            # Cierre total
+            del self._positions[symbol]
+            _log.info(
+                "paper_adapter.position_closed",
+                symbol=symbol,
+                realized_pnl=str(realized_pnl),
+            )
+        else:
+            # Reducción parcial — mantener el entry_price original
+            remaining_qty = existing.quantity - closed_qty
+            leverage = self._leverage.get(symbol, existing.leverage)
+            remaining_margin = (existing.entry_price * remaining_qty) / Decimal(leverage)
+
+            self._positions[symbol] = PositionState(
+                symbol=symbol,
+                side=existing.side,
+                quantity=remaining_qty,
+                entry_price=existing.entry_price,
+                unrealized_pnl=Decimal("0"),
+                margin_usdt=remaining_margin,
+                leverage=existing.leverage,
+                is_simulated=True,
+            )
+            _log.info(
+                "paper_adapter.position_reduced",
+                symbol=symbol,
+                closed_qty=str(closed_qty),
+                remaining_qty=str(remaining_qty),
+                realized_pnl=str(realized_pnl),
+            )
 
 
 def _now() -> datetime:
