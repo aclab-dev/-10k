@@ -355,7 +355,7 @@ def test_reduce_only_deducts_fee_from_balance(adapter: PaperAdapter) -> None:
     open_req = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.001"))
     adapter.place_order(open_req)
 
-    balance_before_close = adapter._balance_usdt
+    balance_before_close = adapter.get_account_state().balance_usdt
 
     close_req = OrderRequest(
         symbol="BTCUSDT",
@@ -371,7 +371,7 @@ def test_reduce_only_deducts_fee_from_balance(adapter: PaperAdapter) -> None:
     assert result.fee_usdt > Decimal("0")
     # PnL de cierre a mismo precio (con slippage inverso): pequeño, negativo.
     # Lo relevante: balance cambió respecto del punto previo (fee + PnL realizados).
-    assert adapter._balance_usdt != balance_before_close
+    assert adapter.get_account_state().balance_usdt != balance_before_close
 
 
 def test_reduce_only_partial_close(adapter: PaperAdapter) -> None:
@@ -449,3 +449,29 @@ def test_get_open_orders_isolates_by_symbol(adapter: PaperAdapter) -> None:
     assert btc_orders[0].symbol == "BTCUSDT"
     assert len(eth_orders) == 1
     assert eth_orders[0].symbol == "ETHUSDT"
+
+
+# ---------------------------------------------------------------------------
+# Over-close (quantity > posición existente)
+# ---------------------------------------------------------------------------
+
+
+def test_over_close_closes_position_completely(adapter: PaperAdapter) -> None:
+    """_close_or_reduce_position con quantity > existing.quantity cierra la posición completa."""
+    adapter.set_leverage("BTCUSDT", 1)
+    open_req = _market_order(side=OrderSide.BUY, price=Decimal("50000"), quantity=Decimal("0.001"))
+    adapter.place_order(open_req)
+
+    # Intentar cerrar más de lo que hay abierto
+    close_req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.005"),  # mayor que la posición de 0.001
+        price=Decimal("50000"),
+        is_reduce_only=True,
+    )
+    adapter.place_order(close_req)
+
+    # Posición debe quedar cerrada (no negativa)
+    assert adapter.get_position("BTCUSDT") is None

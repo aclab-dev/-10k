@@ -58,7 +58,7 @@ class OrderRequest(BaseModel):
     order_type: OrderType
     quantity: Decimal = Field(gt=Decimal("0"))
     price: Decimal | None = Field(default=None, gt=Decimal("0"))
-    stop_price: Decimal | None = Field(default=None, ge=Decimal("0"))
+    stop_price: Decimal | None = Field(default=None, gt=Decimal("0"))
     is_reduce_only: bool = False
 
     model_config = {"frozen": True}
@@ -139,7 +139,9 @@ class AccountState(BaseModel):
     """Estado de la cuenta según el exchange (real o simulado)."""
 
     balance_usdt: Decimal = Field(ge=Decimal("0"))
-    equity_usdt: Decimal = Field(ge=Decimal("0"))
+    # equity puede ser negativo cuando las pérdidas flotantes superan el balance;
+    # no aplicar ge=0 para evitar ValidationError con mark prices reales.
+    equity_usdt: Decimal
     available_margin_usdt: Decimal = Field(ge=Decimal("0"))
     used_margin_usdt: Decimal = Field(ge=Decimal("0"))
     is_simulated: bool

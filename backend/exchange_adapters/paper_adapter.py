@@ -253,8 +253,17 @@ class PaperAdapter(ExchangeAdapter):
 
         existing = self._positions.get(request.symbol)
 
+        if existing is not None and existing.side != request.side:
+            _log.warning(
+                "paper_adapter.side_flip_without_reduce_only",
+                symbol=request.symbol,
+                existing_side=existing.side,
+                new_side=request.side,
+                msg="Flip de lado sin is_reduce_only en ONE_WAY — el margen previo no se devuelve",
+            )
+
         if existing is None or existing.side != request.side:
-            # Nueva posición (o cambio de lado, que no debería ocurrir en ONE_WAY)
+            # Nueva posición (o cambio de lado; en ONE_WAY esto no debería ocurrir)
             self._positions[request.symbol] = PositionState(
                 symbol=request.symbol,
                 side=request.side,
