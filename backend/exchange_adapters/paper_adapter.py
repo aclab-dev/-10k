@@ -152,9 +152,7 @@ class PaperAdapter(ExchangeAdapter):
         ]
 
     def get_account_state(self) -> AccountState:
-        used_margin: Decimal = sum(
-            (p.margin_usdt for p in self._positions.values()), Decimal("0")
-        )
+        used_margin: Decimal = sum((p.margin_usdt for p in self._positions.values()), Decimal("0"))
         unrealized_pnl: Decimal = sum(
             (p.unrealized_pnl for p in self._positions.values()), Decimal("0")
         )
