@@ -220,17 +220,13 @@ class TestPaperAdapterFillIntegration:
         assert result.status == OrderStatus.PENDING
 
     def test_long_entry_buy_market_adverse_slippage(self):
-        result = self.adapter.place_order(
-            self._req(side=OrderSide.BUY, price=Decimal("97000"))
-        )
+        result = self.adapter.place_order(self._req(side=OrderSide.BUY, price=Decimal("97000")))
         assert result.fill_price is not None
         assert result.fill_price > Decimal("97000")
         assert result.fee_usdt > Decimal("0")
 
     def test_short_entry_sell_market_adverse_slippage(self):
-        result = self.adapter.place_order(
-            self._req(side=OrderSide.SELL, price=Decimal("97000"))
-        )
+        result = self.adapter.place_order(self._req(side=OrderSide.SELL, price=Decimal("97000")))
         assert result.fill_price is not None
         assert result.fill_price < Decimal("97000")
         assert result.fee_usdt > Decimal("0")
