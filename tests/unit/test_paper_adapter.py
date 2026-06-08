@@ -475,3 +475,87 @@ def test_over_close_closes_position_completely(adapter: PaperAdapter) -> None:
 
     # Posición debe quedar cerrada (no negativa)
     assert adapter.get_position("BTCUSDT") is None
+
+
+# ---------------------------------------------------------------------------
+# apply_funding
+# ---------------------------------------------------------------------------
+
+
+def test_apply_funding_long_pays(adapter: PaperAdapter) -> None:
+    """Long con funding rate positivo descuenta del balance."""
+    adapter.set_leverage("BTCUSDT", 1)
+    adapter.place_order(
+        _market_order(side=OrderSide.BUY, quantity=Decimal("1"), price=Decimal("50000"))
+    )
+    balance_before = adapter.get_account_state().balance_usdt
+
+    payment = adapter.apply_funding(
+        "BTCUSDT", funding_rate=Decimal("0.0001"), mark_price=Decimal("50000")
+    )
+
+    # payment = 1 * 50000 * 0.0001 = 5
+    assert payment == Decimal("5")
+    assert adapter.get_account_state().balance_usdt == balance_before - Decimal("5")
+
+
+def test_apply_funding_short_receives(adapter: PaperAdapter) -> None:
+    """Short con funding rate positivo suma al balance."""
+    adapter.set_leverage("BTCUSDT", 1)
+    adapter.place_order(
+        _market_order(side=OrderSide.SELL, quantity=Decimal("1"), price=Decimal("50000"))
+    )
+    balance_before = adapter.get_account_state().balance_usdt
+
+    payment = adapter.apply_funding(
+        "BTCUSDT", funding_rate=Decimal("0.0001"), mark_price=Decimal("50000")
+    )
+
+    # short recibe: payment = -5
+    assert payment == Decimal("-5")
+    assert adapter.get_account_state().balance_usdt == balance_before + Decimal("5")
+
+
+def test_apply_funding_no_position_returns_zero(adapter: PaperAdapter) -> None:
+    """Sin posición abierta, apply_funding retorna 0 y no toca el balance."""
+    balance_before = adapter.get_account_state().balance_usdt
+    payment = adapter.apply_funding(
+        "BTCUSDT", funding_rate=Decimal("0.0001"), mark_price=Decimal("50000")
+    )
+    assert payment == Decimal("0")
+    assert adapter.get_account_state().balance_usdt == balance_before
+
+
+def test_apply_funding_accumulates(adapter: PaperAdapter) -> None:
+    """Múltiples aplicaciones acumulan correctamente en get_funding_paid."""
+    adapter.set_leverage("BTCUSDT", 1)
+    adapter.place_order(
+        _market_order(side=OrderSide.BUY, quantity=Decimal("1"), price=Decimal("50000"))
+    )
+
+    adapter.apply_funding("BTCUSDT", funding_rate=Decimal("0.0001"), mark_price=Decimal("50000"))
+    adapter.apply_funding("BTCUSDT", funding_rate=Decimal("0.0001"), mark_price=Decimal("50000"))
+
+    # 5 + 5 = 10
+    assert adapter.get_funding_paid("BTCUSDT") == Decimal("10")
+
+
+def test_get_funding_paid_default_zero(adapter: PaperAdapter) -> None:
+    """Sin funding aplicado, get_funding_paid retorna 0."""
+    assert adapter.get_funding_paid("BTCUSDT") == Decimal("0")
+
+
+def test_apply_funding_zero_rate_no_balance_change(adapter: PaperAdapter) -> None:
+    """Rate de 0 no modifica el balance."""
+    adapter.set_leverage("BTCUSDT", 1)
+    adapter.place_order(
+        _market_order(side=OrderSide.BUY, quantity=Decimal("1"), price=Decimal("50000"))
+    )
+    balance_before = adapter.get_account_state().balance_usdt
+
+    payment = adapter.apply_funding(
+        "BTCUSDT", funding_rate=Decimal("0"), mark_price=Decimal("50000")
+    )
+
+    assert payment == Decimal("0")
+    assert adapter.get_account_state().balance_usdt == balance_before
