@@ -126,14 +126,14 @@ class TestFillResult:
     """Tests for the FillResult frozen dataclass exported from paper_adapter."""
 
     def _make_fill(self, **kwargs) -> FillResult:
-        defaults = dict(
-            fill_price=Decimal("97000"),
-            filled_quantity=Decimal("0.001"),
-            requested_quantity=Decimal("0.001"),
-            fee_usdt=Decimal("0.04850"),
-            slippage_usdt=Decimal("0.194"),
-            is_partial=False,
-        )
+        defaults: dict = {
+            "fill_price": Decimal("97000"),
+            "filled_quantity": Decimal("0.001"),
+            "requested_quantity": Decimal("0.001"),
+            "fee_usdt": Decimal("0.04850"),
+            "slippage_usdt": Decimal("0.194"),
+            "is_partial": False,
+        }
         defaults.update(kwargs)
         return FillResult(**defaults)
 
@@ -148,7 +148,9 @@ class TestFillResult:
         assert fr.notional_usdt == expected
 
     def test_notional_usdt_quantized_to_8_decimals(self):
-        fr = self._make_fill(fill_price=Decimal("97000.123456789"), filled_quantity=Decimal("0.001"))
+        fr = self._make_fill(
+            fill_price=Decimal("97000.123456789"), filled_quantity=Decimal("0.001")
+        )
         assert fr.notional_usdt == fr.notional_usdt.quantize(Decimal("0.00000001"))
 
     def test_is_partial_false_for_full_fill(self):
