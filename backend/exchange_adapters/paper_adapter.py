@@ -32,8 +32,8 @@ from decimal import Decimal
 
 import structlog
 
-from backend.backtesting.funding_model import compute_funding_payment
 from backend.core.config import Environment, MarginType
+from backend.core.funding import compute_funding_payment
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
     AccountState,
@@ -203,6 +203,14 @@ class PaperAdapter(ExchangeAdapter):
         self._balance_usdt -= payment
         self._funding_paid[symbol] = self._funding_paid.get(symbol, Decimal("0")) + payment
 
+        if self._balance_usdt < Decimal("0"):
+            _log.warning(
+                "paper_adapter.funding_margin_call",
+                symbol=symbol,
+                balance_after=str(self._balance_usdt),
+                funding_payment_usdt=str(payment),
+            )
+
         _log.info(
             "paper_adapter.funding_applied",
             symbol=symbol,
@@ -219,6 +227,11 @@ class PaperAdapter(ExchangeAdapter):
         """Retorna el funding acumulado pagado para `symbol` en esta sesión.
 
         Positivo = pagamos en total, negativo = recibimos en total.
+
+        Nota de scope: el acumulador es por sesión del adapter (en memoria),
+        no por posición activa. Si la posición se cierra y se abre una nueva
+        en el mismo símbolo, el acumulado incluye los pagos de todas las
+        posiciones anteriores en esa sesión.
         """
         return self._funding_paid.get(symbol, Decimal("0"))
 

@@ -1,31 +1,14 @@
-"""Modelo de funding para futuros perpetuos.
+"""Modelo de funding para backtesting.
 
-En futuros perpetuos, el funding se aplica cada 8 horas.
-Si el rate es positivo, los longs pagan a los shorts.
-Si el rate es negativo, los shorts pagan a los longs.
-El monto = notional × funding_rate.
+La función pura `compute_funding_payment` vive en `backend.core.funding`
+para que pueda ser compartida por el PaperAdapter, el live engine y el
+risk manager sin dependencias circulares.
+
+Este módulo re-exporta la función por compatibilidad y está pensado para
+crecer con lógica exclusiva de backtesting (slippage de funding histórico,
+interpolación de tasas, etc.).
 """
 
-from __future__ import annotations
+from backend.core.funding import compute_funding_payment
 
-from decimal import Decimal
-
-from backend.exchange_adapters.schemas import OrderSide
-
-
-def compute_funding_payment(
-    side: OrderSide,
-    quantity: Decimal,
-    mark_price: Decimal,
-    funding_rate: Decimal,
-) -> Decimal:
-    """Calcula el pago de funding para una posición.
-
-    Retorna:
-        Decimal positivo → nosotros pagamos (sale de nuestro balance).
-        Decimal negativo → nosotros recibimos (entra a nuestro balance).
-    """
-    notional = quantity * mark_price
-    if side == OrderSide.BUY:
-        return notional * funding_rate
-    return -(notional * funding_rate)
+__all__ = ["compute_funding_payment"]

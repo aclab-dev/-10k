@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from backend.backtesting.funding_model import compute_funding_payment
+from backend.core.funding import compute_funding_payment
 from backend.exchange_adapters.schemas import OrderSide
 
 

@@ -559,3 +559,22 @@ def test_apply_funding_zero_rate_no_balance_change(adapter: PaperAdapter) -> Non
 
     assert payment == Decimal("0")
     assert adapter.get_account_state().balance_usdt == balance_before
+
+
+def test_apply_funding_balance_goes_negative_does_not_raise(adapter: PaperAdapter) -> None:
+    """Balance negativo post-funding no lanza excepción (se permite en PAPER)."""
+    tiny_adapter = PaperAdapter(
+        initial_balance_usdt=Decimal("1"),
+        taker_fee_rate=Decimal("0"),
+        slippage_bps=Decimal("0"),
+    )
+    tiny_adapter.set_leverage("BTCUSDT", 1)
+    tiny_adapter.place_order(
+        _market_order(side=OrderSide.BUY, quantity=Decimal("1"), price=Decimal("50000"))
+    )
+    # rate grande para forzar balance negativo
+    payment = tiny_adapter.apply_funding(
+        "BTCUSDT", funding_rate=Decimal("0.01"), mark_price=Decimal("50000")
+    )
+    assert payment == Decimal("500")
+    assert tiny_adapter.get_account_state().balance_usdt < Decimal("0")

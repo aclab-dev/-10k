@@ -138,7 +138,9 @@ class PositionState(BaseModel):
 class AccountState(BaseModel):
     """Estado de la cuenta según el exchange (real o simulado)."""
 
-    balance_usdt: Decimal = Field(ge=Decimal("0"))
+    # balance puede ser negativo en PAPER si pagos de funding superan el saldo;
+    # no aplicar ge=0 para evitar ValidationError en esos escenarios simulados.
+    balance_usdt: Decimal
     # equity puede ser negativo cuando las pérdidas flotantes superan el balance;
     # no aplicar ge=0 para evitar ValidationError con mark prices reales.
     equity_usdt: Decimal
