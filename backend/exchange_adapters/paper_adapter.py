@@ -5,10 +5,11 @@ Todas las órdenes se marcan como is_simulated=True.
 
 Modelo de simulación:
 - Las órdenes MARKET se completan inmediatamente al precio dado + slippage.
-- Las órdenes LIMIT/STOP_MARKET se registran como PENDING (sin auto-fill).
-- Fees: taker_fee_rate × notional (default: 0.05%). Se descuenta siempre,
-  incluso en órdenes de cierre (is_reduce_only=True).
-- Slippage: slippage_bps × precio (default: 5bps). Aumenta precio en BUY,
+- Las órdenes LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET se registran como PENDING
+  (sin auto-fill).
+- Fees: calculados por FeeModel (taker para MARKET/STOP, maker para LIMIT).
+  Se descuentan siempre, incluso en órdenes de cierre (is_reduce_only=True).
+- Slippage: calculado por SlippageModel (BPS adversos). Aumenta precio en BUY,
   disminuye en SELL.
 - Idempotencia: si se recibe un client_order_id ya conocido, retorna el
   resultado previo sin crear duplicados.
@@ -27,11 +28,15 @@ sincronización externa.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 import structlog
 
+from backend.backtesting.fee_model import FeeModel
+from backend.backtesting.slippage_model import SlippageModel
 from backend.core.config import Environment, MarginType
 from backend.core.funding import compute_funding_payment
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -47,16 +52,40 @@ from backend.exchange_adapters.schemas import (
 
 _log = structlog.get_logger(__name__)
 
-# Fee taker para futuros perpetuos (BingX referencia: ~0.05%)
-_DEFAULT_TAKER_FEE_RATE = Decimal("0.0005")
-
-# Slippage en basis points (1 bps = 0.01%)
-_DEFAULT_SLIPPAGE_BPS = Decimal("5")
-
-_BPS_DIVISOR = Decimal("10000")
-
 # Leverage máximo permitido en PAPER
 _MAX_LEVERAGE_PAPER = 10
+
+_QUANT = Decimal("0.00000001")
+
+# Mapeo de OrderType (schemas) → tipo que entienden FeeModel y SlippageModel.
+# STOP_MARKET y TAKE_PROFIT_MARKET son órdenes taker con impacto de mercado.
+_ORDER_TYPE_TO_MODEL_TYPE: dict[OrderType, Literal["MARKET", "LIMIT", "STOP"]] = {
+    OrderType.MARKET: "MARKET",
+    OrderType.LIMIT: "LIMIT",
+    OrderType.STOP_MARKET: "STOP",
+    OrderType.TAKE_PROFIT_MARKET: "STOP",
+}
+
+
+@dataclass(frozen=True)
+class FillResult:
+    """Resultado matemático de un fill simulado.
+
+    Contiene únicamente el outcome de precio/cantidad/fee. No incluye
+    order_id ni filled_at — esos los agrega PaperExecution al persistir
+    el registro en DB.
+    """
+
+    fill_price: Decimal
+    filled_quantity: Decimal
+    requested_quantity: Decimal
+    fee_usdt: Decimal
+    slippage_usdt: Decimal
+    is_partial: bool
+
+    @property
+    def notional_usdt(self) -> Decimal:
+        return (self.fill_price * self.filled_quantity).quantize(_QUANT)
 
 
 class PaperAdapter(ExchangeAdapter):
@@ -65,12 +94,12 @@ class PaperAdapter(ExchangeAdapter):
     def __init__(
         self,
         initial_balance_usdt: Decimal = Decimal("1000"),
-        taker_fee_rate: Decimal = _DEFAULT_TAKER_FEE_RATE,
-        slippage_bps: Decimal = _DEFAULT_SLIPPAGE_BPS,
+        fee_model: FeeModel | None = None,
+        slippage_model: SlippageModel | None = None,
     ) -> None:
         self._balance_usdt = initial_balance_usdt
-        self._taker_fee_rate = taker_fee_rate
-        self._slippage_bps = slippage_bps
+        self._fee = fee_model or FeeModel()
+        self._slip = slippage_model or SlippageModel()
 
         # Keyed by client_order_id
         self._orders: dict[str, OrderResult] = {}
@@ -246,16 +275,12 @@ class PaperAdapter(ExchangeAdapter):
                 f"client_order_id={request.client_order_id}"
             )
 
-        slippage_amount = request.price * self._slippage_bps / _BPS_DIVISOR
+        model_order_type = _ORDER_TYPE_TO_MODEL_TYPE[request.order_type]
+        fill_price = self._slip.apply(request.price, request.side.value, model_order_type)
 
-        if request.side == OrderSide.BUY:
-            fill_price = request.price + slippage_amount
-        else:
-            fill_price = request.price - slippage_amount
-
-        notional = fill_price * request.quantity
-        fee_usdt = notional * self._taker_fee_rate
-        slippage_usdt = abs(slippage_amount * request.quantity)
+        notional = (fill_price * request.quantity).quantize(_QUANT)
+        fee_usdt = self._fee.calculate(notional, model_order_type)
+        slippage_usdt = (abs(fill_price - request.price) * request.quantity).quantize(_QUANT)
 
         # Fee se descuenta siempre, independientemente de is_reduce_only
         self._balance_usdt -= fee_usdt

@@ -6,6 +6,8 @@ from decimal import Decimal
 
 import pytest
 
+from backend.backtesting.fee_model import FeeModel
+from backend.backtesting.slippage_model import SlippageModel
 from backend.core.config import Environment, MarginType
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import (
@@ -19,13 +21,18 @@ from backend.exchange_adapters.schemas import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+# Los tests del adapter usan 5 BPS de slippage y 0.05% de taker fee,
+# mismas tasas que tenía el adapter en PR #65 (antes de la refactorización).
+_FEE_MODEL = FeeModel(taker_rate=Decimal("0.0005"), maker_rate=Decimal("0.0002"))
+_SLIPPAGE_MODEL = SlippageModel(market_bps=Decimal("5"))
+
 
 @pytest.fixture
 def adapter() -> PaperAdapter:
     return PaperAdapter(
         initial_balance_usdt=Decimal("1000"),
-        taker_fee_rate=Decimal("0.0005"),
-        slippage_bps=Decimal("5"),
+        fee_model=_FEE_MODEL,
+        slippage_model=_SLIPPAGE_MODEL,
     )
 
 
