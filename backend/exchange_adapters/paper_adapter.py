@@ -225,7 +225,7 @@ class PaperAdapter(ExchangeAdapter):
 
         notional = (fill_price * request.quantity).quantize(_QUANT)
         fee_usdt = self._fee.calculate(notional, model_order_type)
-        slippage_usdt = abs(fill_price - request.price) * request.quantity
+        slippage_usdt = (abs(fill_price - request.price) * request.quantity).quantize(_QUANT)
 
         # Fee se descuenta siempre, independientemente de is_reduce_only
         self._balance_usdt -= fee_usdt
