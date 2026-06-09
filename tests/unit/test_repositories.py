@@ -673,6 +673,7 @@ class TestOrderRepository:
     def _order(self, session: Session, run: BotRun, exchange_id: str | None = None) -> Order:
         o = Order(
             bot_run_id=run.id,
+            client_order_id=str(uuid.uuid4()),
             symbol="BTCUSDT",
             environment="PAPER",
             order_type="MARKET",
@@ -705,6 +706,7 @@ class TestOrderRepository:
         session.add(
             Order(
                 bot_run_id=run.id,
+                client_order_id=str(uuid.uuid4()),
                 symbol="BTCUSDT",
                 environment="PAPER",
                 order_type="MARKET",

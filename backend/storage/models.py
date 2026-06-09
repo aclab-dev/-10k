@@ -26,6 +26,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -477,6 +478,7 @@ class Order(Base):
     trade_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), ForeignKey("trades.id", ondelete="SET NULL"), nullable=True
     )
+    client_order_id: Mapped[str] = mapped_column(String(36), nullable=False)
     symbol: Mapped[str] = mapped_column(String(16), nullable=False)
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
     order_type: Mapped[str] = mapped_column(String(16), nullable=False)  # MARKET/LIMIT/STOP
@@ -492,6 +494,8 @@ class Order(Base):
     fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     is_simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (UniqueConstraint("client_order_id", name="uq_orders_client_order_id"),)
 
     bot_run: Mapped[BotRun] = relationship(back_populates="orders")
     trade: Mapped[Trade | None] = relationship(back_populates="orders")
