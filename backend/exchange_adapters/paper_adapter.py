@@ -33,6 +33,7 @@ from decimal import Decimal
 import structlog
 
 from backend.core.config import Environment, MarginType
+from backend.core.funding import compute_funding_payment
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
     AccountState,
@@ -77,6 +78,8 @@ class PaperAdapter(ExchangeAdapter):
         self._positions: dict[str, PositionState] = {}
         # Keyed by symbol → leverage
         self._leverage: dict[str, int] = {}
+        # Acumulado de funding pagado por símbolo (positivo = pagamos, negativo = recibimos)
+        self._funding_paid: dict[str, Decimal] = {}
 
     # ------------------------------------------------------------------
     # ExchangeAdapter protocol
@@ -179,6 +182,58 @@ class PaperAdapter(ExchangeAdapter):
         if margin_type == MarginType.CROSS:
             raise ValueError("Cross margin está prohibido. Solo se permite ISOLATED.")
         _log.info("paper_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
+
+    def apply_funding(self, symbol: str, funding_rate: Decimal, mark_price: Decimal) -> Decimal:
+        """Aplica el funding rate a la posición abierta en `symbol`.
+
+        Retorna el pago de funding (positivo = pagamos, negativo = recibimos).
+        Si no hay posición abierta, retorna Decimal("0") sin tocar el balance.
+        """
+        position = self._positions.get(symbol)
+        if position is None:
+            return Decimal("0")
+
+        payment = compute_funding_payment(
+            side=position.side,
+            quantity=position.quantity,
+            mark_price=mark_price,
+            funding_rate=funding_rate,
+        )
+
+        self._balance_usdt -= payment
+        self._funding_paid[symbol] = self._funding_paid.get(symbol, Decimal("0")) + payment
+
+        if self._balance_usdt < Decimal("0"):
+            _log.warning(
+                "paper_adapter.funding_margin_call",
+                symbol=symbol,
+                balance_after=str(self._balance_usdt),
+                funding_payment_usdt=str(payment),
+            )
+
+        _log.info(
+            "paper_adapter.funding_applied",
+            symbol=symbol,
+            funding_rate=str(funding_rate),
+            mark_price=str(mark_price),
+            position_side=position.side,
+            quantity=str(position.quantity),
+            funding_payment_usdt=str(payment),
+            accumulated_funding_usdt=str(self._funding_paid[symbol]),
+        )
+        return payment
+
+    def get_funding_paid(self, symbol: str) -> Decimal:
+        """Retorna el funding acumulado pagado para `symbol` en esta sesión.
+
+        Positivo = pagamos en total, negativo = recibimos en total.
+
+        Nota de scope: el acumulador es por sesión del adapter (en memoria),
+        no por posición activa. Si la posición se cierra y se abre una nueva
+        en el mismo símbolo, el acumulado incluye los pagos de todas las
+        posiciones anteriores en esa sesión.
+        """
+        return self._funding_paid.get(symbol, Decimal("0"))
 
     # ------------------------------------------------------------------
     # Helpers internos
