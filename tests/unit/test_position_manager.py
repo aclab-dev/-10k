@@ -6,8 +6,12 @@ from decimal import Decimal
 
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
-from backend.position_manager import PositionConfig, PositionManager, PositionTriggerReason
-from backend.position_manager.break_even import maybe_move_to_break_even
+from backend.position_manager import (
+    PositionConfig,
+    PositionManager,
+    PositionTriggerReason,
+    maybe_move_to_break_even,
+)
 from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
 
 # ---------------------------------------------------------------------------
@@ -247,7 +251,7 @@ class TestPositionManagerTrailing:
         # Precio sube: trailing stop se mueve a 52000
         r = pm.tick("BTCUSDT", Decimal("53000"))
         assert r.trigger == PositionTriggerReason.NONE
-        assert pm._trailing_stop["BTCUSDT"] == Decimal("52000")
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
 
         # Precio baja pero no toca el trailing → NONE
         r = pm.tick("BTCUSDT", Decimal("52500"))
@@ -266,7 +270,7 @@ class TestPositionManagerTrailing:
 
         r = pm.tick("BTCUSDT", Decimal("47000"))
         assert r.trigger == PositionTriggerReason.NONE
-        assert pm._trailing_stop["BTCUSDT"] == Decimal("48000")
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("48000")
 
         r = pm.tick("BTCUSDT", Decimal("48000"))
         assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
@@ -279,13 +283,13 @@ class TestPositionManagerTrailing:
         pm = PositionManager(adapter)
         pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000")))
 
-        # Primer tick: high-water = 55000
+        # Primer tick: trailing stop establecido
         pm.tick("BTCUSDT", Decimal("55000"))
-        assert pm._high_water["BTCUSDT"] == Decimal("55000")
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("54000")
 
-        # Reconfigurar → high-water debe desaparecer
+        # Reconfigurar → trailing stop se resetea
         pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("500")))
-        assert "BTCUSDT" not in pm._high_water
+        assert pm.get_trailing_stop("BTCUSDT") is None
 
 
 # ---------------------------------------------------------------------------
@@ -358,3 +362,95 @@ class TestPositionManagerEdge:
         assert r_eth.trigger == PositionTriggerReason.NONE
         assert adapter.get_position("BTCUSDT") is None
         assert adapter.get_position("ETHUSDT") is not None
+
+
+# ---------------------------------------------------------------------------
+# PositionConfig — model_validator
+# ---------------------------------------------------------------------------
+
+
+class TestPositionConfigValidator:
+    def test_all_none_raises(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="At least one"):
+            PositionConfig(symbol="BTCUSDT")
+
+    def test_only_sl_valid(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000"))
+        assert cfg.stop_loss == Decimal("48000")
+
+    def test_only_tp_valid(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", take_profit=Decimal("55000"))
+        assert cfg.take_profit == Decimal("55000")
+
+    def test_only_trailing_valid(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000"))
+        assert cfg.trailing_delta == Decimal("1000")
+
+
+# ---------------------------------------------------------------------------
+# PositionManager — break-even integrado
+# ---------------------------------------------------------------------------
+
+
+class TestPositionManagerBreakEven:
+    def test_long_be_moves_sl_to_entry(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        # entry_price real = 50025 (slippage), SL inicial = 48000, be_trigger_delta = 3000
+        entry_price = adapter.get_position("BTCUSDT").entry_price  # ~50025
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("3000"),
+            )
+        )
+
+        # Tick en el que precio sube be_trigger_delta a favor → SL se mueve a entry
+        trigger_price = entry_price + Decimal("3000")
+        r = pm.tick("BTCUSDT", trigger_price)
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_effective_sl("BTCUSDT") == entry_price
+
+    def test_long_be_sl_then_triggers(self) -> None:
+        """Después de mover SL a break-even, si el precio cae por debajo → SL_HIT."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("3000"),
+            )
+        )
+
+        # Activar break-even
+        pm.tick("BTCUSDT", entry_price + Decimal("3000"))
+        assert pm.get_effective_sl("BTCUSDT") == entry_price
+
+        # Precio cae por debajo del entry → SL_HIT con SL break-even
+        r = pm.tick("BTCUSDT", entry_price - Decimal("1"))
+        assert r.trigger == PositionTriggerReason.SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_be_not_triggered_below_delta(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("3000"),
+            )
+        )
+
+        # Precio sube pero no llega al delta → SL efectivo sigue en 48000
+        pm.tick("BTCUSDT", entry_price + Decimal("1000"))
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("48000")

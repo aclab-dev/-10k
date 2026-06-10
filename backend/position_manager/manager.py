@@ -1,12 +1,14 @@
 """PositionManager — monitorea posiciones paper y ejecuta cierres por SL/TP/trailing.
 
 Responsabilidades:
-- Mantiene la configuración de salida (SL, TP, trailing) por símbolo.
-- En cada tick(symbol, mark_price) evalúa si algún trigger fue alcanzado.
-- Si hay trigger → coloca una orden MARKET reduce-only via el ExchangeAdapter.
+- Mantiene la configuración de salida (SL, TP, trailing, break-even) por símbolo.
+- En cada tick(symbol, mark_price):
+    1. Actualiza el high-water del trailing stop.
+    2. Evalúa break-even y mueve el SL efectivo si corresponde.
+    3. Evalúa SL efectivo → TP → trailing stop (primer trigger gana).
+    4. Si hay trigger → coloca MARKET reduce-only y limpia la config.
 
-No persiste estado en DB. El estado del trailing (high-water) vive en memoria.
-El caller es responsable de llamar tick() con mark prices actualizados.
+Estado en memoria (sin persistencia). El caller es responsable de los ticks periódicos.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import structlog
 
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
+from backend.position_manager.break_even import maybe_move_to_break_even
 from backend.position_manager.schemas import (
     PositionConfig,
     PositionTriggerReason,
@@ -29,7 +32,7 @@ _log = structlog.get_logger(__name__)
 
 
 class PositionManager:
-    """Gestor de posiciones paper: monitorea SL, TP y trailing stop."""
+    """Gestor de posiciones paper: monitorea SL, TP, trailing stop y break-even."""
 
     def __init__(self, adapter: ExchangeAdapter) -> None:
         self._adapter = adapter
@@ -37,12 +40,16 @@ class PositionManager:
         self._configs: dict[str, PositionConfig] = {}
         # High-water mark para el trailing stop, por símbolo
         self._high_water: dict[str, Decimal] = {}
-        # Trailing stop price actual por símbolo (calculado en el último tick)
+        # Trailing stop price actual (calculado en el último tick)
         self._trailing_stop: dict[str, Decimal] = {}
+        # SL efectivo: puede diferir de config.stop_loss tras un movimiento a break-even
+        self._effective_sl: dict[str, Decimal | None] = {}
 
     def set_config(self, config: PositionConfig) -> None:
         """Registra o reemplaza la configuración de salida para un símbolo."""
         self._configs[config.symbol] = config
+        # Inicializar SL efectivo desde config; se actualizará si break-even se activa
+        self._effective_sl[config.symbol] = config.stop_loss
         # Resetear estado de trailing al reconfigurar
         self._high_water.pop(config.symbol, None)
         self._trailing_stop.pop(config.symbol, None)
@@ -52,21 +59,31 @@ class PositionManager:
             stop_loss=str(config.stop_loss),
             take_profit=str(config.take_profit),
             trailing_delta=str(config.trailing_delta),
+            be_trigger_delta=str(config.be_trigger_delta),
         )
 
     def get_config(self, symbol: str) -> PositionConfig | None:
         return self._configs.get(symbol)
 
+    def get_trailing_stop(self, symbol: str) -> Decimal | None:
+        """Retorna el precio de trailing stop activo para `symbol`, o None si no aplica."""
+        return self._trailing_stop.get(symbol)
+
+    def get_effective_sl(self, symbol: str) -> Decimal | None:
+        """Retorna el SL efectivo actual para `symbol` (puede haber sido movido a break-even)."""
+        return self._effective_sl.get(symbol)
+
     def remove_config(self, symbol: str) -> None:
-        """Elimina la configuración y el estado de trailing para un símbolo."""
+        """Elimina la configuración y el estado de tracking para un símbolo."""
         self._configs.pop(symbol, None)
         self._high_water.pop(symbol, None)
         self._trailing_stop.pop(symbol, None)
+        self._effective_sl.pop(symbol, None)
 
     def tick(self, symbol: str, mark_price: Decimal) -> TickResult:
         """Evalúa triggers para `symbol` al precio `mark_price`.
 
-        Orden de evaluación: SL estático → TP → trailing stop.
+        Orden de evaluación: SL efectivo → TP → trailing stop.
         El primero que se activa gana; se coloca la orden y se limpia la config.
 
         Si no hay posición abierta o no hay config → retorna NONE.
@@ -101,8 +118,31 @@ class PositionManager:
             self._high_water[symbol] = hw
             self._trailing_stop[symbol] = trailing_stop_price
 
+        # --- Break-even: mover SL efectivo a entry_price si se cumple la condición ---
+        if config.be_trigger_delta is not None:
+            current_sl = self._effective_sl.get(symbol)
+            new_sl = maybe_move_to_break_even(
+                side=side,
+                entry_price=position.entry_price,
+                mark_price=mark_price,
+                be_trigger_delta=config.be_trigger_delta,
+                current_sl=current_sl,
+            )
+            if new_sl is not None:
+                self._effective_sl[symbol] = new_sl
+                _log.info(
+                    "position_manager.break_even_activated",
+                    symbol=symbol,
+                    entry_price=str(position.entry_price),
+                    mark_price=str(mark_price),
+                    new_sl=str(new_sl),
+                )
+
         # --- Evaluación de triggers ---
-        trigger = self._evaluate_trigger(side, mark_price, config, trailing_stop_price)
+        effective_sl = self._effective_sl.get(symbol)
+        trigger = self._evaluate_trigger(
+            side, mark_price, config, effective_sl, trailing_stop_price
+        )
 
         if trigger == PositionTriggerReason.NONE:
             return TickResult(
@@ -139,13 +179,14 @@ class PositionManager:
         side: OrderSide,
         mark_price: Decimal,
         config: PositionConfig,
+        effective_sl: Decimal | None,
         trailing_stop_price: Decimal | None,
     ) -> PositionTriggerReason:
-        # SL estático
-        if config.stop_loss is not None:
-            if side == OrderSide.BUY and mark_price <= config.stop_loss:
+        # SL efectivo (puede ser el original o el movido a break-even)
+        if effective_sl is not None:
+            if side == OrderSide.BUY and mark_price <= effective_sl:
                 return PositionTriggerReason.SL_HIT
-            if side == OrderSide.SELL and mark_price >= config.stop_loss:
+            if side == OrderSide.SELL and mark_price >= effective_sl:
                 return PositionTriggerReason.SL_HIT
 
         # TP
@@ -156,7 +197,7 @@ class PositionManager:
                 return PositionTriggerReason.TP_HIT
 
         # Trailing stop
-        if trailing_stop_price is not None and config.trailing_delta is not None:
+        if trailing_stop_price is not None:
             if is_trailing_stop_hit(side, mark_price, trailing_stop_price):
                 return PositionTriggerReason.TRAILING_SL_HIT
 
