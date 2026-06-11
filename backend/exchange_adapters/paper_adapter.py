@@ -96,23 +96,10 @@ class PaperAdapter(ExchangeAdapter):
         initial_balance_usdt: Decimal = Decimal("1000"),
         fee_model: FeeModel | None = None,
         slippage_model: SlippageModel | None = None,
-        *,
-        taker_fee_rate: Decimal | None = None,
-        slippage_bps: Decimal | None = None,
     ) -> None:
         self._balance_usdt = initial_balance_usdt
-        if fee_model is not None:
-            self._fee = fee_model
-        elif taker_fee_rate is not None:
-            self._fee = FeeModel(taker_rate=taker_fee_rate)
-        else:
-            self._fee = FeeModel()
-        if slippage_model is not None:
-            self._slip = slippage_model
-        elif slippage_bps is not None:
-            self._slip = SlippageModel(market_bps=slippage_bps)
-        else:
-            self._slip = SlippageModel()
+        self._fee = fee_model or FeeModel()
+        self._slip = slippage_model or SlippageModel()
 
         # Keyed by client_order_id
         self._orders: dict[str, OrderResult] = {}

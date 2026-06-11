@@ -23,15 +23,15 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "orders",
-        sa.Column("client_order_id", sa.String(36), nullable=False, server_default=""),
+        sa.Column("client_order_id", sa.String(36), nullable=True),
     )
+    op.execute(
+        "UPDATE orders SET client_order_id = gen_random_uuid()::text WHERE client_order_id IS NULL"
+    )
+    op.alter_column("orders", "client_order_id", nullable=False)
     op.create_unique_constraint("uq_orders_client_order_id", "orders", ["client_order_id"])
-    op.create_index("ix_orders_client_order_id", "orders", ["client_order_id"], unique=True)
-    # Remove server_default after backfill — column is NOT NULL going forward
-    op.alter_column("orders", "client_order_id", server_default=None)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_orders_client_order_id", table_name="orders")
     op.drop_constraint("uq_orders_client_order_id", "orders", type_="unique")
     op.drop_column("orders", "client_order_id")

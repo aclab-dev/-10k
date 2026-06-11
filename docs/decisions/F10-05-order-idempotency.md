@@ -77,7 +77,7 @@ La capa primaria (DB) es la única que sobrevive reinicios. Las capas secundaria
 
 ### Cambios de datos
 
-- **`orders` table**: agregar columna `client_order_id VARCHAR(128) NOT NULL UNIQUE` + índice.
+- **`orders` table**: agregar columna `client_order_id VARCHAR(36) NOT NULL UNIQUE` + constraint único.
 - **`Order` model (SQLAlchemy)**: agregar campo `client_order_id: Mapped[str]`.
 - Nueva migración Alembic para la columna.
 
