@@ -28,7 +28,7 @@ class PositionConfig(BaseModel):
     take_profit: Decimal | None = Field(default=None, gt=Decimal("0"))
     # Distancia fija en unidades de precio que el trailing stop mantiene respecto al high-water.
     trailing_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
-    # Distancia a favor desde entry_price que activa el movimiento del SL a break-even.
+    # Distancia a favor desde entry_price que activa el movimiento del SL efectivo a entry_price.
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
 
     model_config = {"frozen": True}

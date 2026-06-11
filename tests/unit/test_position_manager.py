@@ -6,12 +6,8 @@ from decimal import Decimal
 
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
-from backend.position_manager import (
-    PositionConfig,
-    PositionManager,
-    PositionTriggerReason,
-    maybe_move_to_break_even,
-)
+from backend.position_manager import PositionConfig, PositionManager, PositionTriggerReason
+from backend.position_manager.break_even import maybe_move_to_break_even
 from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
 
 # ---------------------------------------------------------------------------
@@ -454,3 +450,49 @@ class TestPositionManagerBreakEven:
         # Precio sube pero no llega al delta → SL efectivo sigue en 48000
         pm.tick("BTCUSDT", entry_price + Decimal("1000"))
         assert pm.get_effective_sl("BTCUSDT") == Decimal("48000")
+
+    def test_short_be_moves_sl_to_entry(self) -> None:
+        """SHORT: be_trigger_delta mueve SL a entry_price cuando precio cae lo suficiente."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("52000"),
+                be_trigger_delta=Decimal("3000"),
+            )
+        )
+
+        # Precio cae be_trigger_delta a favor → SL se mueve a entry_price
+        pm.tick("BTCUSDT", entry_price - Decimal("3000"))
+        assert pm.get_effective_sl("BTCUSDT") == entry_price
+
+        # Precio sube por encima del entry → SL_HIT con SL break-even
+        r = pm.tick("BTCUSDT", entry_price + Decimal("1"))
+        assert r.trigger == PositionTriggerReason.SL_HIT
+
+    def test_be_without_initial_sl_sets_entry_as_sl(self) -> None:
+        """be_trigger_delta sin stop_loss inicial igual setea entry_price como SL efectivo."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        # Sin stop_loss, solo take_profit + be_trigger_delta
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                take_profit=Decimal("60000"),
+                be_trigger_delta=Decimal("2000"),
+            )
+        )
+        assert pm.get_effective_sl("BTCUSDT") is None
+
+        # Activar break-even → SL efectivo = entry_price
+        pm.tick("BTCUSDT", entry_price + Decimal("2000"))
+        assert pm.get_effective_sl("BTCUSDT") == entry_price
+
+        # Si el precio cae por debajo del entry → SL_HIT
+        r = pm.tick("BTCUSDT", entry_price - Decimal("1"))
+        assert r.trigger == PositionTriggerReason.SL_HIT

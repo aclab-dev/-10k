@@ -32,7 +32,13 @@ _log = structlog.get_logger(__name__)
 
 
 class PositionManager:
-    """Gestor de posiciones paper: monitorea SL, TP, trailing stop y break-even."""
+    """Gestor de posiciones paper: monitorea SL, TP, trailing stop y break-even.
+
+    Nota de thread safety: los dicts internos (_configs, _high_water, _trailing_stop,
+    _effective_sl) se mutan en tick(). No es seguro llamar tick() concurrentemente
+    para el mismo símbolo sin sincronización externa. El caller debe garantizar
+    ejecución single-threaded o serializar el acceso por símbolo.
+    """
 
     def __init__(self, adapter: ExchangeAdapter) -> None:
         self._adapter = adapter
@@ -151,9 +157,12 @@ class PositionManager:
                 mark_price=mark_price,
             )
 
-        # Disparar cierre
-        close_order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
-        self.remove_config(symbol)
+        # remove_config en finally: si place_order lanza, la config queda limpia y el
+        # siguiente tick no intentará cerrar de nuevo (evita doble orden al migrar a live).
+        try:
+            close_order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
+        finally:
+            self.remove_config(symbol)
 
         _log.info(
             "position_manager.trigger_fired",
@@ -219,6 +228,9 @@ class PositionManager:
             side=close_side,
             order_type=OrderType.MARKET,
             quantity=quantity,
+            # price en MARKET es intencional para PAPER: PaperAdapter lo usa como precio
+            # de referencia para simular el fill + slippage. Los adapters de exchange real
+            # (BingX, Binance) ignoran este campo en órdenes MARKET.
             price=mark_price,
             is_reduce_only=True,
         )
