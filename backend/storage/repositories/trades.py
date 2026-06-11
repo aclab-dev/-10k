@@ -40,6 +40,10 @@ class TradeRepository(BaseRepository[Trade]):
 class OrderRepository(BaseRepository[Order]):
     model = Order
 
+    def get_by_client_order_id(self, client_order_id: str) -> Order | None:
+        stmt = select(Order).where(Order.client_order_id == client_order_id)
+        return self._session.scalars(stmt).first()
+
     def get_by_exchange_id(self, exchange_order_id: str) -> Order | None:
         stmt = select(Order).where(Order.exchange_order_id == exchange_order_id)
         return self._session.scalars(stmt).first()

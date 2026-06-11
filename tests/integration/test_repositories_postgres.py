@@ -355,6 +355,7 @@ class TestOrderConstraints:
         run = _bot_run(pg_session)
         order = Order(
             bot_run_id=run.id,
+            client_order_id=str(uuid.uuid4()),
             environment="PAPER",
             order_type="MARKET",
             side="BUY",
@@ -368,6 +369,7 @@ class TestOrderConstraints:
         run = _bot_run(pg_session)
         order = Order(
             bot_run_id=run.id,
+            client_order_id=str(uuid.uuid4()),
             symbol="BTCUSDT",
             environment="PAPER",
             order_type="MARKET",
@@ -375,6 +377,49 @@ class TestOrderConstraints:
         )
         pg_session.add(order)
         with pytest.raises(IntegrityError, match='null value in column "quantity"'):
+            pg_session.flush()
+
+    def test_duplicate_client_order_id_raises(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        coid = str(uuid.uuid4())
+        pg_session.add(
+            Order(
+                bot_run_id=run.id,
+                client_order_id=coid,
+                symbol="BTCUSDT",
+                environment="PAPER",
+                order_type="MARKET",
+                side="BUY",
+                quantity=Decimal("0.001"),
+            )
+        )
+        pg_session.flush()
+        pg_session.add(
+            Order(
+                bot_run_id=run.id,
+                client_order_id=coid,
+                symbol="ETHUSDT",
+                environment="PAPER",
+                order_type="MARKET",
+                side="SELL",
+                quantity=Decimal("0.01"),
+            )
+        )
+        with pytest.raises(IntegrityError, match="client_order_id"):
+            pg_session.flush()
+
+    def test_missing_client_order_id_raises(self, pg_session: Session) -> None:
+        run = _bot_run(pg_session)
+        order = Order(
+            bot_run_id=run.id,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="BUY",
+            quantity=Decimal("0.001"),
+        )
+        pg_session.add(order)
+        with pytest.raises(IntegrityError, match='null value in column "client_order_id"'):
             pg_session.flush()
 
 
@@ -392,6 +437,7 @@ class TestOrderRepositoryPostgres:
             pg_session.add(
                 Order(
                     bot_run_id=run.id,
+                    client_order_id=str(uuid.uuid4()),
                     symbol="BTCUSDT",
                     environment="PAPER",
                     order_type="MARKET",
@@ -409,6 +455,7 @@ class TestOrderRepositoryPostgres:
         run = _bot_run(pg_session)
         order = Order(
             bot_run_id=run.id,
+            client_order_id=str(uuid.uuid4()),
             symbol="BTCUSDT",
             environment="PAPER",
             order_type="MARKET",
@@ -425,6 +472,30 @@ class TestOrderRepositoryPostgres:
     def test_get_by_exchange_id_missing(self, pg_session: Session) -> None:
         repo = OrderRepository(pg_session)
         assert repo.get_by_exchange_id("NONEXISTENT") is None
+
+    def test_get_by_client_order_id(self, pg_session: Session) -> None:
+        repo = OrderRepository(pg_session)
+        run = _bot_run(pg_session)
+        coid = str(uuid.uuid4())
+        order = Order(
+            bot_run_id=run.id,
+            client_order_id=coid,
+            symbol="BTCUSDT",
+            environment="PAPER",
+            order_type="MARKET",
+            side="BUY",
+            quantity=Decimal("0.001"),
+        )
+        pg_session.add(order)
+        pg_session.flush()
+        fetched = repo.get_by_client_order_id(coid)
+        assert fetched is not None
+        assert fetched.id == order.id
+        assert fetched.client_order_id == coid
+
+    def test_get_by_client_order_id_missing(self, pg_session: Session) -> None:
+        repo = OrderRepository(pg_session)
+        assert repo.get_by_client_order_id(str(uuid.uuid4())) is None
 
 
 # ---------------------------------------------------------------------------

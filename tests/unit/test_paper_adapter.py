@@ -572,8 +572,8 @@ def test_apply_funding_balance_goes_negative_does_not_raise(adapter: PaperAdapte
     """Balance negativo post-funding no lanza excepción (se permite en PAPER)."""
     tiny_adapter = PaperAdapter(
         initial_balance_usdt=Decimal("1"),
-        taker_fee_rate=Decimal("0"),
-        slippage_bps=Decimal("0"),
+        fee_model=FeeModel(taker_rate=Decimal("0")),
+        slippage_model=SlippageModel(market_bps=Decimal("0")),
     )
     tiny_adapter.set_leverage("BTCUSDT", 1)
     tiny_adapter.place_order(
