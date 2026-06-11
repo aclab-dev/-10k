@@ -272,6 +272,21 @@ class TestPositionManagerTrailing:
         assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
         assert adapter.get_position("BTCUSDT") is None
 
+    def test_trailing_not_hit_on_first_tick_at_reasonable_price(self) -> None:
+        """El trailing stop no se dispara en el primer tick si el precio es mayor que delta.
+
+        En el primer tick high_water = mark_price, trailing_stop = mark_price - delta.
+        Como mark_price > trailing_stop (delta > 0), nunca se activa en ese mismo tick.
+        """
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000")))
+
+        r = pm.tick("BTCUSDT", Decimal("50000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("49000")
+
     def test_trailing_high_water_resets_on_reconfigure(self) -> None:
         """Al llamar set_config de nuevo, el high-water se resetea."""
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))

@@ -19,8 +19,13 @@ class PositionConfig(BaseModel):
     """Configuración de salida para una posición abierta.
 
     Al menos uno de stop_loss, take_profit o trailing_delta debe estar presente.
-    be_trigger_delta: si se setea, mueve el SL a break-even (entry_price) cuando el precio
-    se aleja be_trigger_delta unidades a favor. Requiere stop_loss para tener efecto inicial.
+    be_trigger_delta: si se setea, mueve el SL efectivo a entry_price cuando el precio
+    se aleja be_trigger_delta unidades a favor (funciona con o sin stop_loss inicial).
+
+    Nota de diseño: no se valida que stop_loss/take_profit sean coherentes con el lado
+    de la posición (ej. SL por encima del entry en un LONG) porque entry_price no se
+    conoce en el momento de construcción de esta config. La validación contextual
+    es responsabilidad del caller.
     """
 
     symbol: str

@@ -93,6 +93,11 @@ class PositionManager:
         El primero que se activa gana; se coloca la orden y se limpia la config.
 
         Si no hay posición abierta o no hay config → retorna NONE.
+
+        Manejo de excepciones: si `place_order` lanza (timeout, error del adapter, etc.),
+        la excepción se propaga al caller Y la config ya fue limpiada (via try/finally).
+        Esto significa que la posición queda sin monitoreo activo. El caller debe capturar
+        la excepción y llamar `set_config` de nuevo si quiere reintentar el cierre.
         """
         position = self._adapter.get_position(symbol)
         if position is None:
@@ -230,7 +235,8 @@ class PositionManager:
             quantity=quantity,
             # price en MARKET es intencional para PAPER: PaperAdapter lo usa como precio
             # de referencia para simular el fill + slippage. Los adapters de exchange real
-            # (BingX, Binance) ignoran este campo en órdenes MARKET.
+            # (BingX, Binance) DEBEN ignorar explícitamente este campo en órdenes MARKET
+            # y nunca enviarlo a la API — de lo contrario podría crear una orden limitada.
             price=mark_price,
             is_reduce_only=True,
         )
