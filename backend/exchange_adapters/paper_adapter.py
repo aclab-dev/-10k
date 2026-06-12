@@ -264,6 +264,22 @@ class PaperAdapter(ExchangeAdapter):
         """
         return self._funding_paid.get(symbol, Decimal("0"))
 
+    def snapshot_positions(self) -> dict[str, PositionState]:
+        """Retorna una copia del estado actual de posiciones abiertas.
+
+        Keyed por symbol. Copia superficial: seguro para lectura concurrente
+        (no muta el dict interno), pero los valores son immutables (frozen Pydantic).
+        """
+        return dict(self._positions)
+
+    def snapshot_orders(self) -> dict[str, OrderResult]:
+        """Retorna una copia del estado actual de órdenes conocidas.
+
+        Keyed por client_order_id. Incluye todos los estados (FILLED, PENDING,
+        CANCELLED). Copia superficial sobre valores immutables.
+        """
+        return dict(self._orders)
+
     # ------------------------------------------------------------------
     # Helpers internos
     # ------------------------------------------------------------------
