@@ -96,16 +96,6 @@ _BULLISH_CANDLE = CandleData(
     n_candles=10,
 )
 
-# Candles: neutral / doji for non-regime-specific tests
-_NEUTRAL_CANDLE = CandleData(
-    open=Decimal("49950"),
-    high=Decimal("50100"),
-    low=Decimal("49900"),
-    close=Decimal("50000"),
-    volume=Decimal("500"),
-    n_candles=10,
-)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / builders
