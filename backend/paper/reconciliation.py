@@ -7,10 +7,11 @@ las discrepancias encontradas.
 
 Scope:
 - Solo detecta. No corrige ni muta el adapter ni la DB.
-- Solo aplica a posiciones OPEN y órdenes activas (PENDING/FILLED/CANCELLED)
-  del bot_run_id dado.
-- Discrepancias de precio se evalúan con una tolerancia configurable para
-  evitar falsos positivos por redondeo.
+- Solo aplica a posiciones OPEN y órdenes de cualquier estado final
+  (PENDING/FILLED/CANCELLED) del bot_run_id dado. FILLED y CANCELLED se
+  incluyen porque el adapter los retiene en memoria y la DB debe reflejarlos.
+- Discrepancias numéricas se evalúan con una tolerancia configurable para
+  evitar falsos positivos por redondeo (aplica a precios y cantidades).
 """
 
 from __future__ import annotations
@@ -24,13 +25,18 @@ from pydantic import BaseModel, Field
 
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import PositionState
+from backend.storage.models import Order as DbOrder
 from backend.storage.models import Position as DbPosition
 from backend.storage.repositories.trades import OrderRepository, PositionRepository
 
 _log = structlog.get_logger(__name__)
 
-# Tolerancia para comparar precios/cantidades: diferencias menores se ignoran.
-_DEFAULT_PRICE_TOLERANCE = Decimal("0.00000001")
+# Tolerancia por defecto para comparar precios y cantidades.
+_DEFAULT_DECIMAL_TOLERANCE = Decimal("0.00000001")
+
+# Límite de órdenes por estado consultadas a la DB. Se emite un warning si se
+# alcanza el límite para avisar que pueden quedar órdenes fuera del análisis.
+_ORDER_FETCH_LIMIT = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +50,7 @@ class DiscrepancyType(StrEnum):
     QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
     PRICE_MISMATCH = "PRICE_MISMATCH"
     STATUS_MISMATCH = "STATUS_MISMATCH"
+    SIDE_MISMATCH = "SIDE_MISMATCH"
 
 
 class PositionDiscrepancy(BaseModel):
@@ -51,7 +58,6 @@ class PositionDiscrepancy(BaseModel):
 
     symbol: str
     discrepancy_type: DiscrepancyType
-    # Descripción legible del problema
     detail: str
     # Estado en el adapter (None si no existe ahí)
     adapter_quantity: Decimal | None = None
@@ -118,12 +124,12 @@ class ReconciliationEngine:
         adapter: PaperAdapter,
         position_repo: PositionRepository,
         order_repo: OrderRepository,
-        price_tolerance: Decimal = _DEFAULT_PRICE_TOLERANCE,
+        decimal_tolerance: Decimal = _DEFAULT_DECIMAL_TOLERANCE,
     ) -> None:
         self._adapter = adapter
         self._position_repo = position_repo
         self._order_repo = order_repo
-        self._price_tolerance = price_tolerance
+        self._decimal_tolerance = decimal_tolerance
 
     def reconcile(self, bot_run_id: str) -> ReconciliationReport:
         """Ejecuta la reconciliación completa y retorna el reporte.
@@ -157,7 +163,7 @@ class ReconciliationEngine:
     def _reconcile_positions(self, bot_run_id: str) -> list[PositionDiscrepancy]:
         discrepancies: list[PositionDiscrepancy] = []
 
-        adapter_positions: dict[str, PositionState] = dict(self._adapter._positions)
+        adapter_positions: dict[str, PositionState] = self._adapter.snapshot_positions()
         db_positions = {p.symbol: p for p in self._position_repo.list_open(bot_run_id)}
 
         # Posiciones que el adapter tiene pero que no están en DB
@@ -202,7 +208,20 @@ class ReconciliationEngine:
     ) -> list[PositionDiscrepancy]:
         found: list[PositionDiscrepancy] = []
 
-        if abs(adapter_pos.quantity - db_pos.quantity) > self._price_tolerance:
+        adapter_side = adapter_pos.side.value
+        db_side = db_pos.direction
+        if adapter_side != db_side:
+            found.append(
+                PositionDiscrepancy(
+                    symbol=symbol,
+                    discrepancy_type=DiscrepancyType.SIDE_MISMATCH,
+                    detail=(f"Side mismatch for {symbol}: adapter={adapter_side}, db={db_side}."),
+                    adapter_side=adapter_side,
+                    db_side=db_side,
+                )
+            )
+
+        if abs(adapter_pos.quantity - db_pos.quantity) > self._decimal_tolerance:
             found.append(
                 PositionDiscrepancy(
                     symbol=symbol,
@@ -216,7 +235,7 @@ class ReconciliationEngine:
                 )
             )
 
-        if abs(adapter_pos.entry_price - db_pos.entry_price) > self._price_tolerance:
+        if abs(adapter_pos.entry_price - db_pos.entry_price) > self._decimal_tolerance:
             found.append(
                 PositionDiscrepancy(
                     symbol=symbol,
@@ -239,14 +258,9 @@ class ReconciliationEngine:
     def _reconcile_orders(self, bot_run_id: str) -> list[OrderDiscrepancy]:
         discrepancies: list[OrderDiscrepancy] = []
 
-        adapter_orders = dict(self._adapter._orders)  # client_order_id → OrderResult
+        adapter_orders = self._adapter.snapshot_orders()  # client_order_id → OrderResult
 
-        # Órdenes PENDING en DB: pueden haber sido actualizadas en el adapter sin que la DB lo sepa
-        db_pending = self._order_repo.list_by_status(bot_run_id, "PENDING", limit=1000)
-        db_filled = self._order_repo.list_by_status(bot_run_id, "FILLED", limit=1000)
-        db_cancelled = self._order_repo.list_by_status(bot_run_id, "CANCELLED", limit=1000)
-
-        db_orders = {o.client_order_id: o for o in [*db_pending, *db_filled, *db_cancelled]}
+        db_orders = self._fetch_db_orders(bot_run_id)
 
         # Órdenes en adapter que no están en DB
         for coid, adapter_order in adapter_orders.items():
@@ -269,7 +283,6 @@ class ReconciliationEngine:
             adapter_status = adapter_order.status.value
             db_status = db_order.status
 
-            # Normalizar status de DB al mismo espacio que el adapter
             if adapter_status != db_status:
                 discrepancies.append(
                     OrderDiscrepancy(
@@ -302,3 +315,20 @@ class ReconciliationEngine:
                 )
 
         return discrepancies
+
+    def _fetch_db_orders(self, bot_run_id: str) -> dict[str, DbOrder]:
+        """Consulta órdenes en DB por status y emite warning si se alcanza el límite."""
+        result: dict[str, DbOrder] = {}
+        for status in ("PENDING", "FILLED", "CANCELLED"):
+            rows = self._order_repo.list_by_status(bot_run_id, status, limit=_ORDER_FETCH_LIMIT)
+            if len(rows) == _ORDER_FETCH_LIMIT:
+                _log.warning(
+                    "reconciliation.order_fetch_limit_reached",
+                    bot_run_id=bot_run_id,
+                    status=status,
+                    limit=_ORDER_FETCH_LIMIT,
+                    msg="Result may be incomplete; orders beyond the limit are not reconciled.",
+                )
+            for o in rows:
+                result[o.client_order_id] = o
+        return result

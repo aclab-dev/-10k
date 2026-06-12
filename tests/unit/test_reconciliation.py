@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -34,6 +35,7 @@ def _make_engine(
     db_pending: list | None = None,
     db_filled: list | None = None,
     db_cancelled: list | None = None,
+    decimal_tolerance: Decimal | None = None,
 ) -> ReconciliationEngine:
     position_repo = MagicMock()
     position_repo.list_open.return_value = db_positions or []
@@ -45,7 +47,10 @@ def _make_engine(
         "CANCELLED": db_cancelled or [],
     }.get(status, [])
 
-    return ReconciliationEngine(adapter, position_repo, order_repo)
+    kwargs = {}
+    if decimal_tolerance is not None:
+        kwargs["decimal_tolerance"] = decimal_tolerance
+    return ReconciliationEngine(adapter, position_repo, order_repo, **kwargs)
 
 
 def _market_buy(
@@ -107,7 +112,6 @@ def test_consistent_position_matches_db(adapter: PaperAdapter) -> None:
     pos = adapter._positions["BTCUSDT"]
     db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
 
-    # Orden también en DB con status correcto
     db_ord = _db_order(req.client_order_id, "BTCUSDT", "FILLED")
 
     engine = _make_engine(adapter, db_positions=[db_pos], db_filled=[db_ord])
@@ -167,7 +171,6 @@ def test_position_quantity_mismatch(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(quantity=Decimal("0.01"), price=Decimal("50000")))
 
     pos = adapter._positions["BTCUSDT"]
-    # DB tiene el doble de la cantidad
     db_pos = _db_position("BTCUSDT", pos.quantity * 2, pos.entry_price)
 
     engine = _make_engine(adapter, db_positions=[db_pos])
@@ -203,11 +206,30 @@ def test_position_price_mismatch(adapter: PaperAdapter) -> None:
     assert disc.db_entry_price == Decimal("45000")
 
 
+def test_position_side_mismatch(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+
+    pos = adapter._positions["BTCUSDT"]
+    # DB registra SELL, adapter tiene BUY
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price, direction="SELL")
+
+    engine = _make_engine(adapter, db_positions=[db_pos])
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert not report.is_consistent
+    disc = next(
+        d
+        for d in report.position_discrepancies
+        if d.discrepancy_type == DiscrepancyType.SIDE_MISMATCH
+    )
+    assert disc.adapter_side == "BUY"
+    assert disc.db_side == "SELL"
+
+
 def test_position_multiple_discrepancies_same_symbol(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(quantity=Decimal("0.01"), price=Decimal("50000")))
 
     pos = adapter._positions["BTCUSDT"]
-    # Both quantity AND price are wrong
     db_pos = _db_position("BTCUSDT", pos.quantity * 2, Decimal("45000"))
 
     engine = _make_engine(adapter, db_positions=[db_pos])
@@ -254,8 +276,6 @@ def test_order_missing_in_db(adapter: PaperAdapter) -> None:
 
 
 def test_order_missing_in_adapter(adapter: PaperAdapter) -> None:
-    import uuid
-
     ghost_coid = str(uuid.uuid4())
     db_ord = _db_order(ghost_coid, "BTCUSDT", "PENDING")
 
@@ -276,7 +296,6 @@ def test_order_status_mismatch_filled_vs_pending(adapter: PaperAdapter) -> None:
     req = _market_buy(price=Decimal("50000"))
     adapter.place_order(req)  # status=FILLED in adapter
 
-    # DB still shows PENDING
     db_ord = _db_order(req.client_order_id, "BTCUSDT", "PENDING")
     engine = _make_engine(adapter, db_pending=[db_ord])
     report = engine.reconcile(BOT_RUN_ID)
@@ -340,7 +359,7 @@ def test_order_consistent_cancelled_matches_db(adapter: PaperAdapter) -> None:
 
 def test_report_is_consistent_property_with_discrepancies(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
-    engine = _make_engine(adapter, db_positions=[])  # MISSING_IN_DB
+    engine = _make_engine(adapter, db_positions=[])
     report = engine.reconcile(BOT_RUN_ID)
     assert not report.is_consistent
     assert report.total_discrepancies >= 1
@@ -354,7 +373,7 @@ def test_report_total_discrepancies_sums_both(adapter: PaperAdapter) -> None:
     assert report.total_discrepancies == 2
 
 
-def test_price_tolerance_prevents_false_positive(adapter: PaperAdapter) -> None:
+def test_decimal_tolerance_prevents_false_positive(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
     pos = adapter._positions["BTCUSDT"]
 
@@ -367,3 +386,50 @@ def test_price_tolerance_prevents_false_positive(adapter: PaperAdapter) -> None:
     engine = _make_engine(adapter, db_positions=[db_pos], db_filled=[db_ord])
     report = engine.reconcile(BOT_RUN_ID)
     assert report.is_consistent
+
+
+def test_custom_decimal_tolerance_constructor(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter._positions["BTCUSDT"]
+
+    # With a very loose tolerance, a 1-unit price diff should pass
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price + Decimal("0.5"))
+    req = next(iter(adapter._orders.values()))
+    db_ord = _db_order(req.client_order_id, "BTCUSDT", req.status.value)
+
+    engine = _make_engine(
+        adapter,
+        db_positions=[db_pos],
+        db_filled=[db_ord],
+        decimal_tolerance=Decimal("1"),
+    )
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
+def test_order_fetch_limit_warning_emitted(adapter: PaperAdapter) -> None:
+    """Cuando list_by_status retorna exactamente el límite, se emite un warning estructurado."""
+    from unittest.mock import patch
+
+    from backend.paper.reconciliation import _ORDER_FETCH_LIMIT
+
+    limit_rows = [
+        _db_order(str(uuid.uuid4()), "BTCUSDT", "FILLED") for _ in range(_ORDER_FETCH_LIMIT)
+    ]
+
+    position_repo = MagicMock()
+    position_repo.list_open.return_value = []
+
+    order_repo = MagicMock()
+    order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: (
+        limit_rows if status == "FILLED" else []
+    )
+
+    engine = ReconciliationEngine(adapter, position_repo, order_repo)
+
+    with patch("backend.paper.reconciliation._log") as mock_log:
+        engine.reconcile(BOT_RUN_ID)
+
+    mock_log.warning.assert_called_once()
+    call_args = mock_log.warning.call_args
+    assert call_args[0][0] == "reconciliation.order_fetch_limit_reached"
