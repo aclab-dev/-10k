@@ -140,6 +140,7 @@ def _make_snapshot(
 def _make_quant_signals(
     snapshot_id: str,
     *,
+    symbol: str = "BTCUSDT",
     momentum: float = 0.75,
     mean_reversion: float = 0.0,
     breakout: float = 0.50,
@@ -155,7 +156,7 @@ def _make_quant_signals(
         {
             "snapshot_id": snapshot_id,
             "timestamp_utc": _NOW,
-            "symbol": "BTCUSDT",
+            "symbol": symbol,
             "timeframes_used": ["5m", "15m", "1h", "4h"],
             "momentum_signal": momentum,
             "mean_reversion_signal": mean_reversion,
@@ -186,7 +187,7 @@ def _make_gpt_decision(
 ) -> ModelDecision:
     """Construye un ModelDecision válido sin llamar a GPT."""
     is_execute = execute if execute is not None else decision_type != DecisionType.NO_OPERAR
-    entry_type = EntryType.MARKET if decision_type != DecisionType.NO_OPERAR else EntryType.MARKET
+    entry_type = EntryType.MARKET
 
     return ModelDecision(
         environment=Environment.PAPER,
@@ -439,9 +440,11 @@ class TestE2EContradictionNoOperar:
         contradiction_types = [c.split(":")[0] for c in aggregation.contradictions_detected]
         assert "direction_mismatch" in contradiction_types
 
-    def test_risk_propagates_no_operar_from_contradiction(self) -> None:
-        """Aggregator NO_OPERAR + execute=True original → Risk evalúa el trade con el
-        ModelDecision original; el pipeline de llamada debe respetar final_action."""
+    def test_risk_approves_underlying_trade_but_aggregator_says_no_operar(self) -> None:
+        """Cuando el Aggregator detecta contradicción, devuelve final_action=NO_OPERAR.
+        El Risk Engine, que sólo lee decision.execute, evalúa el trade original y puede
+        devolver APPROVE. Es responsabilidad del caller respetar aggregation.final_action
+        antes de llamar al risk engine o colocar órdenes."""
         snapshot = _make_snapshot()
         quant = _make_quant_signals(
             snapshot.snapshot_id,
@@ -453,13 +456,15 @@ class TestE2EContradictionNoOperar:
         )
         gpt = _make_gpt_decision(DecisionType.LONG)
 
-        _, _, aggregation, _ = _run_pipeline(quant, gpt, snapshot)
+        _, _, aggregation, risk_result = _run_pipeline(quant, gpt, snapshot)
 
-        # El Aggregator detectó contradicción → NO_OPERAR
+        # Aggregator: contradicción detectada → NO_OPERAR
         assert aggregation.final_action == DecisionType.NO_OPERAR
-        # El pipeline NO debe colocar orden cuando final_action == NO_OPERAR
-        # (responsabilidad del caller respetar esta señal)
         assert len(aggregation.contradictions_detected) >= 1
+        # Risk Engine: evalúa el ModelDecision original (execute=True, SL/TP válidos)
+        # y lo aprueba porque el trade en sí cumple todas las reglas de riesgo.
+        # El caller NO debe colocar orden cuando aggregation.final_action == NO_OPERAR.
+        assert risk_result.decision == RiskDecision.APPROVE
 
     def test_no_order_placed_when_contradiction(self) -> None:
         """Balance del adapter permanece intacto cuando el pipeline respeta NO_OPERAR."""
@@ -501,22 +506,13 @@ class TestE2EBlockByDrawdown:
         quant = _make_quant_signals(snapshot.snapshot_id)
         gpt = _make_gpt_decision(DecisionType.LONG)
 
-        config = load_config()
-        # Balance inicial = 100 USDT, límite diario = 10% = 10 USDT.
-        # Con daily_loss=15 USDT se supera el límite.
+        # config.challenge.initial_balance_usdt = 100 USDT (config.yaml).
+        # Límite diario = 10% = 10 USDT. Con daily_loss=15 USDT se supera.
+        # El PaperAdapter en tests se inicializa con 1000 USDT, pero el Risk Engine
+        # usa el balance del config para calcular el drawdown diario.
         daily_loss = Decimal("15")
 
-        regime = MarketRegimeEngine().assess(snapshot)
-        volatility = compute_volatility_assessment(snapshot)
-        aggregation = DecisionAggregator().aggregate(gpt, quant, regime, volatility)
-
-        risk_result = risk_engine.validate(
-            aggregation=aggregation,
-            decision=gpt,
-            daily_loss_usdt=daily_loss,
-            total_loss_usdt=Decimal("0"),
-            config=config,
-        )
+        _, _, _, risk_result = _run_pipeline(quant, gpt, snapshot, daily_loss_usdt=daily_loss)
 
         assert risk_result.decision == RiskDecision.BLOCK
         assert "daily_drawdown" in risk_result.reasons
@@ -526,20 +522,8 @@ class TestE2EBlockByDrawdown:
         quant = _make_quant_signals(snapshot.snapshot_id)
         gpt = _make_gpt_decision(DecisionType.LONG)
 
-        config = load_config()
         daily_loss = Decimal("15")
-
-        regime = MarketRegimeEngine().assess(snapshot)
-        volatility = compute_volatility_assessment(snapshot)
-        aggregation = DecisionAggregator().aggregate(gpt, quant, regime, volatility)
-
-        risk_result = risk_engine.validate(
-            aggregation=aggregation,
-            decision=gpt,
-            daily_loss_usdt=daily_loss,
-            total_loss_usdt=Decimal("0"),
-            config=config,
-        )
+        _, _, _, risk_result = _run_pipeline(quant, gpt, snapshot, daily_loss_usdt=daily_loss)
 
         adapter = PaperAdapter(
             initial_balance_usdt=Decimal("1000"),
@@ -563,14 +547,7 @@ class TestE2EMultiSymbol:
 
     def test_ethusdt_approve_path(self) -> None:
         snapshot = _make_snapshot(symbol="ETHUSDT")
-        quant = _make_quant_signals(snapshot.snapshot_id)
-        # Reconstruir con symbol correcto
-        quant = QuantSignalsPackage.model_validate(
-            {
-                **quant.model_dump(),
-                "symbol": "ETHUSDT",
-            }
-        )
+        quant = _make_quant_signals(snapshot.snapshot_id, symbol="ETHUSDT")
         gpt = _make_gpt_decision(DecisionType.LONG, symbol="ETHUSDT")
 
         _, _, aggregation, risk_result = _run_pipeline(quant, gpt, snapshot)
