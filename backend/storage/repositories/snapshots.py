@@ -55,6 +55,27 @@ class MarketSnapshotRepository(BaseRepository[MarketSnapshot]):
         stmt = stmt.order_by(MarketSnapshot.timestamp.desc()).limit(limit)
         return list(self._session.scalars(stmt))
 
+    def list_by_symbol_and_range(
+        self,
+        symbol: str,
+        period_start: datetime,
+        period_end: datetime,
+        bot_run_id: str | None = None,
+    ) -> list[MarketSnapshot]:
+        """Load snapshots for a symbol within [period_start, period_end), ordered by timestamp ASC.
+
+        Queries across all bot_runs unless bot_run_id is provided.
+        """
+        stmt = select(MarketSnapshot).where(
+            MarketSnapshot.symbol == symbol,
+            MarketSnapshot.timestamp >= period_start,
+            MarketSnapshot.timestamp < period_end,
+        )
+        if bot_run_id is not None:
+            stmt = stmt.where(MarketSnapshot.bot_run_id == bot_run_id)
+        stmt = stmt.order_by(MarketSnapshot.timestamp.asc())
+        return list(self._session.scalars(stmt))
+
 
 class QuantSignalRepository(BaseRepository[QuantSignal]):
     model = QuantSignal
