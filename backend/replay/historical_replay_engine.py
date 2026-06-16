@@ -73,6 +73,8 @@ def snapshot_row_to_pydantic(row: MarketSnapshotRow) -> MarketSnapshot:
     replay corre sin contexto histórico de velas previas.
     """
     extra = row.extra or {}
+    if "candles" not in extra:
+        raise ValueError(f"Snapshot {row.id} no tiene candles en extra; schema incompatible")
     candles_raw = extra["candles"]
 
     def _candle(tf: str) -> CandleData:
@@ -140,7 +142,11 @@ class HistoricalReplayEngine:
         daily_loss_usdt: Decimal = Decimal("0"),
         total_loss_usdt: Decimal = Decimal("0"),
     ) -> list[ReplayStepResult]:
-        """Carga los snapshots de la ventana ([84]) y recorre cada uno cronológicamente."""
+        """Carga los snapshots de la ventana ([84]) y recorre cada uno cronológicamente.
+
+        `daily_loss_usdt` y `total_loss_usdt` son fijos para toda la ventana;
+        la actualización step-a-step de estos acumuladores queda pendiente en [87].
+        """
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
         results: list[ReplayStepResult] = []

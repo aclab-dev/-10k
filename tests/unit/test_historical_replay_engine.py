@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from backend.core.config import Environment
 from backend.decision_engine.schemas import (
@@ -149,10 +150,11 @@ class TestSnapshotRowToPydantic:
         original = _make_snapshot()
         kwargs = original.to_db_kwargs(bot_run_id="bot-run-1")
         row = MarketSnapshotRow(**kwargs)
+        row.id = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
         rebuilt = snapshot_row_to_pydantic(row)
 
-        assert rebuilt.snapshot_id == original.snapshot_id
+        assert rebuilt.snapshot_id == row.id
         assert rebuilt.symbol == original.symbol
         assert rebuilt.last_price == original.last_price
         assert rebuilt.bid == original.bid
@@ -178,7 +180,6 @@ class TestHistoricalReplayEngineRun:
         row2 = MarketSnapshotRow(**snap2.to_db_kwargs(bot_run_id="bot-run-1"))
 
         engine = HistoricalReplayEngine(session=MagicMock())
-        engine._loader.load = MagicMock(return_value=[row1, row2])  # type: ignore[method-assign]
 
         window = SnapshotWindow(
             symbol="BTCUSDT",
@@ -186,7 +187,8 @@ class TestHistoricalReplayEngineRun:
             period_end=datetime(2026, 1, 2, tzinfo=UTC),
         )
 
-        results = engine.run(window, decision_provider=lambda snap, _qs: _make_gpt_decision())
+        with patch.object(engine._loader, "load", return_value=[row1, row2]):
+            results = engine.run(window, decision_provider=lambda snap, _qs: _make_gpt_decision())
 
         assert len(results) == 2
         assert results[0].snapshot.snapshot_id == snap1.snapshot_id
@@ -202,7 +204,6 @@ class TestHistoricalReplayEngineRun:
         row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-1"))
 
         engine = HistoricalReplayEngine(session=MagicMock())
-        engine._loader.load = MagicMock(return_value=[row])  # type: ignore[method-assign]
 
         received: list[QuantSignalsPackage] = []
 
@@ -215,7 +216,8 @@ class TestHistoricalReplayEngineRun:
             period_start=datetime(2026, 1, 1, tzinfo=UTC),
             period_end=datetime(2026, 1, 2, tzinfo=UTC),
         )
-        engine.run(window, decision_provider=_provider)
+        with patch.object(engine._loader, "load", return_value=[row]):
+            engine.run(window, decision_provider=_provider)
 
         assert len(received) == 1
         assert received[0].symbol == "BTCUSDT"
@@ -225,7 +227,6 @@ class TestHistoricalReplayEngineRun:
         row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-1"))
 
         engine = HistoricalReplayEngine(session=MagicMock())
-        engine._loader.load = MagicMock(return_value=[row])  # type: ignore[method-assign]
 
         window = SnapshotWindow(
             symbol="BTCUSDT",
@@ -233,11 +234,12 @@ class TestHistoricalReplayEngineRun:
             period_end=datetime(2026, 1, 2, tzinfo=UTC),
         )
 
-        results = engine.run(
-            window,
-            decision_provider=lambda snap, _qs: _make_gpt_decision(),
-            daily_loss_usdt=Decimal("15"),
-        )
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(
+                window,
+                decision_provider=lambda snap, _qs: _make_gpt_decision(),
+                daily_loss_usdt=Decimal("15"),
+            )
 
         assert results[0].risk_result.decision.value == "BLOCK"
         assert "daily_drawdown" in results[0].risk_result.reasons
