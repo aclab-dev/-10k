@@ -80,10 +80,10 @@ class TestComputeReplayMetricsSingleStep:
 class TestSignalsActivated:
     def test_counts_steps_above_threshold(self) -> None:
         steps = [
-            _make_step(quant_score=0.3),   # below threshold
-            _make_step(quant_score=0.5),   # at threshold — not above
+            _make_step(quant_score=0.3),  # below threshold
+            _make_step(quant_score=0.5),  # at threshold — not above
             _make_step(quant_score=0.51),  # above
-            _make_step(quant_score=0.9),   # above
+            _make_step(quant_score=0.9),  # above
         ]
         m = compute_replay_metrics(steps)
         assert m.signals_activated == 2
@@ -105,8 +105,11 @@ class TestExecutedSteps:
             _make_step(risk_decision=RiskDecision.APPROVE),
             _make_step(risk_decision=RiskDecision.ADJUST_DOWN),
             _make_step(risk_decision=RiskDecision.BLOCK),
-            _make_step(risk_decision=RiskDecision.NO_OPERAR, execute=False,
-                       decision_type=DecisionType.NO_OPERAR),
+            _make_step(
+                risk_decision=RiskDecision.NO_OPERAR,
+                execute=False,
+                decision_type=DecisionType.NO_OPERAR,
+            ),
         ]
         m = compute_replay_metrics(steps)
         assert m.executed_steps == 2
@@ -120,8 +123,9 @@ class TestExecutedSteps:
 class TestWinRate:
     def test_long_directional_win_when_next_price_higher(self) -> None:
         steps = [
-            _make_step(decision_type=DecisionType.LONG, entry_price=50_000.0,
-                       last_price=Decimal("50000")),
+            _make_step(
+                decision_type=DecisionType.LONG, entry_price=50_000.0, last_price=Decimal("50000")
+            ),
             _make_step(last_price=Decimal("50100")),  # next price > entry
         ]
         m = compute_replay_metrics(steps)
@@ -162,14 +166,18 @@ class TestWinRate:
         # step 2: LONG entry=50000, next=step3.last=51000 → win (but step2 is last executable)
         # step 3: not executed (BLOCK)
         steps = [
-            _make_step(decision_type=DecisionType.LONG, entry_price=50_000.0,
-                       last_price=Decimal("50000")),
-            _make_step(decision_type=DecisionType.LONG, entry_price=50_000.0,
-                       last_price=Decimal("51000")),  # next for step 0
-            _make_step(decision_type=DecisionType.LONG, entry_price=50_000.0,
-                       last_price=Decimal("49000")),  # next for step 1
-            _make_step(risk_decision=RiskDecision.BLOCK,
-                       last_price=Decimal("51000")),  # next for step 2, but step 2 win/loss needs step 3
+            _make_step(
+                decision_type=DecisionType.LONG, entry_price=50_000.0, last_price=Decimal("50000")
+            ),
+            _make_step(
+                decision_type=DecisionType.LONG, entry_price=50_000.0, last_price=Decimal("51000")
+            ),  # next for step 0
+            _make_step(
+                decision_type=DecisionType.LONG, entry_price=50_000.0, last_price=Decimal("49000")
+            ),  # next for step 1
+            _make_step(
+                risk_decision=RiskDecision.BLOCK, last_price=Decimal("51000")
+            ),  # next for step 2
         ]
         m = compute_replay_metrics(steps)
         # step 0: executed, comparable, next=step1 last=51000 > 50000 → win

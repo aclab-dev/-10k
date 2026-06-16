@@ -213,6 +213,7 @@ class HistoricalReplayEngine:
         from backend.replay.persistence import ReplayPersistenceService
 
         svc = ReplayPersistenceService(self._session)
+        # open_run outside the main try: if it fails, there is no run record to mark FAILED.
         run = svc.open_run(window, bot_run_id, config_snapshot)
         try:
             results = self.run(
@@ -227,6 +228,10 @@ class HistoricalReplayEngine:
             metrics = compute_replay_metrics(results)
             svc.close_run(run, metrics, bot_run_id)
         except Exception:
-            svc.fail_run(run)
+            # Guard: fail_run may raise (broken session); don't let it mask the original.
+            try:
+                svc.fail_run(run)
+            except Exception:
+                pass
             raise
         return results, metrics

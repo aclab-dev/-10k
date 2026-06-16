@@ -92,13 +92,17 @@ def compute_replay_metrics(results: list[ReplayStepResult]) -> ReplayMetrics:
     )
 
 
-def _compute_max_drawdown(scores: list[float]) -> float:
-    """Caída máxima pico-a-valle sobre una serie de scores en [0, 1]."""
-    if len(scores) < 2:
+def _compute_max_drawdown(scores: list[float | None]) -> float:
+    """Caída máxima pico-a-valle sobre una serie de scores en [0, 1].
+
+    Los valores None (aggregated_score no disponible) se omiten.
+    """
+    filtered = [s for s in scores if s is not None]
+    if len(filtered) < 2:
         return 0.0
-    peak = scores[0]
+    peak = filtered[0]
     max_dd = 0.0
-    for score in scores[1:]:
+    for score in filtered[1:]:
         if score > peak:
             peak = score
         elif peak > 0:

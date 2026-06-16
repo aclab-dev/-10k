@@ -1,18 +1,21 @@
-"""Tests unitarios para ReplayPersistenceService y HistoricalReplayEngine.run_and_persist (F11, [87])."""
+"""Tests unitarios para ReplayPersistenceService y run_and_persist (F11, [87])."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from backend.replay.metrics import ReplayMetrics
 from backend.replay.persistence import ReplayPersistenceService
 from backend.replay.schemas import SnapshotWindow
-from backend.storage.models import HistoricalReplayRun, HistoricalReplaySnapshot, StrategyPerformance
+from backend.storage.models import (
+    HistoricalReplayRun,
+    HistoricalReplaySnapshot,
+    StrategyPerformance,
+)
 
 _BOT_RUN_ID = str(uuid.uuid4())
 _WINDOW = SnapshotWindow(
@@ -37,6 +40,16 @@ _METRICS_WITH_TRADES = ReplayMetrics(
     comparable_executed_steps=4,
     win_rate=0.75,
     max_drawdown=0.2,
+)
+# Last executed step has no next snapshot: comparable(3) < executed(4)
+_METRICS_LAST_UNCLASSIFIED = ReplayMetrics(
+    total_steps=10,
+    executed_steps=4,
+    signals_activated=5,
+    directional_wins=2,
+    comparable_executed_steps=3,
+    win_rate=2 / 3,
+    max_drawdown=0.15,
 )
 
 
@@ -165,7 +178,7 @@ class TestCloseRun:
         assert perf.symbol == "BTCUSDT"
         assert perf.total_trades == 4
         assert perf.winning_trades == 3
-        assert perf.losing_trades == 1   # comparable(4) - wins(3) = 1
+        assert perf.losing_trades == 1  # comparable(4) - wins(3) = 1
         assert perf.win_rate == pytest.approx(0.75)
         assert perf.max_drawdown == pytest.approx(0.2)
         assert perf.period_start == _WINDOW.period_start
@@ -182,6 +195,19 @@ class TestCloseRun:
         assert perf.total_trades == 0
         assert perf.winning_trades == 0
         assert perf.losing_trades == 0
+
+    def test_losing_trades_uses_comparable_not_executed(self) -> None:
+        # executed_steps(4) > comparable_executed_steps(3): last step has no outcome.
+        # losing_trades must be comparable(3) - wins(2) = 1, not executed(4) - wins(2) = 2.
+        session = _session()
+        run = self._open_run(session)
+        svc = ReplayPersistenceService(session)
+
+        perf = svc.close_run(run, _METRICS_LAST_UNCLASSIFIED, _BOT_RUN_ID)
+
+        assert perf.total_trades == 4
+        assert perf.winning_trades == 2
+        assert perf.losing_trades == 1  # comparable(3) - wins(2), not executed(4) - wins(2)
 
 
 # ---------------------------------------------------------------------------
@@ -220,19 +246,28 @@ class TestRunAndPersist:
         engine = HistoricalReplayEngine(session=MagicMock())
         fake_results = [MagicMock(), MagicMock()]
         fake_metrics = ReplayMetrics(
-            total_steps=2, executed_steps=0, signals_activated=0,
-            directional_wins=0, comparable_executed_steps=0,
-            win_rate=None, max_drawdown=0.0,
+            total_steps=2,
+            executed_steps=0,
+            signals_activated=0,
+            directional_wins=0,
+            comparable_executed_steps=0,
+            win_rate=None,
+            max_drawdown=0.0,
         )
+        fake_run = MagicMock(id=str(uuid.uuid4()))
 
         with (
             patch.object(engine, "run", return_value=fake_results),
-            patch("backend.replay.persistence.ReplayPersistenceService.open_run") as mock_open,
-            patch("backend.replay.persistence.ReplayPersistenceService.save_step"),
+            patch(
+                "backend.replay.persistence.ReplayPersistenceService.open_run",
+                return_value=fake_run,
+            ),
+            patch(
+                "backend.replay.persistence.ReplayPersistenceService.save_step"
+            ) as mock_save_step,
             patch("backend.replay.persistence.ReplayPersistenceService.close_run"),
             patch("backend.replay.metrics.compute_replay_metrics", return_value=fake_metrics),
         ):
-            mock_open.return_value = MagicMock(id=str(uuid.uuid4()))
             results, metrics = engine.run_and_persist(
                 _WINDOW,
                 decision_provider=MagicMock(),
@@ -241,6 +276,9 @@ class TestRunAndPersist:
 
         assert results is fake_results
         assert metrics is fake_metrics
+        assert mock_save_step.call_count == len(fake_results)
+        for seq, step in enumerate(fake_results):
+            mock_save_step.assert_any_call(fake_run.id, seq, step)
 
     def test_fail_run_called_on_exception(self) -> None:
         from backend.replay.historical_replay_engine import HistoricalReplayEngine
@@ -250,8 +288,10 @@ class TestRunAndPersist:
 
         with (
             patch.object(engine, "run", side_effect=RuntimeError("boom")),
-            patch("backend.replay.persistence.ReplayPersistenceService.open_run",
-                  return_value=fake_run),
+            patch(
+                "backend.replay.persistence.ReplayPersistenceService.open_run",
+                return_value=fake_run,
+            ),
             patch("backend.replay.persistence.ReplayPersistenceService.fail_run") as mock_fail,
         ):
             with pytest.raises(RuntimeError, match="boom"):
