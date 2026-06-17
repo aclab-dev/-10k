@@ -3,6 +3,8 @@ DecisionAggregation, RiskValidation."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
 
 from backend.storage.models import (
@@ -66,6 +68,25 @@ class DecisionRepository(BaseRepository[Decision]):
         )
         return list(self._session.scalars(stmt))
 
+    def list_by_symbol_and_range(
+        self,
+        symbol: str,
+        period_start: datetime,
+        period_end: datetime,
+        bot_run_id: str | None = None,
+    ) -> list[Decision]:
+        """Load decisions for a symbol within [period_start, period_end), ordered by timestamp ASC.
+        Queries across all bot_runs unless bot_run_id is provided."""
+        stmt = select(Decision).where(
+            Decision.symbol == symbol,
+            Decision.timestamp >= period_start,
+            Decision.timestamp < period_end,
+        )
+        if bot_run_id is not None:
+            stmt = stmt.where(Decision.bot_run_id == bot_run_id)
+        stmt = stmt.order_by(Decision.timestamp.asc())
+        return list(self._session.scalars(stmt))
+
 
 class DecisionAggregationRepository(BaseRepository[DecisionAggregation]):
     model = DecisionAggregation
@@ -86,6 +107,25 @@ class DecisionAggregationRepository(BaseRepository[DecisionAggregation]):
             .order_by(DecisionAggregation.timestamp.desc())
             .limit(limit)
         )
+        return list(self._session.scalars(stmt))
+
+    def list_by_symbol_and_range(
+        self,
+        symbol: str,
+        period_start: datetime,
+        period_end: datetime,
+        bot_run_id: str | None = None,
+    ) -> list[DecisionAggregation]:
+        """Load aggregations for a symbol within [period_start, period_end), ASC.
+        Queries across all bot_runs unless bot_run_id is provided."""
+        stmt = select(DecisionAggregation).where(
+            DecisionAggregation.symbol == symbol,
+            DecisionAggregation.timestamp >= period_start,
+            DecisionAggregation.timestamp < period_end,
+        )
+        if bot_run_id is not None:
+            stmt = stmt.where(DecisionAggregation.bot_run_id == bot_run_id)
+        stmt = stmt.order_by(DecisionAggregation.timestamp.asc())
         return list(self._session.scalars(stmt))
 
 
@@ -111,4 +151,23 @@ class RiskValidationRepository(BaseRepository[RiskValidation]):
             .order_by(RiskValidation.timestamp.desc())
             .limit(limit)
         )
+        return list(self._session.scalars(stmt))
+
+    def list_by_symbol_and_range(
+        self,
+        symbol: str,
+        period_start: datetime,
+        period_end: datetime,
+        bot_run_id: str | None = None,
+    ) -> list[RiskValidation]:
+        """Load risk validations for a symbol within [period_start, period_end), ASC.
+        Queries across all bot_runs unless bot_run_id is provided."""
+        stmt = select(RiskValidation).where(
+            RiskValidation.symbol == symbol,
+            RiskValidation.timestamp >= period_start,
+            RiskValidation.timestamp < period_end,
+        )
+        if bot_run_id is not None:
+            stmt = stmt.where(RiskValidation.bot_run_id == bot_run_id)
+        stmt = stmt.order_by(RiskValidation.timestamp.asc())
         return list(self._session.scalars(stmt))
