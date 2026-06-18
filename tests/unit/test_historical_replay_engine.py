@@ -1,11 +1,11 @@
-"""Tests unitarios para HistoricalReplayEngine (F11, tarjeta [85])."""
+"""Tests unitarios para HistoricalReplayEngine (F11, tarjetas [85] y [88])."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from backend.core.config import Environment
 from backend.decision_engine.schemas import (
@@ -243,3 +243,159 @@ class TestHistoricalReplayEngineRun:
 
         assert results[0].risk_result.decision.value == "BLOCK"
         assert "daily_drawdown" in results[0].risk_result.reasons
+
+    def test_run_is_idempotent(self) -> None:
+        """Mismos snapshots e igual decision_provider → mismas risk decisions y final_actions."""
+        snap = _make_snapshot()
+        row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-1"))
+
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results_1 = engine.run(window, decision_provider=lambda s, q: _make_gpt_decision())
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results_2 = engine.run(window, decision_provider=lambda s, q: _make_gpt_decision())
+
+        assert len(results_1) == len(results_2) == 1
+        assert results_1[0].risk_result.decision == results_2[0].risk_result.decision
+        assert results_1[0].aggregation.final_action == results_2[0].aggregation.final_action
+        qs1 = results_1[0].quant_signals
+        qs2 = results_2[0].quant_signals
+        assert qs1.momentum_signal == qs2.momentum_signal
+
+    def test_run_accumulates_loss_across_steps_and_blocks(self) -> None:
+        """Pérdida de step 1 (APPROVE, 10 USDT) se acumula y bloquea step 2 (10% drawdown)."""
+        snap1 = _make_snapshot()
+        snap2 = _make_snapshot()
+        row1 = MarketSnapshotRow(**snap1.to_db_kwargs(bot_run_id="bot-run-acc"))
+        row2 = MarketSnapshotRow(**snap2.to_db_kwargs(bot_run_id="bot-run-acc"))
+
+        # Decisión con estimated_max_loss_usdt=10 (= 10% de initial_balance=100 USDT)
+        # Step 1 → APPROVE (0% < 10%) → acumula 10 USDT
+        # Step 2 → BLOCK (10% >= límite del 10%)
+        big_loss_decision = _make_gpt_decision()
+        object.__setattr__(big_loss_decision, "estimated_max_loss_usdt", 10.0)
+        object.__setattr__(big_loss_decision, "margin_usdt", 10.0)
+
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with patch.object(engine._loader, "load", return_value=[row1, row2]):
+            results = engine.run(
+                window,
+                decision_provider=lambda s, q: big_loss_decision,
+                daily_loss_usdt=Decimal("0"),
+            )
+
+        assert len(results) == 2
+        assert results[0].risk_result.decision.value in ("APPROVE", "ADJUST_DOWN")
+        assert results[1].risk_result.decision.value == "BLOCK"
+        assert "daily_drawdown" in results[1].risk_result.reasons
+
+    def test_run_empty_window_returns_empty_list(self) -> None:
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with patch.object(engine._loader, "load", return_value=[]):
+            results = engine.run(window, decision_provider=lambda s, q: _make_gpt_decision())
+
+        assert results == []
+
+
+# ---------------------------------------------------------------------------
+# HistoricalReplayEngine.run_and_persist
+# ---------------------------------------------------------------------------
+
+
+class TestHistoricalReplayEngineRunAndPersist:
+    def test_run_and_persist_happy_path(self) -> None:
+        """run_and_persist llama open_run, save_step por cada resultado y close_run."""
+        snap = _make_snapshot()
+        row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-p"))
+
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        mock_run = MagicMock()
+        mock_run.id = "run-uuid-1"
+        mock_svc = MagicMock()
+        mock_svc.open_run.return_value = mock_run
+        mock_metrics = MagicMock()
+
+        with (
+            patch.object(engine._loader, "load", return_value=[row]),
+            patch(
+                "backend.replay.persistence.ReplayPersistenceService",
+                return_value=mock_svc,
+            ),
+            patch(
+                "backend.replay.metrics.compute_replay_metrics",
+                return_value=mock_metrics,
+            ),
+        ):
+            results, metrics = engine.run_and_persist(
+                window,
+                decision_provider=lambda s, q: _make_gpt_decision(),
+                bot_run_id="bot-run-p",
+            )
+
+        mock_svc.open_run.assert_called_once()
+        assert mock_svc.save_step.call_count == len(results)
+        mock_svc.save_step.assert_has_calls(
+            [call(mock_run.id, seq, results[seq]) for seq in range(len(results))],
+            any_order=False,
+        )
+        mock_svc.close_run.assert_called_once()
+        mock_svc.fail_run.assert_not_called()
+        assert metrics is mock_metrics
+
+    def test_run_and_persist_marks_failed_on_exception(self) -> None:
+        """Si run() lanza excepción, se llama fail_run y la excepción se re-lanza."""
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        mock_run = MagicMock()
+        mock_svc = MagicMock()
+        mock_svc.open_run.return_value = mock_run
+
+        import pytest
+
+        with (
+            patch.object(engine._loader, "load", side_effect=RuntimeError("loader boom")),
+            patch(
+                "backend.replay.persistence.ReplayPersistenceService",
+                return_value=mock_svc,
+            ),
+            patch("backend.replay.metrics.compute_replay_metrics"),
+        ):
+            with pytest.raises(RuntimeError, match="loader boom"):
+                engine.run_and_persist(
+                    window,
+                    decision_provider=lambda s, q: _make_gpt_decision(),
+                    bot_run_id="bot-run-fail",
+                )
+
+        mock_svc.fail_run.assert_called_once_with(mock_run)
+        mock_svc.close_run.assert_not_called()

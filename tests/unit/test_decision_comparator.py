@@ -187,23 +187,23 @@ class TestFindNearest:
 
     def test_returns_only_record_within_tolerance(self) -> None:
         row = _make_decision_row(ts=_NOW)
-        assert _find_nearest([row], _NOW) is row  # type: ignore[arg-type]
+        assert _find_nearest([row], _NOW) is row
 
     def test_returns_none_when_only_record_exceeds_tolerance(self) -> None:
         row = _make_decision_row(ts=_NOW + timedelta(hours=1))
-        assert _find_nearest([row], _NOW) is None  # type: ignore[arg-type]
+        assert _find_nearest([row], _NOW) is None
 
     def test_returns_nearest_when_multiple_records(self) -> None:
         close = _make_decision_row(ts=_NOW + timedelta(seconds=30))
         far = _make_decision_row(ts=_NOW + timedelta(minutes=3))
-        result = _find_nearest([close, far], _NOW)  # type: ignore[arg-type]
+        result = _find_nearest([close, far], _NOW)
         assert result is close
 
     def test_handles_naive_timestamp_by_assuming_utc(self) -> None:
         naive_ts = _NOW.replace(tzinfo=None)
         row = _make_decision_row(ts=naive_ts)
         # Should match because we treat naive as UTC
-        result = _find_nearest([row], _NOW)  # type: ignore[arg-type]
+        result = _find_nearest([row], _NOW)
         assert result is row
 
 
@@ -476,3 +476,185 @@ class TestDecisionComparatorCompare:
             period_end=_WINDOW.period_end,
             bot_run_id="run-42",
         )
+
+    def _make_raw_step(
+        self,
+        action_value: str = "LONG",
+        final_action_value: str = "LONG",
+        aggregated_score: float = 0.75,
+        risk_decision_value: str = "APPROVE",
+        snapshot_ts: datetime = _NOW,
+    ) -> MagicMock:
+        """Mock mínimo de ReplayStepResult para test de compare() sin validaciones Pydantic."""
+        step = MagicMock()
+        step.snapshot = _make_snapshot(ts=snapshot_ts)
+        step.decision.decision.value = action_value
+        step.aggregation.final_action.value = final_action_value
+        step.aggregation.aggregated_score = aggregated_score
+        step.risk_result.decision.value = risk_decision_value
+        return step
+
+    def test_detects_action_change_in_compare(self) -> None:
+        """compare() detecta divergencia cuando action cambia (LONG → SHORT)."""
+        comparator = self._build_comparator()
+        replay_step = self._make_raw_step(action_value="SHORT")
+        hist_decision = _make_decision_row(action="LONG")
+        hist_aggregation = _make_aggregation_row(final_action="LONG", aggregated_score=0.75)
+        hist_risk = _make_risk_row(result="APPROVE")
+
+        with (
+            patch.object(comparator._engine, "run", return_value=[replay_step]),
+            patch.object(
+                comparator._decision_repo, "list_by_symbol_and_range", return_value=[hist_decision]
+            ),
+            patch.object(
+                comparator._aggregation_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_aggregation],
+            ),
+            patch.object(
+                comparator._risk_repo, "list_by_symbol_and_range", return_value=[hist_risk]
+            ),
+        ):
+            report = comparator.compare(_WINDOW, lambda s, q: _make_gpt_decision())
+
+        assert report.changed_steps == 1
+        step = report.steps[0]
+        assert step.any_changed
+        action_delta = next(d for d in step.deltas if d.field == "action")
+        assert action_delta.changed
+        assert action_delta.entonces == "LONG"
+        assert action_delta.ahora == "SHORT"
+
+    def test_detects_final_action_change_in_compare(self) -> None:
+        """compare() detecta divergencia cuando final_action del aggregator cambia."""
+        comparator = self._build_comparator()
+        replay_step = self._make_replay_step(final_action_value="LONG")
+        hist_decision = _make_decision_row(action="LONG")
+        hist_aggregation = _make_aggregation_row(final_action="NO_OPERAR", aggregated_score=0.75)
+        hist_risk = _make_risk_row(result="APPROVE")
+
+        with (
+            patch.object(comparator._engine, "run", return_value=[replay_step]),
+            patch.object(
+                comparator._decision_repo, "list_by_symbol_and_range", return_value=[hist_decision]
+            ),
+            patch.object(
+                comparator._aggregation_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_aggregation],
+            ),
+            patch.object(
+                comparator._risk_repo, "list_by_symbol_and_range", return_value=[hist_risk]
+            ),
+        ):
+            report = comparator.compare(_WINDOW, lambda s, q: _make_gpt_decision())
+
+        assert report.changed_steps == 1
+        step = report.steps[0]
+        assert step.any_changed
+        delta = next(d for d in step.deltas if d.field == "final_action")
+        assert delta.changed
+        assert delta.entonces == "NO_OPERAR"
+        assert delta.ahora == "LONG"
+
+    def test_detects_aggregated_score_change_in_compare(self) -> None:
+        """compare() detecta divergencia cuando aggregated_score cambia más de 1e-6."""
+        comparator = self._build_comparator()
+        replay_step = self._make_replay_step(aggregated_score=0.90)
+        hist_decision = _make_decision_row(action="LONG")
+        hist_aggregation = _make_aggregation_row(final_action="LONG", aggregated_score=0.75)
+        hist_risk = _make_risk_row(result="APPROVE")
+
+        with (
+            patch.object(comparator._engine, "run", return_value=[replay_step]),
+            patch.object(
+                comparator._decision_repo, "list_by_symbol_and_range", return_value=[hist_decision]
+            ),
+            patch.object(
+                comparator._aggregation_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_aggregation],
+            ),
+            patch.object(
+                comparator._risk_repo, "list_by_symbol_and_range", return_value=[hist_risk]
+            ),
+        ):
+            report = comparator.compare(_WINDOW, lambda s, q: _make_gpt_decision())
+
+        assert report.changed_steps == 1
+        step = report.steps[0]
+        assert step.any_changed
+        delta = next(d for d in step.deltas if d.field == "aggregated_score")
+        assert delta.changed
+
+    def test_multiple_changed_steps_compute_correct_rate(self) -> None:
+        """2 steps cambiados de 3 comparables → change_rate = 2/3."""
+        comparator = self._build_comparator()
+        ts1 = _NOW
+        ts2 = _NOW + timedelta(minutes=30)
+        ts3 = _NOW + timedelta(minutes=60)
+
+        # step1: risk BLOCK→APPROVE (cambia)
+        # step2: todos coinciden (no cambia)
+        # step3: action LONG→SHORT (cambia)
+        step1 = self._make_replay_step(snapshot_ts=ts1, risk_decision_value="APPROVE")
+        step2 = self._make_replay_step(snapshot_ts=ts2)
+        step3 = self._make_raw_step(snapshot_ts=ts3, action_value="SHORT")
+
+        hist_dec1 = _make_decision_row(ts=ts1, action="LONG")
+        hist_agg1 = _make_aggregation_row(ts=ts1, final_action="LONG", aggregated_score=0.75)
+        hist_risk1 = _make_risk_row(ts=ts1, result="BLOCK")  # → APPROVE: cambia
+
+        hist_dec2 = _make_decision_row(ts=ts2, action="LONG")
+        hist_agg2 = _make_aggregation_row(ts=ts2, final_action="LONG", aggregated_score=0.75)
+        hist_risk2 = _make_risk_row(ts=ts2, result="APPROVE")  # coincide
+
+        hist_dec3 = _make_decision_row(ts=ts3, action="LONG")  # → NO_OPERAR: cambia
+        hist_agg3 = _make_aggregation_row(ts=ts3, final_action="LONG", aggregated_score=0.75)
+        hist_risk3 = _make_risk_row(ts=ts3, result="APPROVE")
+
+        with (
+            patch.object(comparator._engine, "run", return_value=[step1, step2, step3]),
+            patch.object(
+                comparator._decision_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_dec1, hist_dec2, hist_dec3],
+            ),
+            patch.object(
+                comparator._aggregation_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_agg1, hist_agg2, hist_agg3],
+            ),
+            patch.object(
+                comparator._risk_repo,
+                "list_by_symbol_and_range",
+                return_value=[hist_risk1, hist_risk2, hist_risk3],
+            ),
+        ):
+            report = comparator.compare(_WINDOW, lambda s, q: _make_gpt_decision())
+
+        import pytest
+
+        assert report.total_steps == 3
+        assert report.missing_steps == 0
+        assert report.changed_steps == 2
+        assert report.change_rate == pytest.approx(2 / 3)
+
+    def test_missing_step_does_not_count_as_changed(self) -> None:
+        """Un step sin registros históricos se cuenta como missing, no como changed."""
+        comparator = self._build_comparator()
+        replay_step = self._make_replay_step(risk_decision_value="APPROVE")
+
+        with (
+            patch.object(comparator._engine, "run", return_value=[replay_step]),
+            patch.object(comparator._decision_repo, "list_by_symbol_and_range", return_value=[]),
+            patch.object(comparator._aggregation_repo, "list_by_symbol_and_range", return_value=[]),
+            patch.object(comparator._risk_repo, "list_by_symbol_and_range", return_value=[]),
+        ):
+            report = comparator.compare(_WINDOW, lambda s, q: _make_gpt_decision())
+
+        assert report.missing_steps == 1
+        assert report.changed_steps == 0
+        assert report.steps[0].historical_missing is True
+        assert not report.steps[0].any_changed
