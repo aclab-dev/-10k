@@ -239,7 +239,7 @@ class TestBuildDeltas:
         score_delta = next(d for d in deltas if d.field == "aggregated_score")
         assert not score_delta.changed
 
-    def test_none_historical_aggregated_score_is_not_changed(self) -> None:
+    def test_none_historical_aggregated_score_marks_changed(self) -> None:
         deltas = _build_deltas("LONG", "LONG", None, "APPROVE", "LONG", "LONG", 0.75, "APPROVE")
         score_delta = next(d for d in deltas if d.field == "aggregated_score")
         # None entonces vs valor ahora: changed=True (string comparison: None != "0.750000")
@@ -274,7 +274,6 @@ class TestDecisionComparatorCompare:
         step.decision = _make_gpt_decision(decision=decision_type, ts=snapshot_ts)
         step.aggregation.final_action.value = final_action_value
         step.aggregation.aggregated_score = aggregated_score
-        step.aggregation.decision_id = step.decision.decision_id
         step.risk_result.decision.value = risk_decision_value
         return step
 

@@ -172,6 +172,9 @@ class DecisionComparator:
             )
             hist_risk: RiskValidation | None = _find_nearest(historical_risks, snapshot_ts)
 
+            # Un step se considera sin datos históricos cuando faltan decision+aggregation.
+            # hist_risk puede estar ausente independientemente (p.ej. si el aggregator bloqueó
+            # antes del risk check), así que no entra en esta condición.
             historical_missing = hist_decision is None and hist_aggregation is None
 
             historical_action: str | None = hist_decision.action if hist_decision else None
