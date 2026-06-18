@@ -15,8 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import load_config
@@ -38,10 +39,15 @@ from backend.quant_signals.schemas import QuantSignalsPackage
 from backend.replay.schemas import SnapshotWindow
 from backend.replay.snapshot_loader import SnapshotLoader
 from backend.risk_engine import engine as risk_engine
-from backend.risk_engine.schemas import RiskValidationResult
+from backend.risk_engine.schemas import EXECUTABLE_RISK_DECISIONS, RiskValidationResult
 from backend.storage.models import MarketSnapshot as MarketSnapshotRow
 from backend.volatility.engine import compute_volatility_assessment
 from backend.volatility.schemas import VolatilityAssessmentPackage
+
+if TYPE_CHECKING:
+    from backend.replay.metrics import ReplayMetrics
+
+_log = structlog.get_logger(__name__)
 
 
 class DecisionProvider(Protocol):
@@ -129,6 +135,7 @@ class HistoricalReplayEngine:
     """
 
     def __init__(self, session: Session) -> None:
+        self._session = session
         self._loader = SnapshotLoader(session)
         self._regime_engine = MarketRegimeEngine()
         self._aggregator = DecisionAggregator()
@@ -144,8 +151,9 @@ class HistoricalReplayEngine:
     ) -> list[ReplayStepResult]:
         """Carga los snapshots de la ventana ([84]) y recorre cada uno cronológicamente.
 
-        `daily_loss_usdt` y `total_loss_usdt` son fijos para toda la ventana;
-        la actualización step-a-step de estos acumuladores queda pendiente en [87].
+        daily_loss_usdt y total_loss_usdt se actualizan paso a paso: si el Risk Engine
+        aprueba o ajusta un trade (APPROVE / ADJUST_DOWN), el estimated_max_loss_usdt
+        de ese paso se acumula antes de validar el paso siguiente (conservative replay).
         """
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
@@ -176,5 +184,55 @@ class HistoricalReplayEngine:
                     risk_result=risk_result,
                 )
             )
+            if risk_result.decision in EXECUTABLE_RISK_DECISIONS:
+                loss = Decimal(str(decision.estimated_max_loss_usdt))
+                daily_loss_usdt += loss
+                total_loss_usdt += loss
 
         return results
+
+    def run_and_persist(
+        self,
+        window: SnapshotWindow,
+        decision_provider: DecisionProvider,
+        *,
+        bot_run_id: str,
+        daily_loss_usdt: Decimal = Decimal("0"),
+        total_loss_usdt: Decimal = Decimal("0"),
+        config_snapshot: dict[str, Any] | None = None,
+    ) -> tuple[list[ReplayStepResult], ReplayMetrics]:
+        """Ejecuta el replay completo y persiste run, snapshots y métricas en DB.
+
+        Abre un HistoricalReplayRun (RUNNING), ejecuta run(), guarda cada paso
+        como HistoricalReplaySnapshot, calcula las métricas y cierra el run
+        (COMPLETED + StrategyPerformance). Si hay excepción, marca el run como
+        FAILED antes de re-lanzarla.
+
+        El caller es responsable de commitear la sesión.
+        """
+        from backend.replay.metrics import compute_replay_metrics
+        from backend.replay.persistence import ReplayPersistenceService
+
+        svc = ReplayPersistenceService(self._session)
+        # open_run outside the main try: if it fails, there is no run record to mark FAILED.
+        run = svc.open_run(window, bot_run_id, config_snapshot)
+        try:
+            results = self.run(
+                window,
+                decision_provider,
+                bot_run_id=bot_run_id,
+                daily_loss_usdt=daily_loss_usdt,
+                total_loss_usdt=total_loss_usdt,
+            )
+            for seq, step in enumerate(results):
+                svc.save_step(run.id, seq, step)
+            metrics = compute_replay_metrics(results)
+            svc.close_run(run, metrics, bot_run_id)
+        except Exception:
+            # Guard: fail_run may raise (broken session); don't let it mask the original.
+            try:
+                svc.fail_run(run)
+            except Exception as exc:
+                _log.error("fail_run raised after engine exception", error=str(exc))
+            raise
+        return results, metrics
