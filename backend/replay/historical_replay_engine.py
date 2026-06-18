@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
+import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import load_config
@@ -37,8 +38,6 @@ from backend.quant_signals.engine import compute_quant_signals
 from backend.quant_signals.schemas import QuantSignalsPackage
 from backend.replay.schemas import SnapshotWindow
 from backend.replay.snapshot_loader import SnapshotLoader
-import structlog
-
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import EXECUTABLE_RISK_DECISIONS, RiskValidationResult
 from backend.storage.models import MarketSnapshot as MarketSnapshotRow
