@@ -587,6 +587,8 @@ class TestDecisionComparatorCompare:
         assert step.any_changed
         delta = next(d for d in step.deltas if d.field == "aggregated_score")
         assert delta.changed
+        assert delta.entonces == "0.750000"
+        assert delta.ahora == "0.900000"
 
     def test_multiple_changed_steps_compute_correct_rate(self) -> None:
         """2 steps cambiados de 3 comparables → change_rate = 2/3."""

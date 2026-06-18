@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 from backend.core.config import Environment
 from backend.decision_engine.schemas import (
     BreakoutInterpretation,
@@ -270,18 +272,21 @@ class TestHistoricalReplayEngineRun:
         assert qs1.momentum_signal == qs2.momentum_signal
 
     def test_run_accumulates_loss_across_steps_and_blocks(self) -> None:
-        """Pérdida de step 1 (APPROVE, 10 USDT) se acumula y bloquea step 2 (10% drawdown)."""
+        """Pérdida de step 1 (APPROVE, 10 USDT) se acumula y bloquea step 2 (10% drawdown).
+
+        initial_balance_usdt=100, max_daily_loss_percent=10 → límite = 10 USDT.
+        Step 1: daily_loss=0 (0%) → APPROVE → acumula 10 USDT.
+        Step 2: daily_loss=10 (10% >= 10%) → BLOCK por daily_drawdown.
+        """
         snap1 = _make_snapshot()
         snap2 = _make_snapshot()
         row1 = MarketSnapshotRow(**snap1.to_db_kwargs(bot_run_id="bot-run-acc"))
         row2 = MarketSnapshotRow(**snap2.to_db_kwargs(bot_run_id="bot-run-acc"))
 
-        # Decisión con estimated_max_loss_usdt=10 (= 10% de initial_balance=100 USDT)
-        # Step 1 → APPROVE (0% < 10%) → acumula 10 USDT
-        # Step 2 → BLOCK (10% >= límite del 10%)
-        big_loss_decision = _make_gpt_decision()
-        object.__setattr__(big_loss_decision, "estimated_max_loss_usdt", 10.0)
-        object.__setattr__(big_loss_decision, "margin_usdt", 10.0)
+        # model_copy en modelo frozen: crea copia sin re-ejecutar validadores cruzados
+        big_loss_decision = _make_gpt_decision().model_copy(
+            update={"estimated_max_loss_usdt": 10.0, "margin_usdt": 10.0}
+        )
 
         engine = HistoricalReplayEngine(session=MagicMock())
         window = SnapshotWindow(
@@ -298,7 +303,8 @@ class TestHistoricalReplayEngineRun:
             )
 
         assert len(results) == 2
-        assert results[0].risk_result.decision.value in ("APPROVE", "ADJUST_DOWN")
+        # Step 1: daily_loss=0 → APPROVE (margin=10 ≤ max_margin=10, 0% < 10%)
+        assert results[0].risk_result.decision.value == "APPROVE"
         assert results[1].risk_result.decision.value == "BLOCK"
         assert "daily_drawdown" in results[1].risk_result.reasons
 
@@ -340,6 +346,8 @@ class TestHistoricalReplayEngineRunAndPersist:
         mock_svc.open_run.return_value = mock_run
         mock_metrics = MagicMock()
 
+        # run_and_persist usa imports locales (`from X import Y` dentro del cuerpo),
+        # así que se parchea el módulo fuente, no un alias en historical_replay_engine.
         with (
             patch.object(engine._loader, "load", return_value=[row]),
             patch(
@@ -379,8 +387,6 @@ class TestHistoricalReplayEngineRunAndPersist:
         mock_run = MagicMock()
         mock_svc = MagicMock()
         mock_svc.open_run.return_value = mock_run
-
-        import pytest
 
         with (
             patch.object(engine._loader, "load", side_effect=RuntimeError("loader boom")),
