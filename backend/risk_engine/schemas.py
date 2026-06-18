@@ -51,6 +51,9 @@ class RiskDecision(StrEnum):
     NO_OPERAR = "NO_OPERAR"  # Sin edge — decisión del Aggregator, no del Risk Engine
 
 
+EXECUTABLE_RISK_DECISIONS = frozenset({RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN})
+
+
 # ---------------------------------------------------------------------------
 # Sub-modelos
 # ---------------------------------------------------------------------------

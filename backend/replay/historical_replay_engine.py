@@ -37,8 +37,10 @@ from backend.quant_signals.engine import compute_quant_signals
 from backend.quant_signals.schemas import QuantSignalsPackage
 from backend.replay.schemas import SnapshotWindow
 from backend.replay.snapshot_loader import SnapshotLoader
+import structlog
+
 from backend.risk_engine import engine as risk_engine
-from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from backend.risk_engine.schemas import EXECUTABLE_RISK_DECISIONS, RiskValidationResult
 from backend.storage.models import MarketSnapshot as MarketSnapshotRow
 from backend.volatility.engine import compute_volatility_assessment
 from backend.volatility.schemas import VolatilityAssessmentPackage
@@ -46,7 +48,7 @@ from backend.volatility.schemas import VolatilityAssessmentPackage
 if TYPE_CHECKING:
     from backend.replay.metrics import ReplayMetrics
 
-_EXECUTABLE_RISK_DECISIONS = frozenset({RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN})
+_log = structlog.get_logger(__name__)
 
 
 class DecisionProvider(Protocol):
@@ -183,7 +185,7 @@ class HistoricalReplayEngine:
                     risk_result=risk_result,
                 )
             )
-            if risk_result.decision in _EXECUTABLE_RISK_DECISIONS:
+            if risk_result.decision in EXECUTABLE_RISK_DECISIONS:
                 loss = Decimal(str(decision.estimated_max_loss_usdt))
                 daily_loss_usdt += loss
                 total_loss_usdt += loss
@@ -231,7 +233,7 @@ class HistoricalReplayEngine:
             # Guard: fail_run may raise (broken session); don't let it mask the original.
             try:
                 svc.fail_run(run)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.error("fail_run raised after engine exception", error=str(exc))
             raise
         return results, metrics

@@ -91,7 +91,7 @@ class ReplayPersistenceService:
         run.total_snapshots = metrics.total_steps
         self._session.flush()
 
-        losing_trades = metrics.comparable_executed_steps - metrics.directional_wins
+        losing_trades = max(0, metrics.comparable_executed_steps - metrics.directional_wins)
         perf = StrategyPerformance(
             id=str(uuid.uuid4()),
             bot_run_id=bot_run_id,

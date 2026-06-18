@@ -19,9 +19,8 @@ from decimal import Decimal
 
 from backend.decision_engine.schemas import DecisionType
 from backend.replay.historical_replay_engine import ReplayStepResult
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine.schemas import EXECUTABLE_RISK_DECISIONS
 
-_EXECUTION_DECISIONS = frozenset({RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN})
 _SIGNAL_THRESHOLD = 0.5
 
 
@@ -63,7 +62,7 @@ def compute_replay_metrics(results: list[ReplayStepResult]) -> ReplayMetrics:
         is_executed = (
             step.decision.execute
             and step.decision.decision != DecisionType.NO_OPERAR
-            and step.risk_result.decision in _EXECUTION_DECISIONS
+            and step.risk_result.decision in EXECUTABLE_RISK_DECISIONS
         )
         if is_executed:
             executed_steps += 1
