@@ -1,7 +1,5 @@
 """Tests unitarios para el Strategy/Setup Registry (F12)."""
 
-from __future__ import annotations
-
 import pytest
 
 from backend.strategy_registry.registry import (
