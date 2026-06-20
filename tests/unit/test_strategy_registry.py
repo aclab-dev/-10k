@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from backend.strategy_registry.registry import (
     DuplicateSetupError,
@@ -199,7 +200,7 @@ class TestRegistrySnapshot:
     def test_snapshot_is_frozen(self) -> None:
         registry = StrategySetupRegistry()
         snap = registry.snapshot()
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             snap.total = 99  # type: ignore[misc]
 
     def test_contains(self) -> None:
