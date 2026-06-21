@@ -8,7 +8,7 @@ from backend.strategy_registry import (
     SetupNotRegisteredError,
     SetupParameters,
     SetupRegistrationRequest,
-    StrategySetupRegistry,
+    StrategySetupRegistry
 )
 
 
