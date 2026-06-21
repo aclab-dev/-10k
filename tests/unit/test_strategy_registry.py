@@ -1,4 +1,5 @@
-"""Tests unitarios para el Strategy/Setup Registry (F12)."""  # ruff: noqa: I001
+# ruff: noqa: I001
+"""Tests unitarios para el Strategy/Setup Registry (F12)."""
 
 from __future__ import annotations
 
