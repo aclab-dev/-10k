@@ -1,5 +1,9 @@
 """Tests unitarios para el Strategy/Setup Registry (F12)."""
 
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
 import pytest
 
 from backend.strategy_registry import (
@@ -8,7 +12,7 @@ from backend.strategy_registry import (
     SetupNotRegisteredError,
     SetupParameters,
     SetupRegistrationRequest,
-    StrategySetupRegistry
+    StrategySetupRegistry,
 )
 
 
@@ -57,6 +61,8 @@ class TestRegistryRegister:
         assert definition.slug == "breakout_pullback"
         assert definition.version == "v1"
         assert definition.is_active is True
+        assert isinstance(definition.registered_at, datetime)
+        assert definition.registered_at.tzinfo is UTC
 
     def test_register_parses_slug_and_version(self) -> None:
         registry = StrategySetupRegistry()
