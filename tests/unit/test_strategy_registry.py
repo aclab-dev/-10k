@@ -6,14 +6,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from backend.strategy_registry import (
-    DuplicateSetupError,
-    SetupMetadata,
-    SetupNotRegisteredError,
-    SetupParameters,
-    SetupRegistrationRequest,
-    StrategySetupRegistry,
-)
+from backend.strategy_registry import DuplicateSetupError
+from backend.strategy_registry import SetupMetadata
+from backend.strategy_registry import SetupNotRegisteredError
+from backend.strategy_registry import SetupParameters
+from backend.strategy_registry import SetupRegistrationRequest
+from backend.strategy_registry import StrategySetupRegistry
 
 
 # ---------------------------------------------------------------------------
