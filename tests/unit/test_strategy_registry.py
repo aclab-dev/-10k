@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from backend.strategy_registry import DuplicateSetupError
+from backend.strategy_registry import DuplicateSetupError  # noqa: I001
 from backend.strategy_registry import SetupMetadata
 from backend.strategy_registry import SetupNotRegisteredError
 from backend.strategy_registry import SetupParameters
