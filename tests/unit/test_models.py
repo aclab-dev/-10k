@@ -38,6 +38,7 @@ from backend.storage.models import (
     QuantSignal,
     RiskValidation,
     StrategyPerformance,
+    StrategySetup,
     SystemEvent,
     TokenUsage,
     Trade,
@@ -72,6 +73,7 @@ ALL_EXPECTED_TABLES = {
     "system_events",
     "errors",
     "kill_switch_events",
+    "strategy_setups",
 }
 
 
@@ -123,7 +125,7 @@ def _make_bot_run(session: Session) -> BotRun:
 
 
 class TestTableCoverage:
-    def test_all_27_tables_registered(self, engine):
+    def test_all_28_tables_registered(self, engine):
         inspector = inspect(engine)
         actual = set(inspector.get_table_names())
         assert actual == ALL_EXPECTED_TABLES, (
@@ -131,8 +133,8 @@ class TestTableCoverage:
             f"Tablas extra: {actual - ALL_EXPECTED_TABLES}"
         )
 
-    def test_base_metadata_has_27_tables(self):
-        assert len(Base.metadata.tables) == 27
+    def test_base_metadata_has_28_tables(self):
+        assert len(Base.metadata.tables) == 28
 
 
 # ---------------------------------------------------------------------------
