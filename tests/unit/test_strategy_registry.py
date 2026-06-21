@@ -2,15 +2,13 @@
 
 import pytest
 
-from backend.strategy_registry.registry import (
+from backend.strategy_registry import (
     DuplicateSetupError,
-    SetupNotRegisteredError,
-    StrategySetupRegistry,
-)
-from backend.strategy_registry.schemas import (
     SetupMetadata,
+    SetupNotRegisteredError,
     SetupParameters,
     SetupRegistrationRequest,
+    StrategySetupRegistry,
 )
 
 
