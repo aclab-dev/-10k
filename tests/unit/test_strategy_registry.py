@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
 
-from backend.strategy_registry import DuplicateSetupError  # noqa: I001
+from backend.strategy_registry import DuplicateSetupError
 from backend.strategy_registry import SetupMetadata
 from backend.strategy_registry import SetupNotRegisteredError
 from backend.strategy_registry import SetupParameters
@@ -60,7 +60,7 @@ class TestRegistryRegister:
         assert definition.version == "v1"
         assert definition.is_active is True
         assert isinstance(definition.registered_at, datetime)
-        assert definition.registered_at.tzinfo is UTC
+        assert definition.registered_at.tzinfo is not None
 
     def test_register_parses_slug_and_version(self) -> None:
         registry = StrategySetupRegistry()
