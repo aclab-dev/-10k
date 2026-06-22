@@ -1,0 +1,428 @@
+"""Tests unitarios del BacktestingEngine candle-by-candle (F12 [90]).
+
+Cobertura:
+- No-lookahead: el SignalProvider nunca ve el candle actual ni futuros.
+- Reproducibilidad: mismos inputs → mismo resultado.
+- LONG SL: low <= stop_loss cierra en stop_loss.
+- LONG TP: high >= take_profit cierra en take_profit.
+- SHORT SL/TP simétricos.
+- SL y TP en el mismo candle → gana SL (conservador).
+- Fees y slippage descontados del net_pnl.
+- End-of-data: posición abierta cierra al close del último candle.
+- NO_OP y CLOSE_SIGNAL sin posición no crean trade.
+- CLOSE_SIGNAL cierra posición al open del siguiente candle.
+- Sin candles → resultado vacío.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from backend.backtesting.engine import BacktestingEngine, SignalProvider
+from backend.backtesting.schemas import (
+    BacktestConfig,
+    BacktestRunResult,
+    CandleRow,
+    TradeSignal,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_BASE_TS = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+_D = Decimal
+
+
+def _candle(
+    open: float,
+    high: float,
+    low: float,
+    close: float,
+    *,
+    offset_hours: int = 0,
+    volume: float = 1000.0,
+    funding_rate: float = 0.0,
+) -> CandleRow:
+    return CandleRow(
+        timestamp_utc=_BASE_TS + timedelta(hours=offset_hours),
+        open=_D(str(open)),
+        high=_D(str(high)),
+        low=_D(str(low)),
+        close=_D(str(close)),
+        volume=_D(str(volume)),
+        funding_rate=_D(str(funding_rate)),
+    )
+
+
+def _config(latency: int = 0) -> BacktestConfig:
+    return BacktestConfig(
+        symbol="BTCUSDT",
+        timeframe="1h",
+        initial_balance_usdt=_D("100"),
+        latency_candles=latency,
+    )
+
+
+def _engine(latency: int = 0) -> BacktestingEngine:
+    return BacktestingEngine(_config(latency))
+
+
+def _no_op(_idx: int, _hist: tuple) -> TradeSignal:
+    return TradeSignal(action="NO_OP")
+
+
+def _long_at(trigger_idx: int, sl: float, tp: float) -> SignalProvider:
+    """Devuelve LONG en el candle trigger_idx, NO_OP en todos los demás."""
+
+    def _provider(idx: int, hist: tuple) -> TradeSignal:
+        if idx == trigger_idx:
+            return TradeSignal(
+                action="LONG",
+                stop_loss=_D(str(sl)),
+                take_profit=_D(str(tp)),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+        return TradeSignal(action="NO_OP")
+
+    return _provider
+
+
+def _short_at(trigger_idx: int, sl: float, tp: float) -> SignalProvider:
+    def _provider(idx: int, hist: tuple) -> TradeSignal:
+        if idx == trigger_idx:
+            return TradeSignal(
+                action="SHORT",
+                stop_loss=_D(str(sl)),
+                take_profit=_D(str(tp)),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+        return TradeSignal(action="NO_OP")
+
+    return _provider
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyInput:
+    def test_no_candles_returns_empty_result(self) -> None:
+        result = _engine().run([], _no_op)
+        assert isinstance(result, BacktestRunResult)
+        assert result.total_trades == 0
+        assert result.candles_processed == 0
+        assert result.final_balance_usdt == _D("100")
+
+
+class TestNoLookahead:
+    def test_signal_provider_receives_only_past_candles(self) -> None:
+        """El provider en el candle i debe recibir exactamente i candles en history."""
+        candles = [_candle(100, 110, 90, 105, offset_hours=h) for h in range(5)]
+        observed_lengths: list[int] = []
+
+        def _spy(idx: int, hist: tuple) -> TradeSignal:
+            observed_lengths.append(len(hist))
+            # Verificar que la history es [candles[0]..candles[idx-1]]
+            for j, c in enumerate(hist):
+                assert c is candles[j], f"Candle {j} en history no coincide"
+            return TradeSignal(action="NO_OP")
+
+        _engine().run(candles, _spy)
+
+        # El provider es llamado una vez por candle
+        assert observed_lengths == [0, 1, 2, 3, 4]
+
+    def test_current_candle_not_in_history(self) -> None:
+        """El candle actual nunca está en la history recibida por el provider."""
+        candles = [_candle(100 + i, 110 + i, 90 + i, 105 + i, offset_hours=i) for i in range(3)]
+
+        def _check(idx: int, hist: tuple) -> TradeSignal:
+            current = candles[idx]
+            assert current not in hist, f"Candle {idx} no debería estar en history"
+            return TradeSignal(action="NO_OP")
+
+        _engine().run(candles, _check)
+
+
+class TestReproducibility:
+    def test_same_input_produces_identical_output(self) -> None:
+        candles = [_candle(100 + i, 115 + i, 85 + i, 105 + i, offset_hours=i) for i in range(6)]
+        provider = _long_at(0, sl=85.0, tp=115.0)
+
+        r1 = _engine().run(candles, provider)
+        r2 = _engine().run(candles, provider)
+
+        assert r1.total_net_pnl == r2.total_net_pnl
+        assert r1.total_trades == r2.total_trades
+        assert r1.final_balance_usdt == r2.final_balance_usdt
+
+
+class TestLongSL:
+    def test_long_sl_hit_when_low_le_stop_loss(self) -> None:
+        """SL se activa cuando candle.low <= stop_loss."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # 0: signal LONG aquí
+            _candle(102, 108, 98, 105, offset_hours=1),  # 1: fill al open 102 + slippage
+            _candle(105, 110, 88, 90, offset_hours=2),  # 2: low=88 < SL=90 → cierra en 90
+            _candle(90, 95, 85, 92, offset_hours=3),
+        ]
+        provider = _long_at(0, sl=90.0, tp=120.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "SL"
+        # SELL slippage aplica adversamente: exit_price < stop_loss (LONG cierra vendiendo)
+        assert trade.exit_price <= _D("90")
+        assert trade.exit_candle_index == 2
+        assert trade.net_pnl_usdt < _D("0")  # pérdida
+
+    def test_long_sl_not_hit_when_low_gt_stop_loss(self) -> None:
+        """SL NO se activa si low > stop_loss."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 91, 107, offset_hours=1),  # low=91 > SL=90 → no cierra
+            _candle(107, 125, 100, 120, offset_hours=2),  # TP=120 hit
+        ]
+        provider = _long_at(0, sl=90.0, tp=120.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "TP"
+
+
+class TestLongTP:
+    def test_long_tp_hit_when_high_ge_take_profit(self) -> None:
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),  # fill
+            _candle(105, 125, 100, 120, offset_hours=2),  # high=125 >= TP=120
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "TP"
+        assert trade.exit_price == _D("120")
+        assert trade.net_pnl_usdt > _D("0")  # ganancia
+
+
+class TestSlVsTpSameCandle:
+    def test_sl_wins_when_both_hit_same_candle(self) -> None:
+        """Si SL y TP se tocan en el mismo candle, SL gana (conservador)."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),  # fill
+            _candle(105, 130, 70, 100, offset_hours=2),  # high=130 >= TP=120, low=70 <= SL=80
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "SL"
+        # SL conservador: precio de exit <= stop_loss por slippage adverso en SELL
+        assert result.trades[0].exit_price <= _D("80")
+
+
+class TestShortSLTP:
+    def test_short_sl_hit_when_high_ge_stop_loss(self) -> None:
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 104, 99, 101, offset_hours=1),  # fill SHORT al open
+            _candle(101, 115, 95, 110, offset_hours=2),  # high=115 >= SL=110
+        ]
+        provider = _short_at(0, sl=110.0, tp=80.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "SL"
+        assert trade.net_pnl_usdt < _D("0")
+
+    def test_short_tp_hit_when_low_le_take_profit(self) -> None:
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 104, 99, 101, offset_hours=1),  # fill SHORT
+            _candle(101, 103, 78, 80, offset_hours=2),  # low=78 <= TP=80
+        ]
+        provider = _short_at(0, sl=120.0, tp=80.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "TP"
+        assert trade.net_pnl_usdt > _D("0")
+
+
+class TestEndOfData:
+    def test_open_position_closed_at_last_close(self) -> None:
+        """Posición abierta sin SL/TP hit cierra al close del último candle."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 107, offset_hours=1),  # fill
+            _candle(107, 110, 104, 109, offset_hours=2),  # último, no toca SL ni TP
+        ]
+        provider = _long_at(0, sl=80.0, tp=150.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "END_OF_DATA"
+        assert trade.exit_price == _D("109")  # close del último candle
+
+
+class TestNoOpAndClose:
+    def test_no_op_never_opens_position(self) -> None:
+        candles = [_candle(100 + i, 110 + i, 90 + i, 105 + i, offset_hours=i) for i in range(5)]
+        result = _engine().run(candles, _no_op)
+        assert result.total_trades == 0
+        assert result.final_balance_usdt == _D("100")
+
+    def test_close_signal_closes_position_at_next_open(self) -> None:
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # 0: señal LONG
+            _candle(102, 108, 98, 105, offset_hours=1),  # 1: fill LONG al open
+            _candle(105, 110, 100, 108, offset_hours=2),  # 2: señal CLOSE
+            _candle(108, 112, 104, 110, offset_hours=3),  # 3: cierre al open=108
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("70"),
+                    take_profit=_D("200"),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            if idx == 2:
+                return TradeSignal(action="CLOSE")
+            return TradeSignal(action="NO_OP")
+
+        result = _engine().run(candles, _provider)
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_reason == "CLOSE_SIGNAL"
+        assert trade.exit_candle_index == 3
+        # LONG cierra con SELL MARKET: slippage adverso → exit_price < open del candle 3
+        assert trade.exit_price < _D("108")
+
+
+class TestFeesAndSlippage:
+    def test_net_pnl_is_gross_minus_fees_and_slippage(self) -> None:
+        """net_pnl = gross_pnl - entry_fee - exit_fee - entry_slip - exit_slip - funding."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 110, 95, 108, offset_hours=1),  # fill al open=100
+            _candle(108, 125, 105, 120, offset_hours=2),  # TP hit en 120
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        t = result.trades[0]
+
+        reconstructed = (
+            t.gross_pnl_usdt
+            - t.entry_fee_usdt
+            - t.exit_fee_usdt
+            - t.entry_slippage_usdt
+            - t.exit_slippage_usdt
+            - t.funding_cost_usdt
+        )
+        assert t.net_pnl_usdt == reconstructed.quantize(Decimal("0.00000001"))
+
+    def test_fees_are_positive(self) -> None:
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 110, 95, 108, offset_hours=1),
+            _candle(108, 125, 105, 120, offset_hours=2),
+        ]
+        result = _engine().run(candles, _long_at(0, sl=80.0, tp=120.0))
+        t = result.trades[0]
+        assert t.entry_fee_usdt > _D("0")
+        assert t.exit_fee_usdt > _D("0")
+
+
+class TestFunding:
+    def test_funding_cost_deducted_from_net_pnl(self) -> None:
+        """Con funding positivo en LONG, el costo reduce el net_pnl."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 110, 95, 105, offset_hours=1),  # fill
+            _candle(105, 110, 100, 108, offset_hours=2, funding_rate=0.001),  # funding 0.1%
+            _candle(108, 125, 105, 120, offset_hours=3),  # TP
+        ]
+        result_with_funding = _engine().run(candles, _long_at(0, sl=80.0, tp=120.0))
+
+        candles_no_funding = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 110, 95, 105, offset_hours=1),
+            _candle(105, 110, 100, 108, offset_hours=2, funding_rate=0.0),
+            _candle(108, 125, 105, 120, offset_hours=3),
+        ]
+        result_no_funding = _engine().run(candles_no_funding, _long_at(0, sl=80.0, tp=120.0))
+
+        assert result_with_funding.trades[0].net_pnl_usdt < result_no_funding.trades[0].net_pnl_usdt
+        assert result_with_funding.trades[0].funding_cost_usdt > _D("0")
+
+
+class TestLatency:
+    def test_extra_latency_delays_fill_by_n_candles(self) -> None:
+        """Con latency_candles=1, la señal en candle 0 llena en candle 2 (1+1)."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # 0: señal LONG
+            _candle(102, 108, 98, 105, offset_hours=1),  # 1: retardo, no fill
+            _candle(105, 110, 100, 108, offset_hours=2),  # 2: fill aquí (open=105)
+            _candle(108, 130, 100, 125, offset_hours=3),  # 3: TP
+        ]
+        engine = _engine(latency=1)
+        result = engine.run(candles, _long_at(0, sl=80.0, tp=125.0))
+
+        assert result.total_trades == 1
+        trade = result.trades[0]
+        assert trade.entry_candle_index == 2
+
+
+class TestMetrics:
+    def test_win_rate_computed_correctly(self) -> None:
+        """2 trades ganadores de 2 totales → win_rate = 1.0."""
+        # Dos señales LONG que tocan TP
+        candles = [
+            # Trade 1
+            _candle(100, 105, 95, 102, offset_hours=0),  # señal 1
+            _candle(100, 110, 95, 108, offset_hours=1),  # fill 1
+            _candle(108, 125, 105, 120, offset_hours=2),  # TP 1
+            # Trade 2
+            _candle(120, 125, 115, 122, offset_hours=3),  # señal 2
+            _candle(120, 130, 115, 128, offset_hours=4),  # fill 2
+            _candle(128, 145, 120, 140, offset_hours=5),  # TP 2
+        ]
+
+        def _two_longs(idx: int, hist: tuple) -> TradeSignal:
+            if idx in (0, 3):
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("80"),
+                    take_profit=_D("125") if idx == 0 else _D("145"),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine().run(candles, _two_longs)
+        assert result.total_trades == 2
+        assert result.winning_trades == 2
+        assert result.win_rate == 1.0
+
+    def test_empty_candles_produces_none_metrics(self) -> None:
+        result = _engine().run([], _no_op)
+        assert result.win_rate is None
+        assert result.sharpe_ratio is None
+        assert result.max_drawdown_pct is None
