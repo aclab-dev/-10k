@@ -815,7 +815,7 @@ class StrategySetup(Base):
     __tablename__ = "strategy_setups"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
     slug: Mapped[str] = mapped_column(String(96), nullable=False)
     version: Mapped[str] = mapped_column(String(16), nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False, default=dict)

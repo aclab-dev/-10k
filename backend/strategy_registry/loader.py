@@ -21,7 +21,7 @@ def build_registry_from_config(cfg: SetupRegistryConfig) -> StrategySetupRegistr
     for name in cfg.initial_setups:
         try:
             registry.register(SetupRegistrationRequest(name=name))
-        except Exception as exc:
+        except ValueError as exc:
             raise ValueError(
                 f"Error registrando setup inicial '{name}' desde config: {exc}"
             ) from exc

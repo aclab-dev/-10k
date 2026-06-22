@@ -84,6 +84,7 @@ class StrategySetupRegistry:
         Si allow_unregistered=True y el setup no existe, retorna una definición
         mínima con slug/version derivados del nombre.
         Lanza SetupNotRegisteredError si allow_unregistered=False y no existe.
+        Lanza ValueError si allow_unregistered=True pero el nombre tiene formato inválido.
         """
         definition = self._setups.get(setup_name)
         if definition is not None:
