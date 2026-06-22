@@ -30,9 +30,7 @@ class PartialFillModel:
 
     def __init__(self, fill_ratio: Decimal = _DEFAULT_FILL_RATIO) -> None:
         if not (Decimal("0") <= fill_ratio <= Decimal("1")):
-            raise ValueError(
-                f"fill_ratio must be in [0, 1], got {fill_ratio}"
-            )
+            raise ValueError(f"fill_ratio must be in [0, 1], got {fill_ratio}")
         self._fill_ratio = fill_ratio
 
     @property
@@ -52,9 +50,7 @@ class PartialFillModel:
             ValueError: if *requested_quantity* is negative.
         """
         if requested_quantity < Decimal("0"):
-            raise ValueError(
-                f"requested_quantity must be >= 0, got {requested_quantity}"
-            )
+            raise ValueError(f"requested_quantity must be >= 0, got {requested_quantity}")
         return (requested_quantity * self._fill_ratio).quantize(_QUANT)
 
     def is_partial(self, requested_quantity: Decimal) -> bool:
