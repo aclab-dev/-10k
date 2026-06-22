@@ -127,7 +127,9 @@ class TestCostAggregation:
     def test_net_pnl_deducts_all_costs(self) -> None:
         result = _make_result(fee_usdt=Decimal("0.05"), slippage_usdt=Decimal("0.02"))
         pnl = [Decimal("10")]
-        m = compute_backtesting_metrics([result], realized_pnl_per_trade=pnl, total_funding_usdt=Decimal("1"))
+        m = compute_backtesting_metrics(
+            [result], realized_pnl_per_trade=pnl, total_funding_usdt=Decimal("1")
+        )
         # net = 10 - 0.05 - 0.02 - 1 = 8.93
         assert m.net_pnl_usdt == Decimal("8.93000000")
 

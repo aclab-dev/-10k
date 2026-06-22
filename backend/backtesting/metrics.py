@@ -31,7 +31,7 @@ class BacktestingMetrics:
     win_rate: float | None
 
     @classmethod
-    def empty(cls) -> "BacktestingMetrics":
+    def empty(cls) -> BacktestingMetrics:
         return cls(
             total_trades=0,
             full_fills=0,
