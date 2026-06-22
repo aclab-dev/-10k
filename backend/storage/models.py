@@ -808,6 +808,31 @@ class KillSwitchEvent(Base):
     bot_run: Mapped[BotRun] = relationship(back_populates="kill_switch_events")
 
 
+# ---------------------------------------------------------------------------
+# 28. strategy_setups  (F12 — Strategy/Setup Registry)
+# ---------------------------------------------------------------------------
+class StrategySetup(Base):
+    __tablename__ = "strategy_setups"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    slug: Mapped[str] = mapped_column(String(96), nullable=False)
+    version: Mapped[str] = mapped_column(String(16), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False, default=dict)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", PgJSON, nullable=False, default=dict
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+    __table_args__ = (UniqueConstraint("name", name="uq_strategy_setups_name"),)
+
+
 __all__ = [
     "Base",
     "BotRun",
@@ -837,4 +862,5 @@ __all__ = [
     "SystemEvent",
     "ErrorRecord",
     "KillSwitchEvent",
+    "StrategySetup",
 ]

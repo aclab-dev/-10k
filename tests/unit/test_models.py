@@ -38,6 +38,7 @@ from backend.storage.models import (
     QuantSignal,
     RiskValidation,
     StrategyPerformance,
+    StrategySetup,
     SystemEvent,
     TokenUsage,
     Trade,
@@ -72,6 +73,7 @@ ALL_EXPECTED_TABLES = {
     "system_events",
     "errors",
     "kill_switch_events",
+    "strategy_setups",
 }
 
 
@@ -123,7 +125,7 @@ def _make_bot_run(session: Session) -> BotRun:
 
 
 class TestTableCoverage:
-    def test_all_27_tables_registered(self, engine):
+    def test_all_28_tables_registered(self, engine):
         inspector = inspect(engine)
         actual = set(inspector.get_table_names())
         assert actual == ALL_EXPECTED_TABLES, (
@@ -131,8 +133,8 @@ class TestTableCoverage:
             f"Tablas extra: {actual - ALL_EXPECTED_TABLES}"
         )
 
-    def test_base_metadata_has_27_tables(self):
-        assert len(Base.metadata.tables) == 27
+    def test_base_metadata_has_28_tables(self):
+        assert len(Base.metadata.tables) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -739,3 +741,45 @@ class TestStrategyPerformance:
         session.flush()
         assert sp.period_start is None
         assert sp.period_end is None
+
+
+# ---------------------------------------------------------------------------
+# 28. strategy_setups  (F12)
+# ---------------------------------------------------------------------------
+
+
+class TestStrategySetup:
+    def test_create_and_read(self, session):
+        setup = StrategySetup(
+            id=_uid(),
+            name="breakout_pullback_v1",
+            slug="breakout_pullback",
+            version="v1",
+            parameters={},
+            metadata_={},
+            is_active=True,
+        )
+        session.add(setup)
+        session.flush()
+        fetched = session.get(StrategySetup, setup.id)
+        assert fetched is not None
+        assert fetched.name == "breakout_pullback_v1"
+        assert fetched.slug == "breakout_pullback"
+        assert fetched.version == "v1"
+        assert fetched.is_active is True
+
+    def test_parameters_and_metadata_stored_as_json(self, session):
+        setup = StrategySetup(
+            id=_uid(),
+            name="trend_continuation_v1",
+            slug="trend_continuation",
+            version="v1",
+            parameters={"min_confidence_override": 0.80, "preferred_regimes": ["TRENDING_UP"]},
+            metadata_={"description": "Trend continuation setup", "author": "quant_team"},
+            is_active=True,
+        )
+        session.add(setup)
+        session.flush()
+        fetched = session.get(StrategySetup, setup.id)
+        assert fetched.parameters["min_confidence_override"] == 0.80
+        assert fetched.metadata_["author"] == "quant_team"
