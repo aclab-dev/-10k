@@ -14,12 +14,13 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
+from backend.backtesting.constants import QUANT as _QUANT
+
 Side = Literal["BUY", "SELL"]
 
 _DEFAULT_LATENCY_MS: int = 50
 _DEFAULT_BPS_PER_MS: Decimal = Decimal("0.002")
 _BASIS: Decimal = Decimal("10000")
-_QUANT: Decimal = Decimal("0.00000001")
 
 _VALID_SIDES: frozenset[str] = frozenset({"BUY", "SELL"})
 
@@ -85,8 +86,8 @@ class LatencyModel:
         factor = total_bps / _BASIS
 
         if side == "BUY":
-            return (price * (1 + factor)).quantize(_QUANT)
-        return (price * (1 - factor)).quantize(_QUANT)
+            return (price * (Decimal("1") + factor)).quantize(_QUANT)
+        return (price * (Decimal("1") - factor)).quantize(_QUANT)
 
     def latency_cost_usdt(self, price: Decimal, quantity: Decimal, side: Side) -> Decimal:
         """Return the USDT cost attributable to latency for a given fill.

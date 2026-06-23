@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from backend.exchange_adapters.schemas import OrderResult, OrderStatus
 
-_QUANT = Decimal("0.00000001")
+from backend.backtesting.constants import QUANT as _QUANT
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class BacktestingMetrics:
     gross_pnl_usdt: Decimal
     net_pnl_usdt: Decimal
     win_count: int
-    loss_count: int
+    non_winning_count: int  # trades with PnL <= 0 (includes break-even)
     win_rate: float | None
 
     @classmethod
@@ -42,7 +42,7 @@ class BacktestingMetrics:
             gross_pnl_usdt=Decimal("0"),
             net_pnl_usdt=Decimal("0"),
             win_count=0,
-            loss_count=0,
+            non_winning_count=0,
             win_rate=None,
         )
 
@@ -87,12 +87,12 @@ def compute_backtesting_metrics(
     if realized_pnl_per_trade is not None:
         gross_pnl = sum(realized_pnl_per_trade, Decimal("0")).quantize(_QUANT)
         win_count = sum(1 for p in realized_pnl_per_trade if p > Decimal("0"))
-        loss_count = sum(1 for p in realized_pnl_per_trade if p <= Decimal("0"))
+        non_winning_count = sum(1 for p in realized_pnl_per_trade if p <= Decimal("0"))
         win_rate: float | None = win_count / len(realized_pnl_per_trade)
     else:
         gross_pnl = Decimal("0")
         win_count = 0
-        loss_count = 0
+        non_winning_count = 0
         win_rate = None
 
     funding = total_funding_usdt.quantize(_QUANT)
@@ -108,6 +108,6 @@ def compute_backtesting_metrics(
         gross_pnl_usdt=gross_pnl,
         net_pnl_usdt=net_pnl,
         win_count=win_count,
-        loss_count=loss_count,
+        non_winning_count=non_winning_count,
         win_rate=win_rate,
     )

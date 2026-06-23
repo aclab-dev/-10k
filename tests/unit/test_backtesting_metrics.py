@@ -150,7 +150,7 @@ class TestWinRate:
         m = compute_backtesting_metrics(results, realized_pnl_per_trade=pnl)
         assert m.win_rate == pytest.approx(1.0)
         assert m.win_count == 2
-        assert m.loss_count == 0
+        assert m.non_winning_count == 0
 
     def test_win_rate_zero_when_all_losses(self) -> None:
         results = [_make_result(), _make_result()]
@@ -158,7 +158,7 @@ class TestWinRate:
         m = compute_backtesting_metrics(results, realized_pnl_per_trade=pnl)
         assert m.win_rate == pytest.approx(0.0)
         assert m.win_count == 0
-        assert m.loss_count == 2
+        assert m.non_winning_count == 2
 
     def test_win_rate_fifty_percent(self) -> None:
         results = [_make_result(), _make_result()]
@@ -171,7 +171,7 @@ class TestWinRate:
         pnl = [Decimal("0")]
         m = compute_backtesting_metrics(results, realized_pnl_per_trade=pnl)
         assert m.win_count == 0
-        assert m.loss_count == 1
+        assert m.non_winning_count == 1
 
     def test_pnl_length_mismatch_raises(self) -> None:
         results = [_make_result(), _make_result()]

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from backend.backtesting.constants import QUANT as _QUANT
+
 _DEFAULT_FILL_RATIO: Decimal = Decimal("1.0")
-_QUANT: Decimal = Decimal("0.00000001")
 
 
 class PartialFillModel:
