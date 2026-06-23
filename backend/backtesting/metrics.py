@@ -9,9 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from backend.exchange_adapters.schemas import OrderResult, OrderStatus
-
 from backend.backtesting.constants import QUANT as _QUANT
+from backend.exchange_adapters.schemas import OrderResult, OrderStatus
 
 
 @dataclass(frozen=True)
