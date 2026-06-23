@@ -53,7 +53,7 @@ class TestLatencyModelCustomParams:
         model = LatencyModel(latency_ms=100, bps_per_ms=Decimal("0.001"))
         price = Decimal("10000")
         # total_bps = 0.001 * 100 = 0.1 BPS; factor = 0.1 / 10000 = 0.00001
-        expected = (price * (1 + Decimal("0.001") * 100 / Decimal("10000"))).quantize(
+        expected = (price * (Decimal("1") + Decimal("0.001") * 100 / Decimal("10000"))).quantize(
             Decimal("0.00000001")
         )
         assert model.apply(price, "BUY") == expected
