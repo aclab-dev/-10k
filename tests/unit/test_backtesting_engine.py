@@ -12,6 +12,9 @@ Cobertura:
 - NO_OP y CLOSE_SIGNAL sin posición no crean trade.
 - CLOSE_SIGNAL cierra posición al open del siguiente candle.
 - Sin candles → resultado vacío.
+- Segunda señal con pending_entry activa se descarta silenciosamente.
+- Gap de precio en candle de fill que viola SL → SL se activa ese mismo candle.
+- sortino_ratio con todos los trades ganadores devuelve None (downside dev = 0).
 """
 
 from __future__ import annotations
@@ -481,3 +484,62 @@ class TestEdgeCases:
         result = engine.run(candles, provider)
         # La entrada nunca se llena porque no hay candles suficientes
         assert result.total_trades == 0
+
+    def test_segunda_senal_con_pending_entry_activa_se_descarta(self) -> None:
+        """Segunda señal LONG mientras hay una entrada pendiente → se ignora."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # señal LONG → fill en candle 1
+            _candle(102, 108, 98, 105, offset_hours=1),  # fill + otra señal LONG
+            _candle(105, 110, 100, 108, offset_hours=2),
+            _candle(108, 115, 85, 90, offset_hours=3),  # SL hit
+        ]
+
+        call_count = [0]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            call_count[0] += 1
+            # Siempre emite LONG; la segunda señal (idx=1) debe ser descartada
+            return TradeSignal(
+                action="LONG",
+                stop_loss=_D("85"),
+                take_profit=_D("200"),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+
+        result = _engine().run(candles, _provider)
+        # Solo debe haber 1 trade, no 2
+        assert result.total_trades == 1
+
+    def test_gap_de_precio_en_fill_viola_sl_antes_del_primer_check(self) -> None:
+        """Si el fill ocurre en un candle cuyo low ya tocó el SL (gap bajista),
+        el SL no se activa hasta el check de ese mismo candle."""
+        # Señal LONG en candle 0 → fill en candle 1 al open=50
+        # SL=80 pero el candle 1 abre en 50 (gap bajista extremo), low=45
+        # El fill se ejecuta en open=50 y luego el SL se comprueba en el mismo candle
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(50, 55, 45, 52, offset_hours=1),  # gap down: fill al open=50, SL hit
+            _candle(52, 60, 48, 55, offset_hours=2),
+        ]
+        provider = _long_at(0, sl=80.0, tp=200.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "SL"
+        assert result.trades[0].exit_candle_index == 1
+
+    def test_sortino_ratio_con_todos_los_trades_ganadores_es_none(self) -> None:
+        """Cuando no hay retornos negativos, sortino_ratio debe devolver None
+        (no se puede dividir por 0 downside deviation)."""
+        # 2 candles: señal LONG → fill → TP hit inmediato
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 150, 100, 145, offset_hours=1),  # TP hit en candle 1
+        ]
+        provider = _long_at(0, sl=80.0, tp=130.0)
+        result = _engine().run(candles, provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "TP"
+        assert result.sortino_ratio is None

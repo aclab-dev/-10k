@@ -37,6 +37,8 @@ def compute_backtest_metrics(
     """
     total = len(trades)
     winning = sum(1 for t in trades if t.net_pnl_usdt > _ZERO)
+    # Breakeven (net_pnl == 0) cuenta como losing: clasificación conservadora
+    # coherente con profit_factor (breakeven no aporta al numerador).
     losing = sum(1 for t in trades if t.net_pnl_usdt <= _ZERO)
 
     gross_pnl = sum((t.gross_pnl_usdt for t in trades), _ZERO)

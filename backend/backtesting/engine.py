@@ -310,12 +310,11 @@ class BacktestingEngine:
         else:
             gross_pnl = ((pos.entry_price - exit_fill) * pos.quantity).quantize(_QUANT)
 
-        # Funding pendiente en el candle de cierre
-        funding_at_close = _ZERO
-        if close_candle.funding_rate != _ZERO:
-            funding_at_close = self._compute_funding(pos, close_candle)
-
-        total_funding = pos.accrued_funding_usdt + funding_at_close
+        # El funding del candle de cierre ya fue acumulado en step 4 del loop
+        # (solo si la posición sobrevivió hasta el final de ese candle, i.e. END_OF_DATA).
+        # Para SL/TP y CLOSE_SIGNAL la posición cerró antes del cierre del candle →
+        # step 4 nunca se ejecutó para ese candle → no hay double-charge.
+        total_funding = pos.accrued_funding_usdt
 
         net_pnl = (
             gross_pnl
@@ -326,7 +325,7 @@ class BacktestingEngine:
             - total_funding
         ).quantize(_QUANT)
 
-        return ClosedTrade(
+        trade = ClosedTrade(
             side=pos.side,
             entry_candle_index=pos.entry_candle_index,
             exit_candle_index=exit_candle_index,
@@ -345,6 +344,15 @@ class BacktestingEngine:
             net_pnl_usdt=net_pnl,
             hold_candles=exit_candle_index - pos.entry_candle_index,
         )
+        _log.debug(
+            "position_closed",
+            exit_reason=exit_reason,
+            side=pos.side,
+            exit_candle=exit_candle_index,
+            exit_price=str(exit_fill),
+            net_pnl=str(net_pnl),
+        )
+        return trade
 
     def _compute_funding(self, pos: OpenPosition, candle: CandleRow) -> Decimal:
         """Calcula el pago de funding para este candle.
@@ -353,6 +361,10 @@ class BacktestingEngine:
         Convención de futuros perpetuos:
           - Rate positivo + LONG: pagamos.
           - Rate positivo + SHORT: recibimos.
+
+        MVP: usa `candle.close` como precio de notional en todos los candles,
+        incluyendo el de apertura de posición. El error es mínimo en timeframes
+        cortos; una versión más precisa usaría el precio de fill de entrada.
         """
         notional = pos.quantity * candle.close
         if pos.side == "LONG":
