@@ -426,3 +426,58 @@ class TestMetrics:
         assert result.win_rate is None
         assert result.sharpe_ratio is None
         assert result.max_drawdown_pct is None
+
+
+class TestEdgeCases:
+    def test_funding_negativo_short_recibe_ingreso(self) -> None:
+        """Rate positivo + SHORT → recibe funding (net_pnl > mismo trade sin funding)."""
+        candles_with = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 104, 96, 101, offset_hours=1),  # fill SHORT
+            _candle(101, 103, 90, 92, offset_hours=2, funding_rate=0.001),  # recibe funding
+            _candle(92, 95, 75, 78, offset_hours=3),  # TP hit
+        ]
+        candles_without = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(100, 104, 96, 101, offset_hours=1),
+            _candle(101, 103, 90, 92, offset_hours=2, funding_rate=0.0),
+            _candle(92, 95, 75, 78, offset_hours=3),
+        ]
+        provider = _short_at(0, sl=120.0, tp=78.0)
+
+        result_with = _engine().run(candles_with, provider)
+        result_without = _engine().run(candles_without, provider)
+
+        assert result_with.total_trades == 1
+        # SHORT con funding positivo recibe pago → funding_cost negativo → mayor net_pnl
+        assert result_with.trades[0].funding_cost_usdt < _D("0")
+        assert result_with.trades[0].net_pnl_usdt > result_without.trades[0].net_pnl_usdt
+
+    def test_close_signal_sin_posicion_es_noop(self) -> None:
+        """CLOSE emitido cuando no hay posición abierta no debe abrir ni cerrar nada."""
+        candles = [_candle(100 + i, 110 + i, 90 + i, 105 + i, offset_hours=i) for i in range(4)]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 1:
+                return TradeSignal(action="CLOSE")  # no hay posición abierta
+            return TradeSignal(action="NO_OP")
+
+        result = _engine().run(candles, _provider)
+        assert result.total_trades == 0
+
+    def test_latencia_que_supera_fin_de_datos_cierra_por_end_of_data(self) -> None:
+        """Señal LONG en el último candle con latency=2 → fill nunca ocurre.
+
+        La posición pendiente no se llena, no hay trade cerrado.
+        """
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),
+            _candle(105, 110, 100, 108, offset_hours=2),  # señal LONG aquí (último candle)
+        ]
+        provider = _long_at(2, sl=80.0, tp=150.0)  # señal en candle 2 = último
+        engine = _engine(latency=2)  # fill se haría en candle 2+1+2=5, fuera de rango
+
+        result = engine.run(candles, provider)
+        # La entrada nunca se llena porque no hay candles suficientes
+        assert result.total_trades == 0

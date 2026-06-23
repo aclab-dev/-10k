@@ -11,23 +11,25 @@ Garantías:
 
 Flujo por candle i:
   1. Fill de entrada pendiente (si i >= fill_candle_index).
-  2. Check SL/TP intra-candle (si hay posición abierta).
-  3. Aplicar funding acumulado al close del candle.
-  4. Llamar al SignalProvider con history = candles[0:i] (inmutable, sin candle i).
-  5. Encolar nueva entrada o marcar cierre según la señal.
+  2. Cierre solicitado por señal CLOSE (si i >= pending_close_index).
+  3. Check SL/TP intra-candle (si hay posición abierta).
+  4. Acumular funding al close del candle.
+  5. Llamar al SignalProvider con history = candles[0:i] (inmutable, sin candle i).
 
 Al final de los datos: cierra posición abierta al close del último candle.
+
+Nota: una señal CLOSE emitida en el último candle produce un cierre con
+exit_reason="END_OF_DATA" porque no hay candle siguiente para ejecutarla.
 """
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 from typing import Protocol
 
 import structlog
 
-from backend.backtesting.fee_model import FeeModel
+from backend.backtesting.fee_model import FeeModel, OrderType
 from backend.backtesting.latency_model import LatencyModel
 from backend.backtesting.metrics import compute_backtest_metrics
 from backend.backtesting.schemas import (
@@ -38,7 +40,7 @@ from backend.backtesting.schemas import (
     OpenPosition,
     TradeSignal,
 )
-from backend.backtesting.slippage_model import SlippageModel
+from backend.backtesting.slippage_model import Side, SlippageModel
 
 _log = structlog.get_logger(__name__)
 _QUANT = Decimal("0.00000001")
@@ -70,6 +72,11 @@ class BacktestingEngine:
         fee_model: modelo de fees (por defecto: taker 0.05%, maker 0.02%).
         slippage_model: modelo de slippage (por defecto: 2 BPS en MARKET/STOP).
         latency_model: modelo de latencia extra (por defecto: 0 candles adicionales).
+
+    Nota de rendimiento: la tupla de history se construye en O(n²) total
+    (cada iteración crea una nueva tupla). Aceptable para MVP (<50k candles).
+    Para volúmenes mayores, reemplazar con una lista interna y convertir a tupla
+    solo al llamar al provider.
     """
 
     def __init__(
@@ -97,6 +104,10 @@ class BacktestingEngine:
 
         Returns:
             BacktestRunResult con la lista de trades cerrados y métricas agregadas.
+
+        Nota: una señal CLOSE emitida en el último candle no puede ejecutarse
+        porque no hay candle siguiente. La posición se cierra con
+        exit_reason="END_OF_DATA" al precio de cierre del último candle.
         """
         if not candles:
             return self._empty_result()
@@ -138,7 +149,7 @@ class BacktestingEngine:
                         exit_candle_index=i,
                         exit_reason="CLOSE_SIGNAL",
                         close_candle=candle,
-                        is_market=True,
+                        order_type="MARKET",
                     )
                     closed_trades.append(trade)
                     open_pos = None
@@ -188,7 +199,7 @@ class BacktestingEngine:
                 exit_candle_index=len(candles) - 1,
                 exit_reason="END_OF_DATA",
                 close_candle=last,
-                is_market=False,  # close al precio de cierre, sin slippage adicional
+                order_type="LIMIT",  # close al precio de cierre, sin slippage adverso adicional
             )
             closed_trades.append(trade)
 
@@ -211,19 +222,24 @@ class BacktestingEngine:
         candle_index: int,
     ) -> OpenPosition:
         """Abre una posición simulada al open del candle con slippage de MARKET order."""
-        assert signal.stop_loss is not None
-        assert signal.take_profit is not None
+        if signal.stop_loss is None or signal.take_profit is None:
+            raise ValueError(
+                f"stop_loss y take_profit son obligatorios para señales {signal.action}"
+            )
 
-        side_str = "BUY" if signal.action == "LONG" else "SELL"
-        fill_price = self._slip.apply(candle.open, side_str, "MARKET")  # type: ignore[arg-type]
+        buy_side: Side = "BUY"
+        sell_side: Side = "SELL"
+        entry_side: Side = buy_side if signal.action == "LONG" else sell_side
+        order_type: OrderType = "MARKET"
+
+        fill_price = self._slip.apply(candle.open, entry_side, order_type)
         notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
         quantity = (notional / fill_price).quantize(_QUANT)
-        fee = self._fee.calculate(notional, "MARKET")
+        fee = self._fee.calculate(notional, order_type)
         slippage_cost = abs(fill_price - candle.open) * quantity
 
         return OpenPosition(
-            position_id=str(uuid.uuid4()),
-            side=signal.action,  # type: ignore[arg-type]
+            side=signal.action,  # type: ignore[arg-type]  # Literal["LONG","SHORT"] ⊂ str
             entry_candle_index=candle_index,
             entry_price=fill_price,
             stop_loss=signal.stop_loss,
@@ -246,8 +262,8 @@ class BacktestingEngine:
 
         Regla conservadora: si ambos se tocan en el mismo candle, gana el SL.
         Precio de fill:
-          - SL: precio exacto del stop_loss (puede existir gap adverso, aquí ignorado).
-          - TP: precio exacto del take_profit.
+          - SL: precio exacto del stop_loss + slippage adverso (MARKET).
+          - TP: precio exacto del take_profit sin slippage adicional (LIMIT-like).
         """
         sl_hit = candle.low <= pos.stop_loss if pos.side == "LONG" else candle.high >= pos.stop_loss
         tp_hit = (
@@ -261,7 +277,7 @@ class BacktestingEngine:
                 exit_candle_index=candle_index,
                 exit_reason="SL",
                 close_candle=candle,
-                is_market=True,
+                order_type="MARKET",
             )
         if tp_hit:
             return self._close_position(
@@ -270,7 +286,7 @@ class BacktestingEngine:
                 exit_candle_index=candle_index,
                 exit_reason="TP",
                 close_candle=candle,
-                is_market=False,  # TP es limit-like: sin slippage adicional
+                order_type="LIMIT",
             )
         return None
 
@@ -281,31 +297,20 @@ class BacktestingEngine:
         exit_candle_index: int,
         exit_reason: str,
         close_candle: CandleRow,
-        is_market: bool,
+        order_type: OrderType,
     ) -> ClosedTrade:
         """Cierra la posición y calcula el PnL neto."""
-        side_str = "SELL" if pos.side == "LONG" else "BUY"
-        order_type = "MARKET" if is_market else "LIMIT"
-
-        if is_market:
-            exit_fill = self._slip.apply(close_price, side_str, "MARKET")  # type: ignore[arg-type]
-        else:
-            exit_fill = close_price
-
+        exit_side: Side = "SELL" if pos.side == "LONG" else "BUY"
+        exit_fill = self._slip.apply(close_price, exit_side, order_type)
         exit_slippage = abs(exit_fill - close_price) * pos.quantity
+        exit_fee = self._fee.calculate((exit_fill * pos.quantity).quantize(_QUANT), order_type)
 
-        exit_fee = self._fee.calculate(
-            (exit_fill * pos.quantity).quantize(_QUANT),
-            order_type,  # type: ignore[arg-type]
-        )
-
-        # Gross PnL en USDT
         if pos.side == "LONG":
             gross_pnl = ((exit_fill - pos.entry_price) * pos.quantity).quantize(_QUANT)
         else:
             gross_pnl = ((pos.entry_price - exit_fill) * pos.quantity).quantize(_QUANT)
 
-        # Aplicar funding pendiente en el candle de cierre si aplica
+        # Funding pendiente en el candle de cierre
         funding_at_close = _ZERO
         if close_candle.funding_rate != _ZERO:
             funding_at_close = self._compute_funding(pos, close_candle)
@@ -322,7 +327,6 @@ class BacktestingEngine:
         ).quantize(_QUANT)
 
         return ClosedTrade(
-            trade_id=str(uuid.uuid4()),
             side=pos.side,
             entry_candle_index=pos.entry_candle_index,
             exit_candle_index=exit_candle_index,
@@ -346,7 +350,7 @@ class BacktestingEngine:
         """Calcula el pago de funding para este candle.
 
         Positivo → nosotros pagamos. Negativo → recibimos.
-        El signo respeta la convención de futuros perpetuos:
+        Convención de futuros perpetuos:
           - Rate positivo + LONG: pagamos.
           - Rate positivo + SHORT: recibimos.
         """

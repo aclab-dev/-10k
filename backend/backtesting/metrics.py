@@ -111,7 +111,10 @@ def _max_drawdown(trades: list[ClosedTrade], initial_balance: Decimal) -> float 
 
 
 def _sharpe_ratio(trades: list[ClosedTrade]) -> float | None:
-    """Sharpe ratio de los retornos por trade (sin anualización por timeframe desconocido)."""
+    """Sharpe ratio calculado sobre PnL absoluto en USDT (no sobre retornos porcentuales).
+
+    Nota: solo es comparable entre runs con el mismo margin_usdt. Sin anualización.
+    """
     if len(trades) < 2:
         return None
 
@@ -126,7 +129,10 @@ def _sharpe_ratio(trades: list[ClosedTrade]) -> float | None:
 
 
 def _sortino_ratio(trades: list[ClosedTrade]) -> float | None:
-    """Sortino ratio usando solo la desviación negativa."""
+    """Sortino ratio calculado sobre PnL absoluto en USDT (no sobre retornos porcentuales).
+
+    Nota: solo es comparable entre runs con el mismo margin_usdt. Sin anualización.
+    """
     if len(trades) < 2:
         return None
 

@@ -70,7 +70,7 @@ class TradeSignal(BaseModel):
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None
     leverage: int = Field(default=1, ge=1, le=10)
-    margin_usdt: Decimal = Field(default=Decimal("10"), gt=Decimal("0"), le=Decimal("10"))
+    margin_usdt: Decimal = Field(default=Decimal("10"), gt=Decimal("0"))
 
     model_config = {"frozen": True}
 
