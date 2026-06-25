@@ -26,7 +26,7 @@ from backend.backtesting.schemas import (
 )
 from backend.backtesting.validation import (
     assert_history_immutable,
-    detect_parameter_snooping,
+    assert_no_parameter_snooping,
     split_dataset,
     walk_forward_splits,
 )
@@ -89,11 +89,11 @@ class TestAssertHistoryImmutable:
 # ---------------------------------------------------------------------------
 
 
-class TestDetectParameterSnooping:
+class TestAssertNoParameterSnooping:
     def test_no_overlap_is_ok(self) -> None:
         train = _candles(5)
         test = [_candle(200.0, offset_hours=5 + i) for i in range(5)]
-        detect_parameter_snooping(train, test)  # no debe lanzar
+        assert_no_parameter_snooping(train, test)  # no debe lanzar
 
     def test_overlap_raises(self) -> None:
         candles = _candles(10)
@@ -101,24 +101,24 @@ class TestDetectParameterSnooping:
         # test incluye el candle 6 (solapamiento)
         test = candles[6:]
         with pytest.raises(ValueError, match="Data snooping detectado"):
-            detect_parameter_snooping(train, test)
+            assert_no_parameter_snooping(train, test)
 
     def test_full_overlap_raises(self) -> None:
         candles = _candles(5)
         with pytest.raises(ValueError, match="Data snooping detectado"):
-            detect_parameter_snooping(candles, candles)
+            assert_no_parameter_snooping(candles, candles)
 
     def test_overlap_reports_count(self) -> None:
         candles = _candles(10)
         train = candles[:8]
         test = candles[5:]  # 3 candles solapados (5,6,7)
         with pytest.raises(ValueError, match="3 candle"):
-            detect_parameter_snooping(train, test)
+            assert_no_parameter_snooping(train, test)
 
     def test_accepts_tuples(self) -> None:
         train = tuple(_candles(4))
-        test = tuple([_candle(200.0, offset_hours=4 + i) for i in range(4)])
-        detect_parameter_snooping(train, test)  # no debe lanzar
+        test = tuple(_candle(200.0, offset_hours=4 + i) for i in range(4))
+        assert_no_parameter_snooping(train, test)  # no debe lanzar
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +229,13 @@ class TestWalkForwardSplits:
             assert isinstance(fold.train, tuple)
             assert isinstance(fold.test, tuple)
 
+    def test_n_folds_1_boundary(self) -> None:
+        """n_folds=1 es el mínimo válido: un único fold que cubre todo el test pool."""
+        folds = walk_forward_splits(_candles(15), n_folds=1, min_train_candles=5)
+        assert len(folds) == 1
+        assert len(folds[0].train) == 5
+        assert len(folds[0].test) == 10  # todos los candles restantes
+
     def test_invalid_n_folds_raises(self) -> None:
         with pytest.raises(ValueError, match="n_folds"):
             walk_forward_splits(_candles(20), n_folds=0)
@@ -266,20 +273,22 @@ class TestOverfittingDemo:
         return BacktestingEngine(config)
 
     def test_is_outperforms_oos_with_overfitted_strategy(self) -> None:
-        """Una strategy que 'memoriza' el IS supera al OOS donde no puede mirar."""
+        """Una strategy que 'memoriza' el IS no genera trades en OOS.
+
+        La estrategia usa `is_candle_set` para decidir cuándo entrar: solo dispara
+        en candles cuyo timestamp pertenece al IS. En OOS esos timestamps no existen,
+        por lo que `total_trades == 0` es el outcome esperado y correcto — demuestra
+        que el conocimiento del IS no transfiere al OOS.
+        """
         candles = _candles(40)
         split = split_dataset(candles, train_ratio=0.5)
 
-        # Estrategia que "sabe" exactamente cuándo entrar en IS (lookahead real)
-        # Esto simula un parámetro overfitteado: sl/tp elegidos a dedo en IS.
-        # En IS actúa con todos los candles conocidos → siempre TP.
         is_candle_set = {c.timestamp_utc for c in split.train}
 
         def overfitted_provider(idx: int, hist: tuple[CandleRow, ...]) -> TradeSignal:
             if not hist:
                 return TradeSignal(action="NO_OP")
             last = hist[-1]
-            # En IS: entra siempre con SL muy ajustado (simulado)
             if last.timestamp_utc in is_candle_set and idx % 5 == 0:
                 return TradeSignal(
                     action="LONG",
@@ -292,8 +301,12 @@ class TestOverfittingDemo:
         is_result = engine.run(list(split.train), overfitted_provider)
         oos_result = engine.run(list(split.test), overfitted_provider)
 
-        # En OOS la estrategia no encuentra señales (is_candle_set no incluye OOS)
-        assert oos_result.total_trades == 0 or oos_result.total_net_pnl <= is_result.total_net_pnl
+        # IS genera trades; OOS no puede porque los timestamps IS no aparecen ahí
+        assert is_result.total_trades > 0, "La estrategia debe generar trades en IS"
+        assert oos_result.total_trades == 0, (
+            "La estrategia overfitteada no debe encontrar señales en OOS "
+            "(los timestamps IS no existen en el conjunto de test)"
+        )
 
     def test_walk_forward_train_never_leaks_to_test(self) -> None:
         """Cada fold de walk-forward garantiza aislamiento temporal."""
@@ -301,8 +314,7 @@ class TestOverfittingDemo:
         folds = walk_forward_splits(candles, n_folds=4, min_train_candles=10)
 
         for fold in folds:
-            # detect_parameter_snooping no debe lanzar en ningún fold
-            detect_parameter_snooping(fold.train, fold.test)
+            assert_no_parameter_snooping(fold.train, fold.test)
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ def assert_history_immutable(history: tuple[CandleRow, ...]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def detect_parameter_snooping(
+def assert_no_parameter_snooping(
     train_candles: tuple[CandleRow, ...] | list[CandleRow],
     eval_candles: tuple[CandleRow, ...] | list[CandleRow],
 ) -> None:
@@ -76,9 +76,9 @@ def detect_parameter_snooping(
         )
 
     _log.debug(
-        "detect_parameter_snooping.ok",
-        train_size=len(list(train_candles)),
-        eval_size=len(list(eval_candles)),
+        "assert_no_parameter_snooping.ok",
+        train_size=len(train_candles),
+        eval_size=len(eval_candles),
     )
 
 
