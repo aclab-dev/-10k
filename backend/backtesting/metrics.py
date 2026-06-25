@@ -1,112 +1,151 @@
-"""Backtesting session metrics aggregator.
+"""Cálculo de métricas de performance para el Backtesting Engine (F12 [90]).
 
-Computes aggregate cost and fill statistics from a list of OrderResult
-objects produced by the PaperAdapter during a backtesting run.
+Todas las funciones son puras: misma lista de ClosedTrade → mismos valores.
+No hay estado ni side-effects.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from decimal import Decimal
 
-from backend.backtesting.constants import QUANT as _QUANT
-from backend.exchange_adapters.schemas import OrderResult, OrderStatus
+from backend.backtesting.schemas import BacktestRunResult, ClosedTrade
+
+_QUANT = Decimal("0.00000001")
+_ZERO = Decimal("0")
+_RISK_FREE_RATE = 0.0  # asumimos 0 para sharpe/sortino en crypto
 
 
-@dataclass(frozen=True)
-class BacktestingMetrics:
-    """Aggregate metrics for a completed backtesting session."""
-
-    total_trades: int
-    full_fills: int
-    partial_fills: int
-    total_fees_usdt: Decimal
-    total_slippage_usdt: Decimal
-    total_funding_usdt: Decimal
-    gross_pnl_usdt: Decimal
-    net_pnl_usdt: Decimal
-    win_count: int
-    non_winning_count: int  # trades with PnL <= 0 (includes break-even)
-    win_rate: float | None
-
-    @classmethod
-    def empty(cls) -> BacktestingMetrics:
-        return cls(
-            total_trades=0,
-            full_fills=0,
-            partial_fills=0,
-            total_fees_usdt=Decimal("0"),
-            total_slippage_usdt=Decimal("0"),
-            total_funding_usdt=Decimal("0"),
-            gross_pnl_usdt=Decimal("0"),
-            net_pnl_usdt=Decimal("0"),
-            win_count=0,
-            non_winning_count=0,
-            win_rate=None,
-        )
-
-
-def compute_backtesting_metrics(
-    results: list[OrderResult],
-    realized_pnl_per_trade: list[Decimal] | None = None,
-    total_funding_usdt: Decimal = Decimal("0"),
-) -> BacktestingMetrics:
-    """Compute aggregate metrics from a list of OrderResult objects.
-
-    Only FILLED and PARTIALLY_FILLED orders are counted as trades.
+def compute_backtest_metrics(
+    trades: list[ClosedTrade],
+    symbol: str,
+    timeframe: str,
+    candles_processed: int,
+    initial_balance_usdt: Decimal,
+) -> BacktestRunResult:
+    """Agrega la lista de trades en un BacktestRunResult con métricas completas.
 
     Args:
-        results: list of OrderResult from the PaperAdapter.
-        realized_pnl_per_trade: optional per-trade gross PnL in USDT. Must
-            have the same length as the filled subset of *results*.
-        total_funding_usdt: total funding paid/received for the session
-            (positive = we paid, negative = we received).
+        trades: lista de trades cerrados en orden cronológico.
+        symbol: símbolo del instrumento (solo metadata).
+        timeframe: timeframe de los candles (solo metadata).
+        candles_processed: cantidad de candles procesados.
+        initial_balance_usdt: balance inicial de la simulación.
 
-    Raises:
-        ValueError: if *realized_pnl_per_trade* length mismatches filled trades.
+    Returns:
+        BacktestRunResult con todas las métricas calculadas.
     """
-    filled_statuses = {OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED}
-    filled = [r for r in results if r.status in filled_statuses]
+    total = len(trades)
+    winning = sum(1 for t in trades if t.net_pnl_usdt > _ZERO)
+    # Breakeven (net_pnl == 0) cuenta como losing: clasificación conservadora
+    # coherente con profit_factor (breakeven no aporta al numerador).
+    losing = sum(1 for t in trades if t.net_pnl_usdt <= _ZERO)
 
-    if not filled:
-        return BacktestingMetrics.empty()
+    gross_pnl = sum((t.gross_pnl_usdt for t in trades), _ZERO)
+    fees = sum((t.entry_fee_usdt + t.exit_fee_usdt for t in trades), _ZERO)
+    slippage = sum((t.entry_slippage_usdt + t.exit_slippage_usdt for t in trades), _ZERO)
+    funding = sum((t.funding_cost_usdt for t in trades), _ZERO)
+    net_pnl = sum((t.net_pnl_usdt for t in trades), _ZERO)
 
-    if realized_pnl_per_trade is not None and len(realized_pnl_per_trade) != len(filled):
-        raise ValueError(
-            f"realized_pnl_per_trade has {len(realized_pnl_per_trade)} entries "
-            f"but there are {len(filled)} filled trades."
-        )
+    win_rate = (winning / total) if total > 0 else None
+    profit_factor = _profit_factor(trades)
+    expectancy = _expectancy(trades)
+    max_dd = _max_drawdown(trades, initial_balance_usdt)
+    sharpe = _sharpe_ratio(trades)
+    sortino = _sortino_ratio(trades)
 
-    total_fees = sum((r.fee_usdt for r in filled), Decimal("0")).quantize(_QUANT)
-    total_slippage = sum((r.slippage_usdt for r in filled), Decimal("0")).quantize(_QUANT)
-
-    full_fills = sum(1 for r in filled if r.quantity_filled >= r.quantity_requested)
-    partial_fills = len(filled) - full_fills
-
-    if realized_pnl_per_trade is not None:
-        gross_pnl = sum(realized_pnl_per_trade, Decimal("0")).quantize(_QUANT)
-        win_count = sum(1 for p in realized_pnl_per_trade if p > Decimal("0"))
-        non_winning_count = sum(1 for p in realized_pnl_per_trade if p <= Decimal("0"))
-        win_rate: float | None = win_count / len(realized_pnl_per_trade)
-    else:
-        gross_pnl = Decimal("0")
-        win_count = 0
-        non_winning_count = 0
-        win_rate = None
-
-    funding = total_funding_usdt.quantize(_QUANT)
-    net_pnl = (gross_pnl - total_fees - total_slippage - funding).quantize(_QUANT)
-
-    return BacktestingMetrics(
-        total_trades=len(filled),
-        full_fills=full_fills,
-        partial_fills=partial_fills,
-        total_fees_usdt=total_fees,
-        total_slippage_usdt=total_slippage,
-        total_funding_usdt=funding,
-        gross_pnl_usdt=gross_pnl,
-        net_pnl_usdt=net_pnl,
-        win_count=win_count,
-        non_winning_count=non_winning_count,
+    return BacktestRunResult(
+        symbol=symbol,
+        timeframe=timeframe,
+        candles_processed=candles_processed,
+        trades=trades,
+        total_trades=total,
+        winning_trades=winning,
+        losing_trades=losing,
         win_rate=win_rate,
+        profit_factor=profit_factor,
+        expectancy_usdt=expectancy,
+        max_drawdown_pct=max_dd,
+        sharpe_ratio=sharpe,
+        sortino_ratio=sortino,
+        total_gross_pnl=gross_pnl.quantize(_QUANT),
+        total_fees_paid=fees.quantize(_QUANT),
+        total_slippage_cost=slippage.quantize(_QUANT),
+        total_funding_cost=funding.quantize(_QUANT),
+        total_net_pnl=net_pnl.quantize(_QUANT),
+        final_balance_usdt=(initial_balance_usdt + net_pnl).quantize(_QUANT),
     )
+
+
+def _profit_factor(trades: list[ClosedTrade]) -> float | None:
+    gross_wins = sum(float(t.net_pnl_usdt) for t in trades if t.net_pnl_usdt > _ZERO)
+    gross_losses = sum(abs(float(t.net_pnl_usdt)) for t in trades if t.net_pnl_usdt <= _ZERO)
+    if gross_losses == 0:
+        return None if gross_wins == 0 else float("inf")
+    return gross_wins / gross_losses
+
+
+def _expectancy(trades: list[ClosedTrade]) -> Decimal | None:
+    if not trades:
+        return None
+    total = sum((t.net_pnl_usdt for t in trades), _ZERO)
+    return (total / Decimal(len(trades))).quantize(_QUANT)
+
+
+def _max_drawdown(trades: list[ClosedTrade], initial_balance: Decimal) -> float | None:
+    """Peak-to-trough max drawdown sobre el equity acumulado."""
+    if not trades:
+        return None
+
+    equity = initial_balance
+    peak = equity
+    max_dd = 0.0
+
+    for trade in trades:
+        equity += trade.net_pnl_usdt
+        if equity > peak:
+            peak = equity
+        drawdown = float((peak - equity) / peak) if peak > _ZERO else 0.0
+        if drawdown > max_dd:
+            max_dd = drawdown
+
+    return max_dd
+
+
+def _sharpe_ratio(trades: list[ClosedTrade]) -> float | None:
+    """Sharpe ratio calculado sobre PnL absoluto en USDT (no sobre retornos porcentuales).
+
+    Nota: solo es comparable entre runs con el mismo margin_usdt. Sin anualización.
+    """
+    if len(trades) < 2:
+        return None
+
+    returns = [float(t.net_pnl_usdt) for t in trades]
+    mean_r = sum(returns) / len(returns)
+    variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+    std = math.sqrt(variance)
+
+    if std == 0:
+        return None
+    return (mean_r - _RISK_FREE_RATE) / std
+
+
+def _sortino_ratio(trades: list[ClosedTrade]) -> float | None:
+    """Sortino ratio calculado sobre PnL absoluto en USDT (no sobre retornos porcentuales).
+
+    Nota: solo es comparable entre runs con el mismo margin_usdt. Sin anualización.
+    """
+    if len(trades) < 2:
+        return None
+
+    returns = [float(t.net_pnl_usdt) for t in trades]
+    mean_r = sum(returns) / len(returns)
+    downside_sq = [(r - _RISK_FREE_RATE) ** 2 for r in returns if r < _RISK_FREE_RATE]
+
+    if not downside_sq:
+        return None
+    downside_std = math.sqrt(sum(downside_sq) / len(downside_sq))
+
+    if downside_std == 0:
+        return None
+    return (mean_r - _RISK_FREE_RATE) / downside_std
