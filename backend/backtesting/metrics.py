@@ -9,9 +9,9 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 
+from backend.backtesting.constants import QUANT as _QUANT
 from backend.backtesting.schemas import BacktestRunResult, ClosedTrade
 
-_QUANT = Decimal("0.00000001")
 _ZERO = Decimal("0")
 _RISK_FREE_RATE = 0.0  # asumimos 0 para sharpe/sortino en crypto
 

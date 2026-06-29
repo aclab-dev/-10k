@@ -60,4 +60,4 @@ class PartialFillModel:
         Args:
             requested_quantity: order size requested.
         """
-        return self.compute(requested_quantity) < requested_quantity
+        return self._fill_ratio < Decimal("1")
