@@ -3,7 +3,7 @@
 from backend.backtesting.fee_model import FeeModel
 from backend.backtesting.funding_model import compute_funding_payment
 from backend.backtesting.latency_model import LatencyModel
-from backend.backtesting.metrics import BacktestingMetrics, compute_backtesting_metrics
+from backend.backtesting.metrics import compute_backtest_metrics
 from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.slippage_model import SlippageModel
 
@@ -13,6 +13,5 @@ __all__ = [
     "LatencyModel",
     "PartialFillModel",
     "compute_funding_payment",
-    "BacktestingMetrics",
-    "compute_backtesting_metrics",
+    "compute_backtest_metrics",
 ]
