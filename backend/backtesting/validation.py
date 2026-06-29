@@ -29,11 +29,14 @@ _log = structlog.get_logger(__name__)
 
 
 def assert_history_immutable(history: tuple[CandleRow, ...]) -> None:
-    """Lanza TypeError si el objeto no es una tuple (garantía de inmutabilidad).
+    """Lanza TypeError si el objeto no es una tuple.
 
-    El engine pasa la history como tuple[CandleRow, ...]. Esta función se puede
-    llamar desde tests o desde un SignalProvider para verificar que la historia
-    no es mutable.
+    Verifica que el contenedor sea una tuple inmutable. Asume que CandleRow es
+    un modelo Pydantic frozen (frozen=True), por lo que la inmutabilidad del
+    contenido está garantizada por el tipo, no por esta función.
+
+    El engine pasa la history como tuple[CandleRow, ...]. Llamar esta función
+    desde un SignalProvider o test confirma que el engine no pasó una lista mutable.
     """
     if not isinstance(history, tuple):
         raise TypeError(
@@ -51,18 +54,24 @@ def assert_no_parameter_snooping(
     train_candles: tuple[CandleRow, ...] | list[CandleRow],
     eval_candles: tuple[CandleRow, ...] | list[CandleRow],
 ) -> None:
-    """Lanza ValueError si eval_candles se solapa con train_candles.
+    """Lanza ValueError si eval_candles se solapa o precede temporalmente a train_candles.
 
-    El uso correcto es: optimizar parámetros sobre train_candles, evaluar sobre
-    eval_candles distintos. Si hay solapamiento se produce data snooping: la
-    estrategia "conoce" los datos de evaluación durante la optimización.
+    Detecta dos formas de data snooping:
+    1. Solapamiento de timestamps: algún candle de eval está en train.
+    2. Lookahead temporal invertido: train contiene timestamps posteriores al inicio
+       de eval (ej. train = candles[100:], eval = candles[:50]).
+
+    Precondición: los timestamps de cada secuencia deben ser únicos dentro de ella.
+    Si el data feed puede producir timestamps duplicados (glitches del exchange,
+    resampling solapado), esta función puede disparar falsos positivos.
 
     Args:
         train_candles: candles usados para optimizar / entrenar la estrategia.
         eval_candles: candles usados para evaluar la estrategia final.
 
     Raises:
-        ValueError: si algún timestamp de eval_candles está en train_candles.
+        ValueError: si hay solapamiento de timestamps o si train contiene datos
+                    posteriores al inicio de eval.
     """
     train_ts = {c.timestamp_utc for c in train_candles}
     overlap = [c for c in eval_candles if c.timestamp_utc in train_ts]
@@ -74,6 +83,16 @@ def assert_no_parameter_snooping(
             f"Primero: {overlap[0].timestamp_utc}. "
             "Optimizá los parámetros solo sobre el conjunto de entrenamiento."
         )
+
+    if train_candles and eval_candles:
+        max_train = max(c.timestamp_utc for c in train_candles)
+        min_eval = min(c.timestamp_utc for c in eval_candles)
+        if max_train >= min_eval:
+            raise ValueError(
+                f"Lookahead temporal detectado: train contiene datos hasta {max_train}, "
+                f"pero eval comienza en {min_eval}. "
+                "Train debe terminar antes del inicio de eval."
+            )
 
     _log.debug(
         "assert_no_parameter_snooping.ok",
@@ -155,8 +174,10 @@ def walk_forward_splits(
     if min_train_candles < 1:
         raise ValueError(f"min_train_candles debe ser >= 1, recibido {min_train_candles}")
 
-    candle_list = list(candles)
-    n = len(candle_list)
+    # Convertir una sola vez a tuple para que los slices devuelvan tuple directamente
+    # sin crear listas intermedias en cada iteración del loop.
+    candle_tuple = tuple(candles)
+    n = len(candle_tuple)
     min_required = min_train_candles + n_folds
     if n < min_required:
         raise ValueError(
@@ -164,22 +185,18 @@ def walk_forward_splits(
             f"con min_train_candles={min_train_candles}, recibidos {n}"
         )
 
-    # Dividir los candles disponibles para test (tras el min_train_candles inicial)
+    # test_pool >= n_folds está garantizado por el guard anterior,
+    # por lo que fold_size >= 1 siempre.
     test_pool = n - min_train_candles
     fold_size = test_pool // n_folds
-    if fold_size < 1:
-        raise ValueError(
-            f"fold_size={fold_size}: no hay suficientes candles para {n_folds} folds. "
-            f"Reducí n_folds o min_train_candles."
-        )
 
     folds: list[WalkForwardFold] = []
     for i in range(n_folds):
         test_start = min_train_candles + i * fold_size
         # El último fold toma todos los candles restantes para evitar pérdida de datos
         test_end = test_start + fold_size if i < n_folds - 1 else n
-        train = tuple(candle_list[:test_start])
-        test = tuple(candle_list[test_start:test_end])
+        train = candle_tuple[:test_start]
+        test = candle_tuple[test_start:test_end]
         folds.append(WalkForwardFold(fold_index=i, train=train, test=test))
 
     _log.debug(

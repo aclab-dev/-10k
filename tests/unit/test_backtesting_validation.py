@@ -120,6 +120,19 @@ class TestAssertNoParameterSnooping:
         test = tuple(_candle(200.0, offset_hours=4 + i) for i in range(4))
         assert_no_parameter_snooping(train, test)  # no debe lanzar
 
+    def test_temporal_inversion_raises(self) -> None:
+        """train con timestamps posteriores a eval dispara lookahead temporal."""
+        candles = _candles(10)
+        # train = últimos 5 candles, eval = primeros 5 → train posterior a eval
+        with pytest.raises(ValueError, match="Lookahead temporal detectado"):
+            assert_no_parameter_snooping(train_candles=candles[5:], eval_candles=candles[:5])
+
+    def test_empty_train_or_eval_skips_temporal_check(self) -> None:
+        """Colecciones vacías no disparan el check temporal (nada que comparar)."""
+        assert_no_parameter_snooping([], [])
+        assert_no_parameter_snooping(_candles(3), [])
+        assert_no_parameter_snooping([], _candles(3))
+
 
 # ---------------------------------------------------------------------------
 # split_dataset
@@ -272,13 +285,15 @@ class TestOverfittingDemo:
         )
         return BacktestingEngine(config)
 
-    def test_is_outperforms_oos_with_overfitted_strategy(self) -> None:
-        """Una strategy que 'memoriza' el IS no genera trades en OOS.
+    def test_strategy_restricted_to_is_timestamps_produces_no_oos_trades(self) -> None:
+        """Una strategy filtrada por timestamps IS no genera trades en OOS.
 
         La estrategia usa `is_candle_set` para decidir cuándo entrar: solo dispara
         en candles cuyo timestamp pertenece al IS. En OOS esos timestamps no existen,
-        por lo que `total_trades == 0` es el outcome esperado y correcto — demuestra
-        que el conocimiento del IS no transfiere al OOS.
+        por lo que `total_trades == 0` es el outcome esperado.
+
+        Nota: esto demuestra filtrado por timestamp, no degradación estadística de
+        overfitting. La ausencia total de trades en OOS es la evidencia del aislamiento.
         """
         candles = _candles(40)
         split = split_dataset(candles, train_ratio=0.5)
