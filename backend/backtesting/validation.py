@@ -73,7 +73,15 @@ def assert_no_parameter_snooping(
         ValueError: si hay solapamiento de timestamps o si train contiene datos
                     posteriores al inicio de eval.
     """
-    train_ts = {c.timestamp_utc for c in train_candles}
+    # Un solo recorrido sobre train_candles para construir el set de timestamps
+    # y calcular max_train simultáneamente.
+    train_ts = set()
+    max_train = None
+    for c in train_candles:
+        train_ts.add(c.timestamp_utc)
+        if max_train is None or c.timestamp_utc > max_train:
+            max_train = c.timestamp_utc
+
     overlap = [c for c in eval_candles if c.timestamp_utc in train_ts]
 
     if overlap:
@@ -84,10 +92,11 @@ def assert_no_parameter_snooping(
             "Optimizá los parámetros solo sobre el conjunto de entrenamiento."
         )
 
-    if train_candles and eval_candles:
-        max_train = max(c.timestamp_utc for c in train_candles)
+    # Cuando max_train == min_eval el timestamp ya fue capturado por train_ts
+    # y el check anterior ya lanzó, por lo que la rama == es inalcanzable aquí.
+    if max_train is not None and eval_candles:
         min_eval = min(c.timestamp_utc for c in eval_candles)
-        if max_train >= min_eval:
+        if max_train > min_eval:
             raise ValueError(
                 f"Lookahead temporal detectado: train contiene datos hasta {max_train}, "
                 f"pero eval comienza en {min_eval}. "

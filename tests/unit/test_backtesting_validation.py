@@ -2,7 +2,7 @@
 
 Cobertura:
 - assert_history_immutable: acepta tuple, rechaza lista.
-- detect_parameter_snooping: permite conjuntos disjuntos, bloquea solapamiento.
+- assert_no_parameter_snooping: permite conjuntos disjuntos, bloquea solapamiento y lookahead.
 - split_dataset: proporciones correctas, orden cronológico, sin solapamiento.
 - split_dataset: errores para train_ratio inválido y menos de 2 candles.
 - walk_forward_splits: N folds correctos, train crece, test sin solapamiento con train.
@@ -43,11 +43,11 @@ def _candle(
     close: float,
     *,
     offset_hours: int,
-    open: float | None = None,
+    open_price: float | None = None,
     high: float | None = None,
     low: float | None = None,
 ) -> CandleRow:
-    o = open if open is not None else close
+    o = open_price if open_price is not None else close
     h = high if high is not None else close * 1.01
     lo = low if low is not None else close * 0.99
     return CandleRow(
