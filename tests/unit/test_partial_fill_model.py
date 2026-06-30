@@ -37,6 +37,10 @@ class TestPartialFillModelCustomRatio:
         model = PartialFillModel(fill_ratio=Decimal("0.5"))
         assert model.is_partial(Decimal("1.0"))
 
+    def test_is_partial_false_for_zero_quantity(self) -> None:
+        model = PartialFillModel(fill_ratio=Decimal("0.5"))
+        assert not model.is_partial(Decimal("0"))
+
     def test_zero_ratio_fills_nothing(self) -> None:
         model = PartialFillModel(fill_ratio=Decimal("0"))
         assert model.compute(Decimal("1.0")) == Decimal("0")
