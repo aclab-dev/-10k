@@ -3,6 +3,8 @@
 Jerarquía de datos:
   CandleRow         → unidad atómica de entrada (OHLCV + funding_rate)
   TradeSignal       → decisión del SignalProvider para el próximo candle
+  DatasetSplit      → par in-sample / out-of-sample para validación
+  WalkForwardFold   → un fold de walk-forward validation
   OpenPosition      → posición activa en simulación
   ClosedTrade       → trade completado con desglose de costos
   BacktestConfig    → configuración del engine
@@ -187,3 +189,27 @@ class BacktestRunResult(BaseModel):
     final_balance_usdt: Decimal
 
     model_config = {"frozen": True}
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers (anti-lookahead / data-snooping / overfitting)
+# ---------------------------------------------------------------------------
+
+
+class DatasetSplit(BaseModel):
+    """Par in-sample / out-of-sample de candles para validación anti-overfitting."""
+
+    train: tuple[CandleRow, ...]
+    test: tuple[CandleRow, ...]
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
+
+
+class WalkForwardFold(BaseModel):
+    """Un fold de walk-forward validation: ventana de entrenamiento + ventana de evaluación."""
+
+    fold_index: int
+    train: tuple[CandleRow, ...]
+    test: tuple[CandleRow, ...]
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
