@@ -1,19 +1,49 @@
 """backtesting — simulación de fills, costos y métricas para backtesting."""
 
-from backend.backtesting.fee_model import FeeModel
+from backend.backtesting.engine import BacktestingEngine, SignalProvider
+from backend.backtesting.fee_model import FeeModel, OrderType
 from backend.backtesting.funding_model import compute_funding_payment
 from backend.backtesting.latency_model import LatencyModel
 from backend.backtesting.metrics import compute_backtest_metrics
 from backend.backtesting.partial_fill_model import PartialFillModel
-from backend.backtesting.schemas import BacktestRunResult
+from backend.backtesting.schemas import (
+    BacktestConfig,
+    BacktestRunResult,
+    CandleRow,
+    ClosedTrade,
+    DatasetSplit,
+    OpenPosition,
+    TradeSignal,
+    WalkForwardFold,
+)
 from backend.backtesting.slippage_model import SlippageModel
+from backend.backtesting.validation import (
+    assert_history_immutable,
+    assert_no_parameter_snooping,
+    split_dataset,
+    walk_forward_splits,
+)
 
 __all__ = [
+    "BacktestingEngine",
+    "SignalProvider",
     "FeeModel",
-    "SlippageModel",
-    "LatencyModel",
-    "PartialFillModel",
-    "BacktestRunResult",
+    "OrderType",
     "compute_funding_payment",
+    "LatencyModel",
     "compute_backtest_metrics",
+    "PartialFillModel",
+    "BacktestConfig",
+    "BacktestRunResult",
+    "CandleRow",
+    "ClosedTrade",
+    "DatasetSplit",
+    "OpenPosition",
+    "TradeSignal",
+    "WalkForwardFold",
+    "SlippageModel",
+    "assert_history_immutable",
+    "assert_no_parameter_snooping",
+    "split_dataset",
+    "walk_forward_splits",
 ]
