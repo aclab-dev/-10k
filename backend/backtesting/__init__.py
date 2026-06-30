@@ -10,13 +10,18 @@ from backend.backtesting.schemas import (
     ClosedTrade,
     DatasetSplit,
     OpenPosition,
+    SplitBacktestResult,
     TradeSignal,
     WalkForwardFold,
+    WalkForwardFoldResult,
+    WalkForwardResult,
 )
 from backend.backtesting.slippage_model import SlippageModel
 from backend.backtesting.validation import (
     assert_history_immutable,
     assert_no_parameter_snooping,
+    run_split_backtest,
+    run_walk_forward_backtest,
     split_dataset,
     walk_forward_splits,
 )
@@ -35,11 +40,16 @@ __all__ = [
     "ClosedTrade",
     "DatasetSplit",
     "OpenPosition",
+    "SplitBacktestResult",
     "TradeSignal",
     "WalkForwardFold",
+    "WalkForwardFoldResult",
+    "WalkForwardResult",
     "SlippageModel",
     "assert_history_immutable",
     "assert_no_parameter_snooping",
+    "run_split_backtest",
+    "run_walk_forward_backtest",
     "split_dataset",
     "walk_forward_splits",
 ]

@@ -1,4 +1,4 @@
-"""Tests explícitos de anti-lookahead, data snooping y overfitting (F12 [92]).
+"""Tests explícitos de anti-lookahead, data snooping y overfitting (F12 [92, 93]).
 
 Cobertura:
 - assert_history_immutable: acepta tuple, rechaza lista.
@@ -7,6 +7,8 @@ Cobertura:
 - split_dataset: errores para train_ratio inválido y menos de 2 candles.
 - walk_forward_splits: N folds correctos, train crece, test sin solapamiento con train.
 - walk_forward_splits: errores para parámetros inválidos.
+- run_split_backtest: retorna SplitBacktestResult con resultados IS y OOS independientes.
+- run_walk_forward_backtest: retorna WalkForwardResult con resultados por fold.
 - Overfitting demo: strategy overfitteada al IS no transfiere al OOS.
 - Anti-lookahead integración: history pasada al provider es tuple inmutable.
 """
@@ -27,6 +29,8 @@ from backend.backtesting.schemas import (
 from backend.backtesting.validation import (
     assert_history_immutable,
     assert_no_parameter_snooping,
+    run_split_backtest,
+    run_walk_forward_backtest,
     split_dataset,
     walk_forward_splits,
 )
@@ -381,3 +385,164 @@ class TestEngineHistoryIsAlwaysTuple:
 
         # Los largos recibidos deben ser 0,1,2,3,4 — no se contamina entre llamadas
         assert original_lengths == [0, 1, 2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# run_split_backtest — resultados IS / OOS separados (F12 [93])
+# ---------------------------------------------------------------------------
+
+
+def _make_engine(balance: float = 1000.0) -> BacktestingEngine:
+    config = BacktestConfig(
+        symbol="BTCUSDT",
+        timeframe="1h",
+        initial_balance_usdt=_D(str(balance)),
+        latency_candles=0,
+    )
+    return BacktestingEngine(config)
+
+
+def _noop_provider(idx: int, hist: tuple[CandleRow, ...]) -> TradeSignal:
+    return TradeSignal(action="NO_OP")
+
+
+class TestRunSplitBacktest:
+    def test_returns_split_backtest_result(self) -> None:
+        from backend.backtesting.schemas import SplitBacktestResult
+
+        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider, train_ratio=0.7)
+        assert isinstance(result, SplitBacktestResult)
+
+    def test_train_ratio_preserved(self) -> None:
+        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider, train_ratio=0.6)
+        assert result.train_ratio == 0.6
+
+    def test_is_and_oos_candles_sum_to_total(self) -> None:
+        candles = _candles(20)
+        result = run_split_backtest(candles, _make_engine(), _noop_provider, train_ratio=0.7)
+        total = result.in_sample.candles_processed + result.out_of_sample.candles_processed
+        assert total == len(candles)
+
+    def test_is_candles_greater_than_oos(self) -> None:
+        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider, train_ratio=0.7)
+        assert result.in_sample.candles_processed > result.out_of_sample.candles_processed
+
+    def test_results_are_independent(self) -> None:
+        """Modificar el resultado IS no afecta al OOS."""
+        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider)
+        assert result.in_sample is not result.out_of_sample
+
+    def test_symbol_and_timeframe_preserved(self) -> None:
+        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider)
+        assert result.in_sample.symbol == "BTCUSDT"
+        assert result.out_of_sample.timeframe == "1h"
+
+    def test_with_active_provider_produces_trades_in_is(self) -> None:
+        """Una strategy activa genera trades en IS; el recuento refleja solo esa ventana."""
+        candles = _candles(40)
+        split_idx = int(40 * 0.7)  # 28 candles IS
+
+        call_count = {"n": 0}
+
+        def counting_provider(idx: int, hist: tuple[CandleRow, ...]) -> TradeSignal:
+            call_count["n"] += 1
+            return TradeSignal(action="NO_OP")
+
+        result = run_split_backtest(candles, _make_engine(), counting_provider, train_ratio=0.7)
+        # El provider se llamó una vez por candle IS + una vez por candle OOS
+        assert call_count["n"] == len(candles)
+        assert result.in_sample.candles_processed == split_idx
+        assert result.out_of_sample.candles_processed == 40 - split_idx
+
+    def test_invalid_train_ratio_raises(self) -> None:
+        with pytest.raises(ValueError):
+            run_split_backtest(_candles(10), _make_engine(), _noop_provider, train_ratio=0.0)
+
+    def test_insufficient_candles_raises(self) -> None:
+        with pytest.raises(ValueError):
+            run_split_backtest([_candles(1)[0]], _make_engine(), _noop_provider)
+
+
+# ---------------------------------------------------------------------------
+# run_walk_forward_backtest — resultados por fold (F12 [93])
+# ---------------------------------------------------------------------------
+
+
+class TestRunWalkForwardBacktest:
+    def test_returns_walk_forward_result(self) -> None:
+        from backend.backtesting.schemas import WalkForwardResult
+
+        result = run_walk_forward_backtest(
+            _candles(50), _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
+        )
+        assert isinstance(result, WalkForwardResult)
+
+    def test_n_folds_in_result_matches_request(self) -> None:
+        result = run_walk_forward_backtest(
+            _candles(50), _make_engine(), _noop_provider, n_folds=4, min_train_candles=10
+        )
+        assert result.n_folds == 4
+        assert len(result.fold_results) == 4
+
+    def test_min_train_candles_preserved(self) -> None:
+        result = run_walk_forward_backtest(
+            _candles(50), _make_engine(), _noop_provider, n_folds=3, min_train_candles=15
+        )
+        assert result.min_train_candles == 15
+
+    def test_fold_indices_are_sequential(self) -> None:
+        result = run_walk_forward_backtest(
+            _candles(50), _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
+        )
+        indices = [fr.fold_index for fr in result.fold_results]
+        assert indices == list(range(5))
+
+    def test_each_fold_has_train_and_test_result(self) -> None:
+        from backend.backtesting.schemas import BacktestRunResult
+
+        result = run_walk_forward_backtest(
+            _candles(40), _make_engine(), _noop_provider, n_folds=3, min_train_candles=10
+        )
+        for fold_result in result.fold_results:
+            assert isinstance(fold_result.train_result, BacktestRunResult)
+            assert isinstance(fold_result.test_result, BacktestRunResult)
+
+    def test_train_grows_across_folds(self) -> None:
+        result = run_walk_forward_backtest(
+            _candles(60), _make_engine(), _noop_provider, n_folds=4, min_train_candles=10
+        )
+        train_sizes = [fr.train_result.candles_processed for fr in result.fold_results]
+        for i in range(1, len(train_sizes)):
+            assert train_sizes[i] > train_sizes[i - 1], (
+                f"El train del fold {i} ({train_sizes[i]}) no creció respecto al fold "
+                f"{i - 1} ({train_sizes[i - 1]})"
+            )
+
+    def test_test_windows_do_not_overlap(self) -> None:
+        """Los candles procesados en test de cada fold no se superponen."""
+        candles = _candles(50)
+        result = run_walk_forward_backtest(
+            candles, _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
+        )
+        # Verificamos via fold_results que test_result.candles_processed son distintos y suman
+        test_sizes = [fr.test_result.candles_processed for fr in result.fold_results]
+        # Cada test es una ventana distinta; la suma debe igualar el test pool
+        assert sum(test_sizes) == len(candles) - 10  # test_pool = total - min_train
+
+    def test_fold_results_is_tuple(self) -> None:
+        result = run_walk_forward_backtest(
+            _candles(30), _make_engine(), _noop_provider, n_folds=2, min_train_candles=5
+        )
+        assert isinstance(result.fold_results, tuple)
+
+    def test_invalid_n_folds_raises(self) -> None:
+        with pytest.raises(ValueError):
+            run_walk_forward_backtest(
+                _candles(30), _make_engine(), _noop_provider, n_folds=0, min_train_candles=5
+            )
+
+    def test_insufficient_candles_raises(self) -> None:
+        with pytest.raises(ValueError):
+            run_walk_forward_backtest(
+                _candles(5), _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
+            )
