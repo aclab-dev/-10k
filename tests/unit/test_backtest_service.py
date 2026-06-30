@@ -19,12 +19,11 @@ import pytest
 from backend.backtesting.schemas import (
     BacktestConfig,
     BacktestRunResult,
-    ClosedTrade,
-    TradeSignal,
     CandleRow,
+    ClosedTrade,
 )
 from backend.backtesting.service import BacktestService
-from backend.storage.models import BacktestResult, BacktestRun
+from backend.storage.models import BacktestRun
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -101,6 +100,7 @@ def _mock_result(trades: list[ClosedTrade]) -> BacktestRunResult:
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def mock_session():
     session = MagicMock()
@@ -130,6 +130,7 @@ def config() -> BacktestConfig:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestRunAndPersist:
     def test_persists_all_dod_metrics(self, mock_session, candles, config):
@@ -163,6 +164,11 @@ class TestRunAndPersist:
         assert result.total_trades == 3
         assert result.winning_trades == 2
         assert result.losing_trades == 1
+
+        # BacktestResult was actually handed to the session
+        from backend.storage.models import BacktestResult
+
+        assert any(isinstance(o, BacktestResult) for o in mock_session._saved)
 
     def test_best_worst_trade_pnl(self, mock_session, candles, config):
         trades = [_trade(10.0), _trade(-3.0), _trade(7.0)]
@@ -202,14 +208,14 @@ class TestRunAndPersist:
         trades: list[ClosedTrade] = []
         fake_result = _mock_result(trades)
         fake_result = fake_result.model_copy(
-            update=dict(
-                win_rate=None,
-                sharpe_ratio=None,
-                sortino_ratio=None,
-                max_drawdown_pct=None,
-                expectancy_usdt=None,
-                profit_factor=None,
-            )
+            update={
+                "win_rate": None,
+                "sharpe_ratio": None,
+                "sortino_ratio": None,
+                "max_drawdown_pct": None,
+                "expectancy_usdt": None,
+                "profit_factor": None,
+            }
         )
 
         with patch("backend.backtesting.service.BacktestingEngine") as MockEngine:
@@ -226,3 +232,44 @@ class TestRunAndPersist:
         assert result.sharpe_ratio is None
         assert result.sortino_ratio is None
         assert result.expectancy_usdt is None
+
+    def test_profit_factor_inf_normalized_to_none(self, mock_session, candles, config):
+        # All winning trades → profit_factor = inf → must be stored as None (JSON-safe)
+        trades = [_trade(10.0), _trade(5.0)]
+        fake_result = _mock_result(trades)
+        fake_result = fake_result.model_copy(update={"profit_factor": float("inf")})
+
+        with patch("backend.backtesting.service.BacktestingEngine") as MockEngine:
+            MockEngine.return_value.run.return_value = fake_result
+            svc = BacktestService(mock_session)
+            _, result = svc.run_and_persist(
+                bot_run_id="bot-1",
+                config=config,
+                candles=candles,
+                signal_provider=MagicMock(),
+            )
+
+        assert result.profit_factor is None
+
+    def test_persist_failed_marks_status_failed(self, mock_session, candles, config):
+        trades = [_trade(10.0)]
+        fake_result = _mock_result(trades)
+
+        with patch("backend.backtesting.service.BacktestingEngine") as MockEngine:
+            MockEngine.return_value.run.return_value = fake_result
+            with patch(
+                "backend.backtesting.service.BacktestResultRepository.save",
+                side_effect=RuntimeError("db error"),
+            ):
+                svc = BacktestService(mock_session)
+                with pytest.raises(RuntimeError, match="db error"):
+                    svc.run_and_persist(
+                        bot_run_id="bot-1",
+                        config=config,
+                        candles=candles,
+                        signal_provider=MagicMock(),
+                    )
+
+        run = next(o for o in mock_session._saved if isinstance(o, BacktestRun))
+        assert run.status == "FAILED"
+        assert run.ended_at is not None

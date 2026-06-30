@@ -9,7 +9,8 @@ Responsabilidades:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import math
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -51,10 +52,11 @@ class BacktestService:
             Tupla (BacktestRun, BacktestResult) con los registros persistidos.
 
         Raises:
-            Exception: cualquier error del engine. BacktestRun queda con status FAILED.
+            Exception: cualquier error del engine o de persistencia.
+                       BacktestRun queda con status FAILED en ambos casos.
         """
-        period_start = candles[0].timestamp_utc if candles else datetime.now(timezone.utc)
-        period_end = candles[-1].timestamp_utc if candles else datetime.now(timezone.utc)
+        period_start = candles[0].timestamp_utc if candles else datetime.now(UTC)
+        period_end = candles[-1].timestamp_utc if candles else datetime.now(UTC)
 
         engine = BacktestingEngine(
             config=config,
@@ -79,34 +81,55 @@ class BacktestService:
         try:
             result_data: BacktestRunResult = engine.run(candles, signal_provider)
         except Exception:
-            run.status = "FAILED"
-            run.ended_at = datetime.now(timezone.utc)
-            self._session.flush()
             _log.exception("backtest_run_failed", run_id=run.id)
+            self._mark_failed(run)
             raise
 
-        result = self._persist_result(run.id, result_data)
-
-        run.status = "COMPLETED"
-        run.ended_at = datetime.now(timezone.utc)
-        self._session.flush()
+        try:
+            result = self._persist_result(run.id, result_data)
+            run.status = "COMPLETED"
+            run.ended_at = datetime.now(UTC)
+            self._session.flush()
+        except Exception:
+            _log.exception("backtest_persist_failed", run_id=run.id)
+            self._mark_failed(run)
+            raise
 
         _log.info(
             "backtest_run_completed",
             run_id=run.id,
             total_trades=result_data.total_trades,
-            sharpe=result_data.sharpe_ratio,
-            sortino=result_data.sortino_ratio,
+            sharpe_ratio=result_data.sharpe_ratio,
+            sortino_ratio=result_data.sortino_ratio,
             max_drawdown=result_data.max_drawdown_pct,
             expectancy_usdt=str(result_data.expectancy_usdt),
             hit_ratio=result_data.win_rate,
         )
         return run, result
 
+    def _mark_failed(self, run: BacktestRun) -> None:
+        """Marca el run como FAILED y hace flush. El flush puede fallar si la
+        sesión ya está en estado de error — se loguea pero no se re-raise para
+        preservar la excepción original."""
+        run.status = "FAILED"
+        run.ended_at = datetime.now(UTC)
+        try:
+            self._session.flush()
+        except Exception:
+            _log.exception("backtest_flush_on_failure", run_id=run.id)
+
     def _persist_result(self, backtest_run_id: str, r: BacktestRunResult) -> BacktestResult:
         trades = r.trades
         best_pnl = max((t.net_pnl_usdt for t in trades), default=Decimal("0"))
         worst_pnl = min((t.net_pnl_usdt for t in trades), default=Decimal("0"))
+
+        # profit_factor can be float("inf") when there are no losing trades.
+        # PostgreSQL Float accepts Infinity but JSON serialization fails — normalize to None.
+        profit_factor = (
+            None
+            if r.profit_factor is None or not math.isfinite(r.profit_factor)
+            else r.profit_factor
+        )
 
         result = BacktestResult(
             backtest_run_id=backtest_run_id,
@@ -122,7 +145,7 @@ class BacktestService:
             sortino_ratio=r.sortino_ratio,
             max_drawdown=r.max_drawdown_pct,
             expectancy_usdt=r.expectancy_usdt,
-            profit_factor=r.profit_factor,
+            profit_factor=profit_factor,
             best_trade_pnl=best_pnl,
             worst_trade_pnl=worst_pnl,
         )
