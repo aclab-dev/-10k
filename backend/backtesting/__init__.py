@@ -1,8 +1,11 @@
+"""backtesting — simulación de fills, costos y métricas para backtesting."""
+
 from backend.backtesting.engine import BacktestingEngine, SignalProvider
 from backend.backtesting.fee_model import FeeModel, OrderType
 from backend.backtesting.funding_model import compute_funding_payment
 from backend.backtesting.latency_model import LatencyModel
 from backend.backtesting.metrics import compute_backtest_metrics
+from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.schemas import (
     BacktestConfig,
     BacktestRunResult,
@@ -29,6 +32,7 @@ __all__ = [
     "compute_funding_payment",
     "LatencyModel",
     "compute_backtest_metrics",
+    "PartialFillModel",
     "BacktestConfig",
     "BacktestRunResult",
     "CandleRow",
