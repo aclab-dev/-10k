@@ -246,13 +246,18 @@ def run_split_backtest(
     Args:
         candles: secuencia de candles en orden cronológico.
         engine: instancia de BacktestingEngine a usar en ambas ventanas.
-        signal_provider: proveedor de señales (mismo callable para IS y OOS).
+        signal_provider: Callable stateless entre invocaciones. Si el provider
+            mantiene estado interno (buffers de indicadores, modelo fitted,
+            contadores), los resultados OOS heredarán estado del run IS y
+            serán inválidos. Usar providers sin estado o resetear manualmente
+            entre llamadas a esta función.
         train_ratio: fracción de candles para IS (0 < train_ratio < 1).
 
     Returns:
         SplitBacktestResult con in_sample y out_of_sample results.
     """
     split = split_dataset(candles, train_ratio=train_ratio)
+    # TODO: eliminar list() cuando engine.run acepte Sequence[CandleRow]
     in_sample_result = engine.run(list(split.train), signal_provider)
     out_of_sample_result = engine.run(list(split.test), signal_provider)
 
@@ -286,7 +291,11 @@ def run_walk_forward_backtest(
     Args:
         candles: secuencia de candles en orden cronológico.
         engine: instancia de BacktestingEngine a usar en todos los folds.
-        signal_provider: proveedor de señales (mismo callable para todos los folds).
+        signal_provider: Callable stateless entre invocaciones. Si el provider
+            mantiene estado interno (buffers de indicadores, modelo fitted,
+            contadores), cada fold heredará estado del anterior y los resultados
+            por ventana serán inválidos. Usar providers sin estado o resetear
+            manualmente entre llamadas a esta función.
         n_folds: número de folds de walk-forward.
         min_train_candles: mínimo de candles de entrenamiento en el primer fold.
 
@@ -297,6 +306,7 @@ def run_walk_forward_backtest(
 
     fold_results: list[WalkForwardFoldResult] = []
     for fold in folds:
+        # TODO: eliminar list() cuando engine.run acepte Sequence[CandleRow]
         train_result = engine.run(list(fold.train), signal_provider)
         test_result = engine.run(list(fold.test), signal_provider)
         fold_results.append(
@@ -322,6 +332,6 @@ def run_walk_forward_backtest(
     )
     return WalkForwardResult(
         fold_results=tuple(fold_results),
-        n_folds=n_folds,
+        n_folds=len(fold_results),
         min_train_candles=min_train_candles,
     )

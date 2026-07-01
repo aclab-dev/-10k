@@ -521,13 +521,14 @@ class TestRunWalkForwardBacktest:
     def test_test_windows_do_not_overlap(self) -> None:
         """Los candles procesados en test de cada fold no se superponen."""
         candles = _candles(50)
+        min_train = 10
         result = run_walk_forward_backtest(
-            candles, _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
+            candles, _make_engine(), _noop_provider, n_folds=5, min_train_candles=min_train
         )
         # Verificamos via fold_results que test_result.candles_processed son distintos y suman
         test_sizes = [fr.test_result.candles_processed for fr in result.fold_results]
         # Cada test es una ventana distinta; la suma debe igualar el test pool
-        assert sum(test_sizes) == len(candles) - 10  # test_pool = total - min_train
+        assert sum(test_sizes) == len(candles) - min_train
 
     def test_fold_results_is_tuple(self) -> None:
         result = run_walk_forward_backtest(
