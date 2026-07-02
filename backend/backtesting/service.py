@@ -55,8 +55,9 @@ class BacktestService:
             Exception: cualquier error del engine o de persistencia.
                        BacktestRun queda con status FAILED en ambos casos.
         """
-        period_start = candles[0].timestamp_utc if candles else datetime.now(UTC)
-        period_end = candles[-1].timestamp_utc if candles else datetime.now(UTC)
+        _now = datetime.now(UTC)
+        period_start = candles[0].timestamp_utc if candles else _now
+        period_end = candles[-1].timestamp_utc if candles else _now
 
         engine = BacktestingEngine(
             config=config,
@@ -103,7 +104,7 @@ class BacktestService:
             sortino_ratio=result_data.sortino_ratio,
             max_drawdown=result_data.max_drawdown_pct,
             expectancy_usdt=str(result_data.expectancy_usdt),
-            hit_ratio=result_data.win_rate,
+            win_rate=result_data.win_rate,
         )
         return run, result
 

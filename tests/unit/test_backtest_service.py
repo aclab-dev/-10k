@@ -255,20 +255,20 @@ class TestRunAndPersist:
         trades = [_trade(10.0)]
         fake_result = _mock_result(trades)
 
+        # Force failure via session.flush so the test doesn't depend on import paths.
+        # First flush (after save) succeeds; second flush (after COMPLETED) raises.
+        mock_session.flush.side_effect = [None, RuntimeError("db error")]
+
         with patch("backend.backtesting.service.BacktestingEngine") as MockEngine:
             MockEngine.return_value.run.return_value = fake_result
-            with patch(
-                "backend.backtesting.service.BacktestResultRepository.save",
-                side_effect=RuntimeError("db error"),
-            ):
-                svc = BacktestService(mock_session)
-                with pytest.raises(RuntimeError, match="db error"):
-                    svc.run_and_persist(
-                        bot_run_id="bot-1",
-                        config=config,
-                        candles=candles,
-                        signal_provider=MagicMock(),
-                    )
+            svc = BacktestService(mock_session)
+            with pytest.raises(RuntimeError, match="db error"):
+                svc.run_and_persist(
+                    bot_run_id="bot-1",
+                    config=config,
+                    candles=candles,
+                    signal_provider=MagicMock(),
+                )
 
         run = next(o for o in mock_session._saved if isinstance(o, BacktestRun))
         assert run.status == "FAILED"
