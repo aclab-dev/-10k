@@ -427,20 +427,16 @@ class TestRunSplitBacktest:
         result = run_split_backtest(_candles(20), _make_engine(), _noop_provider, train_ratio=0.7)
         assert result.in_sample.candles_processed > result.out_of_sample.candles_processed
 
-    def test_results_are_independent(self) -> None:
-        """Modificar el resultado IS no afecta al OOS."""
-        result = run_split_backtest(_candles(20), _make_engine(), _noop_provider)
-        assert result.in_sample is not result.out_of_sample
-
     def test_symbol_and_timeframe_preserved(self) -> None:
         result = run_split_backtest(_candles(20), _make_engine(), _noop_provider)
         assert result.in_sample.symbol == "BTCUSDT"
         assert result.out_of_sample.timeframe == "1h"
 
-    def test_with_active_provider_produces_trades_in_is(self) -> None:
-        """Una strategy activa genera trades en IS; el recuento refleja solo esa ventana."""
+    def test_provider_called_once_per_candle_across_both_windows(self) -> None:
+        """El provider se invoca exactamente una vez por candle en cada ventana."""
         candles = _candles(40)
-        split_idx = int(40 * 0.7)  # 28 candles IS
+        train_ratio = 0.7
+        split_idx = int(40 * train_ratio)
 
         call_count = {"n": 0}
 
@@ -448,11 +444,44 @@ class TestRunSplitBacktest:
             call_count["n"] += 1
             return TradeSignal(action="NO_OP")
 
-        result = run_split_backtest(candles, _make_engine(), counting_provider, train_ratio=0.7)
-        # El provider se llamó una vez por candle IS + una vez por candle OOS
+        result = run_split_backtest(
+            candles, _make_engine(), counting_provider, train_ratio=train_ratio
+        )
         assert call_count["n"] == len(candles)
         assert result.in_sample.candles_processed == split_idx
         assert result.out_of_sample.candles_processed == 40 - split_idx
+
+    def test_stateful_provider_contamination_visible_without_reset(self) -> None:
+        """Un provider con estado acumula entre IS y OOS si no se resetea.
+
+        Documenta el riesgo advertido en el docstring: el contador interno del
+        provider continúa desde donde quedó en IS, haciendo que OOS reciba
+        índices globales en lugar de locales a su ventana.
+        """
+        candles = _candles(20)
+
+        class StatefulProvider:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            def __call__(self, idx: int, hist: tuple[CandleRow, ...]) -> TradeSignal:
+                self.call_count += 1
+                return TradeSignal(action="NO_OP")
+
+        provider = StatefulProvider()
+        run_split_backtest(candles, _make_engine(), provider, train_ratio=0.7)
+        # Sin reset, call_count acumula IS + OOS (20 llamadas en total)
+        assert provider.call_count == len(candles)
+
+    def test_reset_fn_called_between_is_and_oos(self) -> None:
+        """reset_fn se invoca entre el run IS y el run OOS."""
+        resets: list[int] = []
+
+        def reset() -> None:
+            resets.append(1)
+
+        run_split_backtest(_candles(20), _make_engine(), _noop_provider, reset_fn=reset)
+        assert len(resets) == 1
 
     def test_invalid_train_ratio_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -547,3 +576,23 @@ class TestRunWalkForwardBacktest:
             run_walk_forward_backtest(
                 _candles(5), _make_engine(), _noop_provider, n_folds=5, min_train_candles=10
             )
+
+    def test_reset_fn_called_between_train_and_test_each_fold(self) -> None:
+        """reset_fn se llama antes del run de test en cada fold y entre folds."""
+        resets: list[int] = []
+
+        def reset() -> None:
+            resets.append(1)
+
+        n_folds = 3
+        run_walk_forward_backtest(
+            _candles(50),
+            _make_engine(),
+            _noop_provider,
+            n_folds=n_folds,
+            min_train_candles=10,
+            reset_fn=reset,
+        )
+        # reset_fn se llama: (n_folds - 1) veces al inicio de cada fold > 0
+        # + n_folds veces antes de cada run de test = 2*n_folds - 1
+        assert len(resets) == 2 * n_folds - 1

@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -230,7 +230,7 @@ class SplitBacktestResult(BaseModel):
 
     in_sample: BacktestRunResult
     out_of_sample: BacktestRunResult
-    train_ratio: float
+    train_ratio: Annotated[float, Field(gt=0, lt=1)]
 
     model_config = {"frozen": True}
 
@@ -249,7 +249,8 @@ class WalkForwardResult(BaseModel):
     """Resultados separados por ventana de un walk-forward backtest.
 
     fold_results: lista ordenada por fold_index con train_result y test_result de cada fold.
-    n_folds: número total de folds generados.
+    n_folds: número de folds efectivamente ejecutados; puede diferir del parámetro
+        `n_folds` solicitado si los candles son insuficientes para generar todos.
     min_train_candles: mínimo de candles de entrenamiento configurado.
     """
 
