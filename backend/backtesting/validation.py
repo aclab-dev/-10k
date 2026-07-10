@@ -12,12 +12,22 @@ Reglas implementadas:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from backend.backtesting.engine import BacktestingEngine, SignalProvider
 
 from backend.backtesting.schemas import (
     CandleRow,
     DatasetSplit,
+    SplitBacktestResult,
     WalkForwardFold,
+    WalkForwardFoldResult,
+    WalkForwardResult,
 )
 
 _log = structlog.get_logger(__name__)
@@ -216,3 +226,128 @@ def walk_forward_splits(
         min_train_candles=min_train_candles,
     )
     return folds
+
+
+# ---------------------------------------------------------------------------
+# Ejecución del engine por ventana (F12 [93])
+# ---------------------------------------------------------------------------
+
+
+def run_split_backtest(
+    candles: list[CandleRow] | tuple[CandleRow, ...],
+    engine: BacktestingEngine,
+    signal_provider: SignalProvider,
+    train_ratio: float = 0.7,
+    reset_fn: Callable[[], None] | None = None,
+) -> SplitBacktestResult:
+    """Ejecuta el engine sobre los splits IS y OOS y retorna resultados separados.
+
+    Divide los candles en in-sample y out-of-sample con `split_dataset`, luego
+    corre el engine independientemente en cada ventana. Los resultados son
+    completamente independientes: el estado del engine no persiste entre ventanas.
+
+    Args:
+        candles: secuencia de candles en orden cronológico.
+        engine: instancia de BacktestingEngine a usar en ambas ventanas.
+        signal_provider: Callable stateless entre invocaciones. Si el provider
+            mantiene estado interno (buffers de indicadores, modelo fitted,
+            contadores), los resultados OOS heredarán estado del run IS y
+            serán inválidos. Usar providers sin estado o pasar `reset_fn`.
+        train_ratio: fracción de candles para IS (0 < train_ratio < 1).
+        reset_fn: callable opcional que resetea el estado interno del
+            signal_provider entre el run IS y el run OOS. Se llama sin
+            argumentos justo antes de ejecutar el run OOS.
+
+    Returns:
+        SplitBacktestResult con in_sample y out_of_sample results.
+    """
+    split = split_dataset(candles, train_ratio=train_ratio)
+    # TODO: eliminar list() cuando engine.run acepte Sequence[CandleRow]
+    in_sample_result = engine.run(list(split.train), signal_provider)
+    if reset_fn is not None:
+        reset_fn()
+    out_of_sample_result = engine.run(list(split.test), signal_provider)
+
+    _log.debug(
+        "run_split_backtest",
+        train_candles=len(split.train),
+        test_candles=len(split.test),
+        is_trades=in_sample_result.total_trades,
+        oos_trades=out_of_sample_result.total_trades,
+    )
+    return SplitBacktestResult(
+        in_sample=in_sample_result,
+        out_of_sample=out_of_sample_result,
+        train_ratio=train_ratio,
+    )
+
+
+def run_walk_forward_backtest(
+    candles: list[CandleRow] | tuple[CandleRow, ...],
+    engine: BacktestingEngine,
+    signal_provider: SignalProvider,
+    n_folds: int = 5,
+    min_train_candles: int = 10,
+    reset_fn: Callable[[], None] | None = None,
+) -> WalkForwardResult:
+    """Ejecuta el engine en cada fold de walk-forward y retorna resultados por ventana.
+
+    Genera los folds con `walk_forward_splits`, luego corre el engine sobre el
+    train y el test de cada fold independientemente. El estado del engine no
+    persiste entre folds ni entre train y test de un mismo fold.
+
+    Args:
+        candles: secuencia de candles en orden cronológico.
+        engine: instancia de BacktestingEngine a usar en todos los folds.
+        signal_provider: Callable stateless entre invocaciones. Si el provider
+            mantiene estado interno (buffers de indicadores, modelo fitted,
+            contadores), cada fold heredará estado del anterior y los resultados
+            por ventana serán inválidos. Usar providers sin estado o pasar `reset_fn`.
+        n_folds: número de folds de walk-forward.
+        min_train_candles: mínimo de candles de entrenamiento en el primer fold.
+        reset_fn: callable opcional que resetea el estado interno del
+            signal_provider entre cada par (train, test) dentro de un fold y
+            entre folds consecutivos. Se llama sin argumentos antes de cada
+            run de test y al inicio de cada fold después del primero.
+
+    Returns:
+        WalkForwardResult con una lista de WalkForwardFoldResult por fold.
+    """
+    folds = walk_forward_splits(candles, n_folds=n_folds, min_train_candles=min_train_candles)
+
+    fold_results: list[WalkForwardFoldResult] = []
+    for fold in folds:
+        if reset_fn is not None and fold.fold_index > 0:
+            reset_fn()
+        # TODO: eliminar list() cuando engine.run acepte Sequence[CandleRow]
+        train_result = engine.run(list(fold.train), signal_provider)
+        if reset_fn is not None:
+            reset_fn()
+        test_result = engine.run(list(fold.test), signal_provider)
+        fold_results.append(
+            WalkForwardFoldResult(
+                fold_index=fold.fold_index,
+                train_result=train_result,
+                test_result=test_result,
+            )
+        )
+        _log.debug(
+            "run_walk_forward_backtest.fold",
+            fold_index=fold.fold_index,
+            train_candles=len(fold.train),
+            test_candles=len(fold.test),
+            train_trades=train_result.total_trades,
+            test_trades=test_result.total_trades,
+        )
+
+    _log.debug(
+        "run_walk_forward_backtest",
+        n_folds_requested=n_folds,
+        n_folds_executed=len(fold_results),
+        min_train_candles=min_train_candles,
+    )
+    return WalkForwardResult(
+        fold_results=tuple(fold_results),
+        n_folds=len(fold_results),
+        min_train_candles=min_train_candles,
+    )
