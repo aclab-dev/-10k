@@ -26,6 +26,10 @@ fill de entrada. Los cierres (SL/TP/CLOSE/END_OF_DATA) siempre liquidan el
 Modelar fills parciales también en el cierre implicaría "partial close" de una
 posición existente, que está fuera de scope en MVP
 (`position_management.partial_close_enabled_mvp=false`).
+notional_usdt y margin_usdt se escalan por el mismo fill_ratio (no se derivan
+de quantity*fill_price, para no introducir redondeo Decimal adicional respecto
+al comportamiento previo con fill_ratio=1.0). Si fill_ratio=0 (liquidez nula),
+la orden se descarta sin abrir posición — no genera un trade fantasma.
 
 Nota: una señal CLOSE emitida en el último candle produce un cierre con
 exit_reason="END_OF_DATA" porque no hay candle siguiente para ejecutarla.
@@ -143,14 +147,22 @@ class BacktestingEngine:
             if pending_entry is not None:
                 signal, fill_idx = pending_entry
                 if i >= fill_idx and open_pos is None:
-                    open_pos = self._open_position(signal, candle, i)
+                    new_pos = self._open_position(signal, candle, i)
                     pending_entry = None
-                    _log.debug(
-                        "backtest.entry_filled",
-                        candle_index=i,
-                        side=open_pos.side,
-                        entry_price=str(open_pos.entry_price),
-                    )
+                    if new_pos is not None:
+                        open_pos = new_pos
+                        _log.debug(
+                            "backtest.entry_filled",
+                            candle_index=i,
+                            side=open_pos.side,
+                            entry_price=str(open_pos.entry_price),
+                        )
+                    else:
+                        _log.debug(
+                            "backtest.entry_not_filled",
+                            candle_index=i,
+                            reason="zero_liquidity_fill_ratio",
+                        )
 
             # ------------------------------------------------------------------
             # 2. Cierre solicitado por señal CLOSE
@@ -234,13 +246,18 @@ class BacktestingEngine:
         signal: TradeSignal,
         candle: CandleRow,
         candle_index: int,
-    ) -> OpenPosition:
+    ) -> OpenPosition | None:
         """Abre una posición simulada al open del candle con slippage de MARKET order.
 
         La cantidad solicitada pasa por el PartialFillModel: si la liquidez
         simulada es insuficiente (fill_ratio < 1.0), la posición se abre con
-        menos cantidad de la pedida, y notional/fee/slippage se derivan de la
-        cantidad efectivamente ejecutada.
+        menos cantidad de la pedida. notional_usdt y margin_usdt se escalan por
+        el mismo fill_ratio (no se derivan de quantity*fill_price, para no
+        introducir un redondeo Decimal adicional respecto al caso fill_ratio=1.0).
+
+        Returns:
+            None si el fill_ratio resulta en quantity == 0 (orden no ejecutada:
+            liquidez insuficiente). No se abre posición ni se ocupa el slot.
         """
         if signal.stop_loss is None or signal.take_profit is None:
             raise ValueError(
@@ -256,7 +273,12 @@ class BacktestingEngine:
         requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
         requested_quantity = (requested_notional / fill_price).quantize(_QUANT)
         quantity = self._partial_fill.compute(requested_quantity)
-        notional = (quantity * fill_price).quantize(_QUANT)
+        if quantity <= _ZERO:
+            return None
+
+        fill_ratio = self._partial_fill.fill_ratio
+        notional = (requested_notional * fill_ratio).quantize(_QUANT)
+        margin_usdt = (signal.margin_usdt * fill_ratio).quantize(_QUANT)
         fee = self._fee.calculate(notional, order_type)
         slippage_cost = abs(fill_price - candle.open) * quantity
 
@@ -267,7 +289,7 @@ class BacktestingEngine:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             leverage=signal.leverage,
-            margin_usdt=signal.margin_usdt,
+            margin_usdt=margin_usdt,
             notional_usdt=notional,
             quantity=quantity,
             entry_fee_usdt=fee,

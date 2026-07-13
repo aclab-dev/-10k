@@ -625,3 +625,19 @@ class TestPartialFill:
         assert result.total_trades == 1
         assert result.trades[0].exit_reason == "SL"
         assert result.trades[0].net_pnl_usdt < _D("0")
+
+    def test_partial_fill_zero_ratio_discards_order_without_opening_position(self) -> None:
+        """fill_ratio=0 (liquidez nula) descarta la orden: no abre posición,
+        no genera trade, y no bloquea el slot para señales futuras."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # señal LONG (fill_ratio=0 → sin fill)
+            _candle(102, 108, 98, 105, offset_hours=1),
+            _candle(105, 125, 100, 120, offset_hours=2),
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+        result = _engine(partial_fill_model=PartialFillModel(fill_ratio=_D("0"))).run(
+            candles, provider
+        )
+
+        assert result.total_trades == 0
+        assert result.final_balance_usdt == _D("100")
