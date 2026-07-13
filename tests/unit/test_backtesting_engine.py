@@ -15,6 +15,8 @@ Cobertura:
 - Segunda señal con pending_entry activa se descarta silenciosamente.
 - Gap de precio en candle de fill que viola SL → SL se activa ese mismo candle.
 - sortino_ratio con todos los trades ganadores devuelve None (downside dev = 0).
+- Fill parcial en la entrada reduce quantity/notional/fees/PnL proporcionalmente,
+  y el cierre liquida el 100% de la cantidad efectivamente abierta.
 """
 
 from __future__ import annotations
@@ -22,7 +24,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from backend.backtesting.engine import BacktestingEngine, SignalProvider
+from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.schemas import (
     BacktestConfig,
     BacktestRunResult,
@@ -68,8 +73,10 @@ def _config(latency: int = 0) -> BacktestConfig:
     )
 
 
-def _engine(latency: int = 0) -> BacktestingEngine:
-    return BacktestingEngine(_config(latency))
+def _engine(
+    latency: int = 0, partial_fill_model: PartialFillModel | None = None
+) -> BacktestingEngine:
+    return BacktestingEngine(_config(latency), partial_fill_model=partial_fill_model)
 
 
 def _no_op(_idx: int, _hist: tuple) -> TradeSignal:
@@ -543,3 +550,78 @@ class TestEdgeCases:
         assert result.total_trades == 1
         assert result.trades[0].exit_reason == "TP"
         assert result.sortino_ratio is None
+
+
+class TestPartialFill:
+    def test_default_engine_behaves_as_full_fill(self) -> None:
+        """Sin partial_fill_model explícito, el engine se comporta con fill_ratio=1.0."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),
+            _candle(105, 125, 100, 120, offset_hours=2),
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+
+        result_default = _engine().run(candles, provider)
+        result_explicit_full = _engine(
+            partial_fill_model=PartialFillModel(fill_ratio=_D("1.0"))
+        ).run(candles, provider)
+
+        assert (
+            result_default.trades[0].notional_usdt == result_explicit_full.trades[0].notional_usdt
+        )
+        assert result_default.trades[0].net_pnl_usdt == result_explicit_full.trades[0].net_pnl_usdt
+
+    def test_partial_fill_reduces_notional_fees_and_pnl_proportionally(self) -> None:
+        """Un fill_ratio=0.5 ejecuta la mitad de la cantidad solicitada: notional,
+        fees y net_pnl del trade resultante escalan proporcionalmente."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),  # fill
+            _candle(105, 125, 100, 120, offset_hours=2),  # TP hit
+        ]
+        provider = _long_at(0, sl=80.0, tp=120.0)
+
+        result_full = _engine().run(candles, provider)
+        result_half = _engine(partial_fill_model=PartialFillModel(fill_ratio=_D("0.5"))).run(
+            candles, provider
+        )
+
+        assert result_full.total_trades == 1
+        assert result_half.total_trades == 1
+
+        trade_full = result_full.trades[0]
+        trade_half = result_half.trades[0]
+
+        assert trade_full.exit_reason == trade_half.exit_reason == "TP"
+        assert float(trade_half.notional_usdt) == pytest.approx(
+            float(trade_full.notional_usdt) / 2, rel=1e-4
+        )
+        assert float(trade_half.entry_fee_usdt) == pytest.approx(
+            float(trade_full.entry_fee_usdt) / 2, rel=1e-4
+        )
+        assert float(trade_half.exit_fee_usdt) == pytest.approx(
+            float(trade_full.exit_fee_usdt) / 2, rel=1e-4
+        )
+        assert trade_half.net_pnl_usdt > _D("0")
+        assert float(trade_half.net_pnl_usdt) == pytest.approx(
+            float(trade_full.net_pnl_usdt) / 2, rel=1e-3
+        )
+
+    def test_partial_fill_entry_still_closes_completely_on_sl(self) -> None:
+        """El cierre por SL liquida el 100% de la cantidad reducida por el fill
+        parcial de entrada — no queda posición residual abierta ni trades extra."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),
+            _candle(102, 108, 98, 105, offset_hours=1),  # fill (mitad de lo solicitado)
+            _candle(105, 110, 88, 90, offset_hours=2),  # low=88 < SL=90
+            _candle(90, 95, 85, 92, offset_hours=3),
+        ]
+        provider = _long_at(0, sl=90.0, tp=200.0)
+        result = _engine(partial_fill_model=PartialFillModel(fill_ratio=_D("0.5"))).run(
+            candles, provider
+        )
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "SL"
+        assert result.trades[0].net_pnl_usdt < _D("0")

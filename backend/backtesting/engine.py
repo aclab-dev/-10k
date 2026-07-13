@@ -10,13 +10,22 @@ Garantías:
 - Una posición abierta a la vez (MVP: max_open_positions = 1).
 
 Flujo por candle i:
-  1. Fill de entrada pendiente (si i >= fill_candle_index).
+  1. Fill de entrada pendiente (si i >= fill_candle_index). El PartialFillModel
+     puede reducir la cantidad realmente ejecutada respecto a la solicitada
+     (simulación de liquidez insuficiente).
   2. Cierre solicitado por señal CLOSE (si i >= pending_close_index).
   3. Check SL/TP intra-candle (si hay posición abierta).
   4. Acumular funding al close del candle.
   5. Llamar al SignalProvider con history = candles[0:i] (inmutable, sin candle i).
 
 Al final de los datos: cierra posición abierta al close del último candle.
+
+Nota de diseño (fills parciales): el PartialFillModel se aplica únicamente al
+fill de entrada. Los cierres (SL/TP/CLOSE/END_OF_DATA) siempre liquidan el
+100% de la cantidad que quedó efectivamente abierta — nunca dejan un remanente.
+Modelar fills parciales también en el cierre implicaría "partial close" de una
+posición existente, que está fuera de scope en MVP
+(`position_management.partial_close_enabled_mvp=false`).
 
 Nota: una señal CLOSE emitida en el último candle produce un cierre con
 exit_reason="END_OF_DATA" porque no hay candle siguiente para ejecutarla.
@@ -32,6 +41,7 @@ import structlog
 from backend.backtesting.fee_model import FeeModel, OrderType
 from backend.backtesting.latency_model import LatencyModel
 from backend.backtesting.metrics import compute_backtest_metrics
+from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.schemas import (
     BacktestConfig,
     BacktestRunResult,
@@ -72,6 +82,8 @@ class BacktestingEngine:
         fee_model: modelo de fees (por defecto: taker 0.05%, maker 0.02%).
         slippage_model: modelo de slippage (por defecto: 2 BPS en MARKET/STOP).
         latency_model: modelo de latencia extra (por defecto: 0 candles adicionales).
+        partial_fill_model: modelo de fill parcial en la entrada (por defecto:
+            fill_ratio=1.0, fill completo — sin cambio de comportamiento).
 
     Nota de rendimiento: la tupla de history se construye en O(n²) total
     (cada iteración crea una nueva tupla). Aceptable para MVP (<50k candles).
@@ -85,11 +97,13 @@ class BacktestingEngine:
         fee_model: FeeModel | None = None,
         slippage_model: SlippageModel | None = None,
         latency_model: LatencyModel | None = None,
+        partial_fill_model: PartialFillModel | None = None,
     ) -> None:
         self._config = config
         self._fee = fee_model or FeeModel()
         self._slip = slippage_model or SlippageModel()
         self._latency = latency_model or LatencyModel(extra_candles=config.latency_candles)
+        self._partial_fill = partial_fill_model or PartialFillModel()
 
     def run(
         self,
@@ -221,7 +235,13 @@ class BacktestingEngine:
         candle: CandleRow,
         candle_index: int,
     ) -> OpenPosition:
-        """Abre una posición simulada al open del candle con slippage de MARKET order."""
+        """Abre una posición simulada al open del candle con slippage de MARKET order.
+
+        La cantidad solicitada pasa por el PartialFillModel: si la liquidez
+        simulada es insuficiente (fill_ratio < 1.0), la posición se abre con
+        menos cantidad de la pedida, y notional/fee/slippage se derivan de la
+        cantidad efectivamente ejecutada.
+        """
         if signal.stop_loss is None or signal.take_profit is None:
             raise ValueError(
                 f"stop_loss y take_profit son obligatorios para señales {signal.action}"
@@ -233,8 +253,10 @@ class BacktestingEngine:
         order_type: OrderType = "MARKET"
 
         fill_price = self._slip.apply(candle.open, entry_side, order_type)
-        notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
-        quantity = (notional / fill_price).quantize(_QUANT)
+        requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
+        requested_quantity = (requested_notional / fill_price).quantize(_QUANT)
+        quantity = self._partial_fill.compute(requested_quantity)
+        notional = (quantity * fill_price).quantize(_QUANT)
         fee = self._fee.calculate(notional, order_type)
         slippage_cost = abs(fill_price - candle.open) * quantity
 
