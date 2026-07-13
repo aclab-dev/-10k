@@ -552,6 +552,21 @@ class TestEdgeCases:
         assert result.sortino_ratio is None
 
 
+class _FirstCallZeroThenFullFill(PartialFillModel):
+    """Fake de test: la primera lectura de fill_ratio devuelve 0 (descarta la
+    orden), las siguientes devuelven 1.0 (fill completo). Permite verificar que
+    el slot de posición única queda libre tras un descarte por liquidez nula."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._reads = 0
+
+    @property
+    def fill_ratio(self) -> Decimal:  # type: ignore[override]
+        self._reads += 1
+        return _D("0") if self._reads == 1 else _D("1.0")
+
+
 class TestPartialFill:
     def test_default_engine_behaves_as_full_fill(self) -> None:
         """Sin partial_fill_model explícito, el engine se comporta con fill_ratio=1.0."""
@@ -641,3 +656,31 @@ class TestPartialFill:
 
         assert result.total_trades == 0
         assert result.final_balance_usdt == _D("100")
+
+    def test_partial_fill_zero_ratio_frees_slot_for_next_signal(self) -> None:
+        """Tras descartar una orden por fill_ratio=0, el slot de posición única
+        queda libre: una señal LONG posterior sí puede abrir y cerrar un trade."""
+        candles = [
+            _candle(100, 105, 95, 102, offset_hours=0),  # 0: señal LONG #1 (se descarta)
+            _candle(102, 108, 98, 105, offset_hours=1),  # 1: intento de fill descartado
+            _candle(105, 110, 100, 108, offset_hours=2),  # 2: señal LONG #2
+            _candle(108, 130, 100, 125, offset_hours=3),  # 3: fill (ratio ya en 1.0)
+            _candle(125, 140, 120, 135, offset_hours=4),  # 4: TP hit
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx in (0, 2):
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("70"),
+                    take_profit=_D("135"),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine(partial_fill_model=_FirstCallZeroThenFullFill()).run(candles, _provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].entry_candle_index == 3
+        assert result.trades[0].exit_reason == "TP"

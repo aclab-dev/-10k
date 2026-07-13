@@ -272,11 +272,15 @@ class BacktestingEngine:
         fill_price = self._slip.apply(candle.open, entry_side, order_type)
         requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
         requested_quantity = (requested_notional / fill_price).quantize(_QUANT)
-        quantity = self._partial_fill.compute(requested_quantity)
+
+        # Leer fill_ratio una única vez: quantity, notional y margin_usdt deben
+        # derivar del mismo valor para no quedar inconsistentes entre sí si
+        # PartialFillModel se vuelve estocástico en el futuro.
+        fill_ratio = self._partial_fill.fill_ratio
+        quantity = (requested_quantity * fill_ratio).quantize(_QUANT)
         if quantity <= _ZERO:
             return None
 
-        fill_ratio = self._partial_fill.fill_ratio
         notional = (requested_notional * fill_ratio).quantize(_QUANT)
         margin_usdt = (signal.margin_usdt * fill_ratio).quantize(_QUANT)
         fee = self._fee.calculate(notional, order_type)
