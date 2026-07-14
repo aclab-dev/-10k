@@ -10,13 +10,26 @@ Garantías:
 - Una posición abierta a la vez (MVP: max_open_positions = 1).
 
 Flujo por candle i:
-  1. Fill de entrada pendiente (si i >= fill_candle_index).
+  1. Fill de entrada pendiente (si i >= fill_candle_index). El PartialFillModel
+     puede reducir la cantidad realmente ejecutada respecto a la solicitada
+     (simulación de liquidez insuficiente).
   2. Cierre solicitado por señal CLOSE (si i >= pending_close_index).
   3. Check SL/TP intra-candle (si hay posición abierta).
   4. Acumular funding al close del candle.
   5. Llamar al SignalProvider con history = candles[0:i] (inmutable, sin candle i).
 
 Al final de los datos: cierra posición abierta al close del último candle.
+
+Nota de diseño (fills parciales): el PartialFillModel se aplica únicamente al
+fill de entrada. Los cierres (SL/TP/CLOSE/END_OF_DATA) siempre liquidan el
+100% de la cantidad que quedó efectivamente abierta — nunca dejan un remanente.
+Modelar fills parciales también en el cierre implicaría "partial close" de una
+posición existente, que está fuera de scope en MVP
+(`position_management.partial_close_enabled_mvp=false`).
+notional_usdt y margin_usdt se escalan por el mismo fill_ratio (no se derivan
+de quantity*fill_price, para no introducir redondeo Decimal adicional respecto
+al comportamiento previo con fill_ratio=1.0). Si fill_ratio=0 (liquidez nula),
+la orden se descarta sin abrir posición — no genera un trade fantasma.
 
 Nota: una señal CLOSE emitida en el último candle produce un cierre con
 exit_reason="END_OF_DATA" porque no hay candle siguiente para ejecutarla.
@@ -32,6 +45,7 @@ import structlog
 from backend.backtesting.fee_model import FeeModel, OrderType
 from backend.backtesting.latency_model import LatencyModel
 from backend.backtesting.metrics import compute_backtest_metrics
+from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.schemas import (
     BacktestConfig,
     BacktestRunResult,
@@ -72,6 +86,8 @@ class BacktestingEngine:
         fee_model: modelo de fees (por defecto: taker 0.05%, maker 0.02%).
         slippage_model: modelo de slippage (por defecto: 2 BPS en MARKET/STOP).
         latency_model: modelo de latencia extra (por defecto: 0 candles adicionales).
+        partial_fill_model: modelo de fill parcial en la entrada (por defecto:
+            fill_ratio=1.0, fill completo — sin cambio de comportamiento).
 
     Nota de rendimiento: la tupla de history se construye en O(n²) total
     (cada iteración crea una nueva tupla). Aceptable para MVP (<50k candles).
@@ -85,11 +101,13 @@ class BacktestingEngine:
         fee_model: FeeModel | None = None,
         slippage_model: SlippageModel | None = None,
         latency_model: LatencyModel | None = None,
+        partial_fill_model: PartialFillModel | None = None,
     ) -> None:
         self._config = config
         self._fee = fee_model or FeeModel()
         self._slip = slippage_model or SlippageModel()
         self._latency = latency_model or LatencyModel(extra_candles=config.latency_candles)
+        self._partial_fill = partial_fill_model or PartialFillModel()
 
     def run(
         self,
@@ -129,14 +147,22 @@ class BacktestingEngine:
             if pending_entry is not None:
                 signal, fill_idx = pending_entry
                 if i >= fill_idx and open_pos is None:
-                    open_pos = self._open_position(signal, candle, i)
+                    new_pos = self._open_position(signal, candle, i)
                     pending_entry = None
-                    _log.debug(
-                        "backtest.entry_filled",
-                        candle_index=i,
-                        side=open_pos.side,
-                        entry_price=str(open_pos.entry_price),
-                    )
+                    if new_pos is not None:
+                        open_pos = new_pos
+                        _log.debug(
+                            "backtest.entry_filled",
+                            candle_index=i,
+                            side=open_pos.side,
+                            entry_price=str(open_pos.entry_price),
+                        )
+                    else:
+                        _log.debug(
+                            "backtest.entry_not_filled",
+                            candle_index=i,
+                            reason="zero_liquidity_fill_ratio",
+                        )
 
             # ------------------------------------------------------------------
             # 2. Cierre solicitado por señal CLOSE
@@ -220,8 +246,19 @@ class BacktestingEngine:
         signal: TradeSignal,
         candle: CandleRow,
         candle_index: int,
-    ) -> OpenPosition:
-        """Abre una posición simulada al open del candle con slippage de MARKET order."""
+    ) -> OpenPosition | None:
+        """Abre una posición simulada al open del candle con slippage de MARKET order.
+
+        La cantidad solicitada pasa por el PartialFillModel: si la liquidez
+        simulada es insuficiente (fill_ratio < 1.0), la posición se abre con
+        menos cantidad de la pedida. notional_usdt y margin_usdt se escalan por
+        el mismo fill_ratio (no se derivan de quantity*fill_price, para no
+        introducir un redondeo Decimal adicional respecto al caso fill_ratio=1.0).
+
+        Returns:
+            None si el fill_ratio resulta en quantity == 0 (orden no ejecutada:
+            liquidez insuficiente). No se abre posición ni se ocupa el slot.
+        """
         if signal.stop_loss is None or signal.take_profit is None:
             raise ValueError(
                 f"stop_loss y take_profit son obligatorios para señales {signal.action}"
@@ -233,8 +270,19 @@ class BacktestingEngine:
         order_type: OrderType = "MARKET"
 
         fill_price = self._slip.apply(candle.open, entry_side, order_type)
-        notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
-        quantity = (notional / fill_price).quantize(_QUANT)
+        requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
+        requested_quantity = (requested_notional / fill_price).quantize(_QUANT)
+
+        # Leer fill_ratio una única vez: quantity, notional y margin_usdt deben
+        # derivar del mismo valor para no quedar inconsistentes entre sí si
+        # PartialFillModel se vuelve estocástico en el futuro.
+        fill_ratio = self._partial_fill.fill_ratio
+        quantity = (requested_quantity * fill_ratio).quantize(_QUANT)
+        if quantity <= _ZERO:
+            return None
+
+        notional = (requested_notional * fill_ratio).quantize(_QUANT)
+        margin_usdt = (signal.margin_usdt * fill_ratio).quantize(_QUANT)
         fee = self._fee.calculate(notional, order_type)
         slippage_cost = abs(fill_price - candle.open) * quantity
 
@@ -245,7 +293,7 @@ class BacktestingEngine:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             leverage=signal.leverage,
-            margin_usdt=signal.margin_usdt,
+            margin_usdt=margin_usdt,
             notional_usdt=notional,
             quantity=quantity,
             entry_fee_usdt=fee,

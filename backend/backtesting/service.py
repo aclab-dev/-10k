@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from backend.backtesting.engine import BacktestingEngine, SignalProvider
 from backend.backtesting.fee_model import FeeModel
 from backend.backtesting.latency_model import LatencyModel
+from backend.backtesting.partial_fill_model import PartialFillModel
 from backend.backtesting.schemas import BacktestConfig, BacktestRunResult, CandleRow
 from backend.backtesting.slippage_model import SlippageModel
 from backend.storage.models import BacktestResult, BacktestRun
@@ -45,6 +46,7 @@ class BacktestService:
         fee_model: FeeModel | None = None,
         slippage_model: SlippageModel | None = None,
         latency_model: LatencyModel | None = None,
+        partial_fill_model: PartialFillModel | None = None,
     ) -> tuple[BacktestRun, BacktestResult]:
         """Ejecuta el backtest y persiste los resultados.
 
@@ -64,6 +66,7 @@ class BacktestService:
             fee_model=fee_model,
             slippage_model=slippage_model,
             latency_model=latency_model,
+            partial_fill_model=partial_fill_model,
         )
 
         run = BacktestRun(
