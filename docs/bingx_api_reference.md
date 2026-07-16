@@ -164,11 +164,14 @@ Todos los endpoints retornan JSON con la estructura:
 | `/openApi/swap/v2/trade/forceOrders`          | GET    | Órdenes de liquidación forzada       |
 | `/openApi/swap/v2/trade/leverage`             | GET    | Consultar leverage actual            |
 | `/openApi/swap/v2/trade/leverage`             | POST   | Cambiar leverage (`symbol, side, leverage`) |
-| `/openApi/swap/v2/trade/marginType`           | GET    | Consultar modo de margen             |
-| `/openApi/swap/v2/trade/marginType`           | POST   | Cambiar modo de margen               |
+| `/openApi/swap/v2/trade/marginType`           | GET    | Consultar modo de margen actual      |
+| `/openApi/swap/v2/trade/marginType`           | POST   | Cambiar modo de margen (`marginType`) |
 | `/openApi/swap/v2/trade/positionMargin`       | POST   | Ajustar margen aislado               |
 | `/openApi/swap/v2/trade/positionSide/dual`    | GET    | Consultar modo de posición (ONE_WAY / hedge) |
 | `/openApi/swap/v2/trade/positionSide/dual`    | POST   | Cambiar modo de posición (`dualSidePosition`) |
+
+> **Regla no negociable del proyecto — Margin Type:** el adapter debe verificar y forzar `marginType=ISOLATED` al inicializar la conexión.
+> `CROSS` está prohibido. Igual que con el modo de posición, este chequeo debe ocurrir antes de colocar cualquier orden.
 
 **Parámetros clave de orden:**
 
@@ -214,7 +217,7 @@ Respuesta GET:
 | `/openApi/user/auth/userDataStream`   | PUT    | Extender listen key (requiere `listenKey` en query) |
 | `/openApi/user/auth/userDataStream`   | DELETE | Eliminar listen key                  |
 
-El listen key expira si no se extiende cada ~60 minutos.
+El listen key tiene un timeout de **60 minutos**. Extender con PUT antes de que venza — se recomienda hacerlo cada ~50 min para tener margen de seguridad (ver nota 6, sección 9).
 
 ---
 
@@ -334,7 +337,7 @@ Los valores exactos varían por par y nivel VIP de la cuenta. Confirmar con `/op
 1. **No hay testnet real** — el adapter debe soportar `ENVIRONMENT=PAPER` para bypasear las calls al exchange.
 2. **Firma HMAC-SHA256 hexdigest** — distinta a la firma base64 usada en la V1 legacy.
 3. **Symbol format** es `BTC-USDT` (con guión), no `BTCUSDT` como en Binance.
-4. **Position mode ONE_WAY obligatorio** — el adapter debe verificar y forzar `dualSidePosition=false` al inicializar (ver sección 5.4). Todas las órdenes deben usar `positionSide=BOTH`. No usar hedge mode (`LONG`/`SHORT`).
+4. **Modos obligatorios al inicializar** — el adapter debe verificar y forzar dos configuraciones antes de operar: (a) `dualSidePosition=false` (ONE_WAY, ver sección 5.4) — todas las órdenes usan `positionSide=BOTH`; (b) `marginType=ISOLATED` — `CROSS` está prohibido (ver nota en sección 5.3).
 5. **Rate limit** — 500 req / 10s confirmado para market data. Los endpoints de `/trade/*` pueden tener límites distintos; medir en LIVE antes de fijar el throttler (ver sección 3).
-6. **WebSocket keep-alive** — dos niveles: (a) responder ping frames del servidor, (b) extender el listen key cada ~50 min con PUT (ver sección 5.5 y sección Keep-alive).
+6. **WebSocket keep-alive** — dos niveles: (a) responder ping frames del servidor (ver sección Keep-alive), (b) extender el listen key con PUT cada ~50 min — el timeout real es 60 min, renovar antes evita expiración silenciosa del stream (ver sección 5.5).
 7. **Minimum order** — `tradeMinUSDT: 2 USDT`. Validar antes de enviar.
