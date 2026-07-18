@@ -18,17 +18,17 @@ from backend.market_data.schemas import CoherenceStatus, DataFreshnessStatus, Ex
 
 _KLINE = [
     1699958400000,  # open_time
-    "50000.0",      # open
-    "51000.0",      # high
-    "49500.0",      # low
-    "50500.0",      # close
-    "100.5",        # volume
+    "50000.0",  # open
+    "51000.0",  # high
+    "49500.0",  # low
+    "50500.0",  # close
+    "100.5",  # volume
     1699958699999,  # close_time
-    "5050000.0",    # quote_volume
-    1234,           # trades
-    "60.3",         # taker_buy_base
-    "3025500.0",    # taker_buy_quote
-    "0",            # ignore
+    "5050000.0",  # quote_volume
+    1234,  # trades
+    "60.3",  # taker_buy_base
+    "3025500.0",  # taker_buy_quote
+    "0",  # ignore
 ]
 
 _TICKER = {
@@ -103,9 +103,7 @@ async def test_fetch_snapshot_returns_market_snapshot() -> None:
 @pytest.mark.asyncio
 async def test_fetch_snapshot_prices_from_ticker() -> None:
     fetcher = _make_fetcher()
-    snapshot = await fetcher.fetch_snapshot(
-        symbol="BTCUSDT", account_balance_usdt=Decimal("1000")
-    )
+    snapshot = await fetcher.fetch_snapshot(symbol="BTCUSDT", account_balance_usdt=Decimal("1000"))
     assert snapshot.last_price == Decimal("50500.0")
     assert snapshot.bid == Decimal("50490.0")
     assert snapshot.ask == Decimal("50510.0")
@@ -115,9 +113,7 @@ async def test_fetch_snapshot_prices_from_ticker() -> None:
 @pytest.mark.asyncio
 async def test_fetch_snapshot_candles_from_klines() -> None:
     fetcher = _make_fetcher()
-    snapshot = await fetcher.fetch_snapshot(
-        symbol="BTCUSDT", account_balance_usdt=Decimal("1000")
-    )
+    snapshot = await fetcher.fetch_snapshot(symbol="BTCUSDT", account_balance_usdt=Decimal("1000"))
     assert snapshot.candles.tf_5m.open == Decimal("50000.0")
     assert snapshot.candles.tf_5m.high == Decimal("51000.0")
     assert snapshot.candles.tf_5m.low == Decimal("49500.0")
@@ -132,18 +128,14 @@ async def test_fetch_snapshot_candles_from_klines() -> None:
 @pytest.mark.asyncio
 async def test_fetch_snapshot_funding_rate() -> None:
     fetcher = _make_fetcher()
-    snapshot = await fetcher.fetch_snapshot(
-        symbol="BTCUSDT", account_balance_usdt=Decimal("1000")
-    )
+    snapshot = await fetcher.fetch_snapshot(symbol="BTCUSDT", account_balance_usdt=Decimal("1000"))
     assert snapshot.funding_rate == pytest.approx(0.0001)
 
 
 @pytest.mark.asyncio
 async def test_fetch_snapshot_open_interest() -> None:
     fetcher = _make_fetcher()
-    snapshot = await fetcher.fetch_snapshot(
-        symbol="BTCUSDT", account_balance_usdt=Decimal("1000")
-    )
+    snapshot = await fetcher.fetch_snapshot(symbol="BTCUSDT", account_balance_usdt=Decimal("1000"))
     assert snapshot.open_interest == Decimal("12345.678")
 
 
@@ -164,9 +156,7 @@ async def test_fetch_snapshot_account_fields_passed_through() -> None:
 @pytest.mark.asyncio
 async def test_fetch_snapshot_freshness_and_coherence() -> None:
     fetcher = _make_fetcher()
-    snapshot = await fetcher.fetch_snapshot(
-        symbol="BTCUSDT", account_balance_usdt=Decimal("1000")
-    )
+    snapshot = await fetcher.fetch_snapshot(symbol="BTCUSDT", account_balance_usdt=Decimal("1000"))
     assert snapshot.data_freshness_status == DataFreshnessStatus.FRESH
     assert snapshot.coherence_status == CoherenceStatus.OK
 
@@ -176,7 +166,5 @@ async def test_fetch_snapshot_all_symbols() -> None:
     """Verifica que el fetcher acepte todos los símbolos permitidos."""
     fetcher = _make_fetcher()
     for symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"):
-        snapshot = await fetcher.fetch_snapshot(
-            symbol=symbol, account_balance_usdt=Decimal("1000")
-        )
+        snapshot = await fetcher.fetch_snapshot(symbol=symbol, account_balance_usdt=Decimal("1000"))
         assert snapshot.symbol == symbol

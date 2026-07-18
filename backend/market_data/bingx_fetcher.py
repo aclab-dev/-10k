@@ -77,14 +77,10 @@ class BingXDataFetcher(DataFetcher):
             for interval, _, _ in _TIMEFRAMES
         ]
         ticker_task = self._get("/openApi/swap/v2/quote/ticker", {"symbol": bingx_symbol})
-        funding_task = self._get(
-            "/openApi/swap/v2/quote/premiumIndex", {"symbol": bingx_symbol}
-        )
+        funding_task = self._get("/openApi/swap/v2/quote/premiumIndex", {"symbol": bingx_symbol})
         oi_task = self._get("/openApi/swap/v2/quote/openInterest", {"symbol": bingx_symbol})
 
-        results = await asyncio.gather(
-            *kline_tasks, ticker_task, funding_task, oi_task
-        )
+        results = await asyncio.gather(*kline_tasks, ticker_task, funding_task, oi_task)
 
         local_after = datetime.now(UTC)
         latency_ms = int((local_after - local_before).total_seconds() * 1000)
@@ -113,14 +109,9 @@ class BingXDataFetcher(DataFetcher):
 
         server_ts_ms: int = int(ticker.get("time", 0))
         server_time = (
-            datetime.fromtimestamp(server_ts_ms / 1000.0, tz=UTC)
-            if server_ts_ms
-            else local_after
+            datetime.fromtimestamp(server_ts_ms / 1000.0, tz=UTC) if server_ts_ms else local_after
         )
-        clock_skew_ms = int(
-            (server_time - local_before).total_seconds() * 1000
-            - latency_ms // 2
-        )
+        clock_skew_ms = int((server_time - local_before).total_seconds() * 1000 - latency_ms // 2)
         # Clamp dentro del límite del schema (±5000 ms)
         clock_skew_ms = max(-4999, min(4999, clock_skew_ms))
 
@@ -176,9 +167,7 @@ class BingXDataFetcher(DataFetcher):
         response.raise_for_status()
         body: dict[str, Any] = response.json()
         if body.get("code", -1) != 0:
-            raise RuntimeError(
-                f"BingX error {body.get('code')}: {body.get('msg', '')} — {path}"
-            )
+            raise RuntimeError(f"BingX error {body.get('code')}: {body.get('msg', '')} — {path}")
         return body["data"]
 
 

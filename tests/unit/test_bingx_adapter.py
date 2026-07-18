@@ -106,23 +106,25 @@ def test_paper_and_bingx_adapters_share_the_same_contract() -> None:
 
 
 def test_get_account_state_maps_fields() -> None:
-    adapter = _make_adapter({
-        "/user/balance": {
-            "code": 0,
-            "data": {
-                "balance": {
-                    "asset": "USDT",
-                    "balance": "1000.00",
-                    "equity": "1050.00",
-                    "unrealizedProfit": "50.00",
-                    "realisedProfit": "0.00",
-                    "availableMargin": "800.00",
-                    "usedMargin": "200.00",
-                    "freezedMargin": "0.00",
-                }
-            },
+    adapter = _make_adapter(
+        {
+            "/user/balance": {
+                "code": 0,
+                "data": {
+                    "balance": {
+                        "asset": "USDT",
+                        "balance": "1000.00",
+                        "equity": "1050.00",
+                        "unrealizedProfit": "50.00",
+                        "realisedProfit": "0.00",
+                        "availableMargin": "800.00",
+                        "usedMargin": "200.00",
+                        "freezedMargin": "0.00",
+                    }
+                },
+            }
         }
-    })
+    )
     state = adapter.get_account_state()
     assert state.balance_usdt == Decimal("1000.00")
     assert state.equity_usdt == Decimal("1050.00")
@@ -137,23 +139,25 @@ def test_get_account_state_maps_fields() -> None:
 
 
 def test_get_position_long_returns_buy_side() -> None:
-    adapter = _make_adapter({
-        "/user/positions": {
-            "code": 0,
-            "data": [
-                {
-                    "symbol": "BTC-USDT",
-                    "positionSide": "BOTH",
-                    "positionAmt": "0.001",
-                    "avgPrice": "50000.00",
-                    "markPrice": "51000.00",
-                    "unrealizedProfit": "1.00",
-                    "initialMargin": "50.00",
-                    "leverage": 10,
-                }
-            ],
+    adapter = _make_adapter(
+        {
+            "/user/positions": {
+                "code": 0,
+                "data": [
+                    {
+                        "symbol": "BTC-USDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0.001",
+                        "avgPrice": "50000.00",
+                        "markPrice": "51000.00",
+                        "unrealizedProfit": "1.00",
+                        "initialMargin": "50.00",
+                        "leverage": 10,
+                    }
+                ],
+            }
         }
-    })
+    )
     pos = adapter.get_position("BTCUSDT")
     assert pos is not None
     assert pos.side == OrderSide.BUY
@@ -164,23 +168,25 @@ def test_get_position_long_returns_buy_side() -> None:
 
 
 def test_get_position_short_returns_sell_side() -> None:
-    adapter = _make_adapter({
-        "/user/positions": {
-            "code": 0,
-            "data": [
-                {
-                    "symbol": "BTC-USDT",
-                    "positionSide": "BOTH",
-                    "positionAmt": "-0.001",
-                    "avgPrice": "50000.00",
-                    "markPrice": "49000.00",
-                    "unrealizedProfit": "1.00",
-                    "initialMargin": "50.00",
-                    "leverage": 5,
-                }
-            ],
+    adapter = _make_adapter(
+        {
+            "/user/positions": {
+                "code": 0,
+                "data": [
+                    {
+                        "symbol": "BTC-USDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "-0.001",
+                        "avgPrice": "50000.00",
+                        "markPrice": "49000.00",
+                        "unrealizedProfit": "1.00",
+                        "initialMargin": "50.00",
+                        "leverage": 5,
+                    }
+                ],
+            }
         }
-    })
+    )
     pos = adapter.get_position("BTCUSDT")
     assert pos is not None
     assert pos.side == OrderSide.SELL
@@ -188,30 +194,30 @@ def test_get_position_short_returns_sell_side() -> None:
 
 
 def test_get_position_zero_amt_returns_none() -> None:
-    adapter = _make_adapter({
-        "/user/positions": {
-            "code": 0,
-            "data": [
-                {
-                    "symbol": "BTC-USDT",
-                    "positionSide": "BOTH",
-                    "positionAmt": "0",
-                    "avgPrice": "0",
-                    "markPrice": "50000",
-                    "unrealizedProfit": "0",
-                    "initialMargin": "0",
-                    "leverage": 1,
-                }
-            ],
+    adapter = _make_adapter(
+        {
+            "/user/positions": {
+                "code": 0,
+                "data": [
+                    {
+                        "symbol": "BTC-USDT",
+                        "positionSide": "BOTH",
+                        "positionAmt": "0",
+                        "avgPrice": "0",
+                        "markPrice": "50000",
+                        "unrealizedProfit": "0",
+                        "initialMargin": "0",
+                        "leverage": 1,
+                    }
+                ],
+            }
         }
-    })
+    )
     assert adapter.get_position("BTCUSDT") is None
 
 
 def test_get_position_empty_list_returns_none() -> None:
-    adapter = _make_adapter({
-        "/user/positions": {"code": 0, "data": []}
-    })
+    adapter = _make_adapter({"/user/positions": {"code": 0, "data": []}})
     assert adapter.get_position("BTCUSDT") is None
 
 
@@ -236,9 +242,7 @@ _OPEN_ORDER = {
 
 
 def test_get_open_orders_returns_pending_order() -> None:
-    adapter = _make_adapter({
-        "/trade/openOrders": {"code": 0, "data": {"orders": [_OPEN_ORDER]}}
-    })
+    adapter = _make_adapter({"/trade/openOrders": {"code": 0, "data": {"orders": [_OPEN_ORDER]}}})
     orders = adapter.get_open_orders("BTCUSDT")
     assert len(orders) == 1
     assert orders[0].status == OrderStatus.PENDING
@@ -248,17 +252,13 @@ def test_get_open_orders_returns_pending_order() -> None:
 
 
 def test_get_open_orders_populates_symbol_cache() -> None:
-    adapter = _make_adapter({
-        "/trade/openOrders": {"code": 0, "data": {"orders": [_OPEN_ORDER]}}
-    })
+    adapter = _make_adapter({"/trade/openOrders": {"code": 0, "data": {"orders": [_OPEN_ORDER]}}})
     adapter.get_open_orders("BTCUSDT")
     assert adapter._order_symbol_cache["550e8400-e29b-41d4-a716-446655440000"] == "BTCUSDT"
 
 
 def test_get_open_orders_empty_returns_empty_list() -> None:
-    adapter = _make_adapter({
-        "/trade/openOrders": {"code": 0, "data": {"orders": []}}
-    })
+    adapter = _make_adapter({"/trade/openOrders": {"code": 0, "data": {"orders": []}}})
     assert adapter.get_open_orders("BTCUSDT") == []
 
 
@@ -285,9 +285,7 @@ _FILLED_ORDER = {
 
 def test_get_order_status_uses_cached_symbol() -> None:
     client_oid = "550e8400-e29b-41d4-a716-446655440001"
-    adapter = _make_adapter({
-        "/trade/order": {"code": 0, "data": _FILLED_ORDER}
-    })
+    adapter = _make_adapter({"/trade/order": {"code": 0, "data": _FILLED_ORDER}})
     adapter._order_symbol_cache[client_oid] = "BTCUSDT"
     result = adapter.get_order_status(client_oid)
     assert result is not None

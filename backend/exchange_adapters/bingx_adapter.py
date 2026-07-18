@@ -211,9 +211,7 @@ class BingXAdapter(ExchangeAdapter):
         response.raise_for_status()
         body: dict[str, Any] = response.json()
         if body.get("code", -1) != 0:
-            raise BingXApiError(
-                f"BingX error {body.get('code')}: {body.get('msg', '')}"
-            )
+            raise BingXApiError(f"BingX error {body.get('code')}: {body.get('msg', '')}")
         return body["data"]
 
     def _parse_order(self, raw: dict[str, Any], symbol: str) -> OrderResult:
