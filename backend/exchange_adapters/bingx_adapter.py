@@ -69,11 +69,6 @@ def _to_bingx_symbol(symbol: str) -> str:
     return f"{symbol[:-4]}-USDT"
 
 
-def _from_bingx_symbol(symbol: str) -> str:
-    """BTC-USDT → BTCUSDT."""
-    return symbol.replace("-", "")
-
-
 class BingXApiError(Exception):
     """Raised when BingX API returns a non-zero error code."""
 
@@ -171,8 +166,20 @@ class BingXAdapter(ExchangeAdapter):
                 if data:
                     self._order_symbol_cache[client_order_id] = symbol
                     return self._parse_order(data, symbol)
-            except BingXApiError:
-                continue
+            except BingXApiError as exc:
+                _log.debug(
+                    "get_order_status: order not found for symbol, trying next",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    error=str(exc),
+                )
+            except httpx.HTTPStatusError as exc:
+                _log.warning(
+                    "get_order_status: HTTP error probing symbol, trying next",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    status_code=exc.response.status_code,
+                )
         return None
 
     # ------------------------------------------------------------------
@@ -211,13 +218,27 @@ class BingXAdapter(ExchangeAdapter):
         response.raise_for_status()
         body: dict[str, Any] = response.json()
         if body.get("code", -1) != 0:
+            _log.warning(
+                "BingX API returned non-zero code",
+                path=path,
+                code=body.get("code"),
+                msg=body.get("msg", ""),
+            )
             raise BingXApiError(f"BingX error {body.get('code')}: {body.get('msg', '')}")
         return body["data"]
 
     def _parse_order(self, raw: dict[str, Any], symbol: str) -> OrderResult:
         """Mapea un dict de orden BingX → OrderResult."""
         status = _STATUS_MAP.get(raw.get("status", "FAILED"), OrderStatus.FAILED)
-        order_type = _ORDER_TYPE_MAP.get(raw.get("type", "MARKET"), OrderType.MARKET)
+        raw_type = raw.get("type", "MARKET")
+        order_type = _ORDER_TYPE_MAP.get(raw_type)
+        if order_type is None:
+            _log.warning(
+                "unknown BingX order type, defaulting to MARKET",
+                raw_type=raw_type,
+                order_id=raw.get("orderId"),
+            )
+            order_type = OrderType.MARKET
 
         avg_price_str: str = raw.get("avgPrice") or raw.get("price") or "0"
         fill_price = Decimal(avg_price_str) if Decimal(avg_price_str) > 0 else None

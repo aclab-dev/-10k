@@ -158,7 +158,8 @@ class BingXDataFetcher(DataFetcher):
                 resp = client.get(f"{_BASE_URL}/openApi/swap/v2/quote/contracts")
                 body: dict[str, Any] = resp.json()
                 return int(body.get("code", -1)) == 0
-        except Exception:
+        except Exception as exc:
+            _log.warning("is_healthy check failed", error=str(exc))
             return False
 
     async def _get(self, path: str, params: dict[str, str]) -> Any:

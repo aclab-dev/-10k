@@ -315,3 +315,59 @@ def test_signed_get_raises_on_nonzero_code() -> None:
     adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
     with pytest.raises(BingXApiError, match="100413"):
         adapter.get_account_state()
+
+
+def test_get_order_status_falls_through_on_api_error_to_matching_symbol() -> None:
+    """Primer símbolo devuelve BingXApiError (orden no existe allí), el segundo acierta."""
+    client_oid = "550e8400-e29b-41d4-a716-446655440002"
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
+        return httpx.Response(200, json={"code": 0, "data": _FILLED_ORDER})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.get_order_status(client_oid)
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    assert call_count == 2
+
+
+def test_get_order_status_continues_after_http_error() -> None:
+    """HTTPStatusError en primer símbolo no revienta la consulta; prueba el siguiente."""
+    client_oid = "550e8400-e29b-41d4-a716-446655440003"
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(429, json={})
+        return httpx.Response(200, json={"code": 0, "data": _FILLED_ORDER})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.get_order_status(client_oid)
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    assert call_count == 2
+
+
+def test_parse_order_logs_warning_on_unknown_type() -> None:
+    """Tipo desconocido de BingX produce OrderType.MARKET sin lanzar excepción."""
+    adapter = _make_adapter(
+        {
+            "/trade/order": {
+                "code": 0,
+                "data": {**_FILLED_ORDER, "type": "STOP"},
+            }
+        }
+    )
+    adapter._order_symbol_cache["550e8400-e29b-41d4-a716-446655440001"] = "BTCUSDT"
+    result = adapter.get_order_status("550e8400-e29b-41d4-a716-446655440001")
+    assert result is not None
+    assert result.order_type == OrderType.MARKET
