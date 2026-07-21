@@ -1,12 +1,19 @@
 """BingXAdapter — implementación de ExchangeAdapter contra BingX Futures (USDT-M).
 
-Métodos implementados en esta tarjeta ([98]):
+Métodos de lectura (tarjeta [98]):
   - get_account_state  →  GET /openApi/swap/v2/user/balance
   - get_position       →  GET /openApi/swap/v2/user/positions
   - get_open_orders    →  GET /openApi/swap/v2/trade/openOrders
   - get_order_status   →  GET /openApi/swap/v2/trade/order
 
-Métodos pendientes ([99]): place_order, cancel_order, set_leverage, set_margin_type.
+Métodos de escritura (tarjeta [99]):
+  - place_order        →  POST   /openApi/swap/v2/trade/order
+  - cancel_order       →  DELETE /openApi/swap/v2/trade/order
+  - set_leverage       →  POST   /openApi/swap/v2/trade/leverage
+  - set_margin_type    →  POST   /openApi/swap/v2/trade/marginType
+
+El bloqueo de ENVIRONMENT=LIVE (Environment Guard / Execution Engine, PDF 01.1 §4.5)
+no vive en este adapter — su única responsabilidad es abstraer el exchange.
 
 Notas de la API de BingX (ver docs/bingx_api_reference.md):
 - No existe un host de TESTNET separado: TESTNET y LIVE apuntan al mismo host.
@@ -61,6 +68,14 @@ _ORDER_TYPE_MAP: dict[str, OrderType] = {
     "LIMIT": OrderType.LIMIT,
     "STOP_MARKET": OrderType.STOP_MARKET,
     "TAKE_PROFIT_MARKET": OrderType.TAKE_PROFIT_MARKET,
+}
+
+# Leverage máximo permitido por entorno (PDF 01.1 §4.9: PAPER 10x, TESTNET 5x, LIVE absoluto 5x).
+# El tope de 3x "LIVE inicial" es un límite operativo del checklist F17, no de esta clase.
+_MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
+    Environment.PAPER: 10,
+    Environment.TESTNET: 5,
+    Environment.LIVE: 5,
 }
 
 
@@ -187,23 +202,123 @@ class BingXAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     def place_order(self, request: OrderRequest) -> OrderResult:
-        raise NotImplementedError("BingXAdapter.place_order: implementado en la tarjeta [99]")
+        existing = self._query_order(request.symbol, request.client_order_id)
+        if existing is not None:
+            _log.info(
+                "bingx_adapter.idempotent_order",
+                client_order_id=request.client_order_id,
+                symbol=request.symbol,
+            )
+            return existing
+
+        params: dict[str, str] = {
+            "symbol": _to_bingx_symbol(request.symbol),
+            "type": request.order_type.value,
+            "side": request.side.value,
+            "positionSide": "BOTH",  # ONE_WAY mode obligatorio.
+            "quantity": str(request.quantity),
+            "clientOrderID": request.client_order_id,
+            "reduceOnly": "true" if request.is_reduce_only else "false",
+        }
+        if request.price is not None:
+            params["price"] = str(request.price)
+        if request.stop_price is not None:
+            params["stopPrice"] = str(request.stop_price)
+
+        data: dict[str, Any] = self._signed_request("POST", "/openApi/swap/v2/trade/order", params)
+        raw_order: dict[str, Any] = data.get("order", data)
+        result = self._parse_order(raw_order, request.symbol)
+        self._order_symbol_cache[result.client_order_id] = request.symbol
+        _log.info(
+            "bingx_adapter.order_placed",
+            client_order_id=result.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            status=result.status,
+        )
+        return result
 
     def cancel_order(self, client_order_id: str) -> bool:
-        raise NotImplementedError("BingXAdapter.cancel_order: implementado en la tarjeta [99]")
+        existing = self.get_order_status(client_order_id)
+        if existing is None or existing.status not in (
+            OrderStatus.PENDING,
+            OrderStatus.PARTIALLY_FILLED,
+        ):
+            return False
+
+        try:
+            self._signed_request(
+                "DELETE",
+                "/openApi/swap/v2/trade/order",
+                {
+                    "symbol": _to_bingx_symbol(existing.symbol),
+                    "clientOrderID": client_order_id,
+                },
+            )
+        except BingXApiError as exc:
+            _log.warning(
+                "bingx_adapter.cancel_order_failed",
+                client_order_id=client_order_id,
+                error=str(exc),
+            )
+            return False
+
+        _log.info("bingx_adapter.order_cancelled", client_order_id=client_order_id)
+        return True
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
-        raise NotImplementedError("BingXAdapter.set_leverage: implementado en la tarjeta [99]")
+        cap = _MAX_LEVERAGE_BY_ENV[self._environment]
+        if leverage < 1 or leverage > cap:
+            raise ValueError(
+                f"Leverage {leverage}x fuera del rango permitido en {self._environment} (1–{cap}x)"
+            )
+        self._signed_request(
+            "POST",
+            "/openApi/swap/v2/trade/leverage",
+            {
+                "symbol": _to_bingx_symbol(symbol),
+                "side": "BOTH",
+                "leverage": str(leverage),
+            },
+        )
+        _log.info("bingx_adapter.leverage_set", symbol=symbol, leverage=leverage)
 
     def set_margin_type(self, symbol: str, margin_type: MarginType) -> None:
-        raise NotImplementedError("BingXAdapter.set_margin_type: implementado en la tarjeta [99]")
+        if margin_type == MarginType.CROSS:
+            raise ValueError("Cross margin está prohibido. Solo se permite ISOLATED.")
+        self._signed_request(
+            "POST",
+            "/openApi/swap/v2/trade/marginType",
+            {
+                "symbol": _to_bingx_symbol(symbol),
+                "marginType": margin_type.value,
+            },
+        )
+        _log.info("bingx_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
 
     # ------------------------------------------------------------------
     # HTTP / firma
     # ------------------------------------------------------------------
 
+    def _query_order(self, symbol: str, client_order_id: str) -> OrderResult | None:
+        """Consulta puntual de una orden por symbol+client_order_id. None si no existe."""
+        try:
+            data: dict[str, Any] = self._signed_get(
+                "/openApi/swap/v2/trade/order",
+                {"symbol": _to_bingx_symbol(symbol), "clientOrderID": client_order_id},
+            )
+        except BingXApiError:
+            return None
+        if not data:
+            return None
+        self._order_symbol_cache[client_order_id] = symbol
+        return self._parse_order(data, symbol)
+
     def _signed_get(self, path: str, params: dict[str, str]) -> Any:
-        """GET autenticado: añade timestamp y firma HMAC-SHA256 al query string."""
+        return self._signed_request("GET", path, params)
+
+    def _signed_request(self, method: str, path: str, params: dict[str, str]) -> Any:
+        """Request autenticado: añade timestamp y firma HMAC-SHA256 al query string."""
         ts = str(int(time.time() * 1000))
         query_parts = [f"{k}={v}" for k, v in params.items()]
         query_parts.append(f"timestamp={ts}")
@@ -214,7 +329,7 @@ class BingXAdapter(ExchangeAdapter):
             hashlib.sha256,
         ).hexdigest()
         url = f"{_BASE_URL}{path}?{query_string}&signature={signature}"
-        response = self._http.get(url, headers={"X-BX-APIKEY": self._api_key})
+        response = self._http.request(method, url, headers={"X-BX-APIKEY": self._api_key})
         response.raise_for_status()
         body: dict[str, Any] = response.json()
         if body.get("code", -1) != 0:
