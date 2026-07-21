@@ -124,8 +124,6 @@ class TestBingXAdapterReadMethods:
         # BingXAdapter.get_account_state() siempre hardcodea is_simulated=False
         # (a diferencia de PaperAdapter) — no depende de Environment.TESTNET.
         assert state.is_simulated is False
-        # DEBUG TEMPORAL (revertir antes de mergear): forzar el valor real en el log de CI.
-        pytest.fail(f"DEBUG account_state={state!r}")
 
     def test_get_position_returns_none_or_valid_state(self, adapter: BingXAdapter) -> None:
         position = adapter.get_position(_SYMBOL)
