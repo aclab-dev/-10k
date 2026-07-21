@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
+from typing import Any
 
 import httpx
 import pytest
@@ -37,25 +38,45 @@ from backend.exchange_adapters.schemas import (
 _log = structlog.get_logger(__name__)
 
 _SYMBOL = "BTCUSDT"
+_QUOTE_BASE_URL = "https://open-api.bingx.com"
 
-# Precio y cantidad elegidos para que la orden LIMIT quede lejos del mercado real
-# (nunca debería fillear) y a la vez respete tradeMinUSDT: 2 USDT (docs/bingx_api_reference.md
-# §7) y el cap de margen del proyecto (≤10 USDT). No fijamos leverage explícito (ver
-# nota en el fixture `adapter`): en el peor caso, 1x, margen = notional = 0.0005 * 5000
-# = 2.5 USDT, igual dentro del cap. Precio estático: si BTC llegara a cotizar cerca de
-# este nivel, la orden podría fillear — revisar si estos tests empiezan a fallar de
-# forma inesperada.
-_SAFE_LIMIT_PRICE = Decimal("5000")
-_SAFE_QUANTITY = Decimal("0.0005")
+# La orden resting debe quedar lejos del precio real (para no fillear) pero dentro
+# de la banda de precio que BingX valida contra el mark price actual — un precio
+# estático se rompe apenas el mercado se mueve (ver tarjeta [101], BingX rechazó un
+# intento con "Order price should be higher than 13270.8"). Por eso el precio se
+# calcula en cada test contra el último precio real (endpoint público, sin firma).
+_RESTING_PRICE_DISCOUNT = Decimal("0.5")  # 50% por debajo del mark price actual
+_TARGET_NOTIONAL_USDT = Decimal("3")  # > tradeMinUSDT (2 USDT, docs/bingx_api_reference.md §7)
+_MIN_QUANTITY = Decimal("0.0001")  # tradeMinQuantity BTC-USDT (docs/bingx_api_reference.md §7)
+
+
+def _current_mark_price(symbol: str) -> Decimal:
+    """Último precio público (sin firma) — sólo para calcular un precio resting
+    seguro. No reemplaza a BingXDataFetcher (klines/ticker quedan fuera de [101])."""
+    bingx_symbol = f"{symbol[:-4]}-USDT"
+    response = httpx.get(
+        f"{_QUOTE_BASE_URL}/openApi/swap/v2/quote/price",
+        params={"symbol": bingx_symbol},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    body: dict[str, Any] = response.json()
+    return Decimal(str(body["data"]["price"]))
 
 
 def _resting_order_request() -> OrderRequest:
+    mark_price = _current_mark_price(_SYMBOL)
+    limit_price = (mark_price * _RESTING_PRICE_DISCOUNT).quantize(Decimal("0.1"))
+    quantity = max(
+        _MIN_QUANTITY,
+        (_TARGET_NOTIONAL_USDT / limit_price).quantize(Decimal("0.0001"), rounding=ROUND_UP),
+    )
     return OrderRequest(
         symbol=_SYMBOL,
         side=OrderSide.BUY,
         order_type=OrderType.LIMIT,
-        quantity=_SAFE_QUANTITY,
-        price=_SAFE_LIMIT_PRICE,
+        quantity=quantity,
+        price=limit_price,
     )
 
 
@@ -73,9 +94,9 @@ def adapter() -> Iterator[BingXAdapter]:
     # demo nueva arranca en Hedge Mode por default de BingX, y set_leverage() asume
     # ONE_WAY ya activo (manda side="BOTH") — llamarlo antes de cualquier place_order()
     # falla con "BingX error 109400: In the Hedge mode, the 'Side' field can only be
-    # set to LONG, SHORT or ALL." Dejamos el leverage default de la cuenta; el cálculo
-    # de margen de _SAFE_QUANTITY/_SAFE_LIMIT_PRICE ya es seguro incluso en el peor
-    # caso (1x, sin reducción de margen).
+    # set to LONG, SHORT or ALL." Dejamos el leverage default de la cuenta; el notional
+    # objetivo de _resting_order_request() (~3 USDT) ya es seguro en margen incluso en
+    # el peor caso (1x, sin reducción de margen).
     bingx = BingXAdapter(api_key=api_key, api_secret=api_secret, environment=Environment.TESTNET)
     yield bingx
 
