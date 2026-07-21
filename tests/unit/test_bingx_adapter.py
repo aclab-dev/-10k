@@ -394,11 +394,19 @@ def _adapter_with_calls() -> tuple[BingXAdapter, list[httpx.Request]]:
             return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
         if "/trade/order" in request.url.path and request.method == "POST":
             return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
+        account_setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
         return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
     return adapter, calls
+
+
+def _order_post_calls(calls: list[httpx.Request]) -> list[httpx.Request]:
+    return [c for c in calls if c.method == "POST" and "/trade/order" in c.url.path]
 
 
 def test_place_order_market_success() -> None:
@@ -409,9 +417,26 @@ def test_place_order_market_success() -> None:
     assert result.fill_price == Decimal("50000.00")
     assert result.symbol == "BTCUSDT"
 
-    post_calls = [c for c in calls if c.method == "POST"]
+    post_calls = _order_post_calls(calls)
     assert len(post_calls) == 1
     assert "positionSide=BOTH" in str(post_calls[0].url)
+
+
+def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    dual_calls = [c for c in calls if "/trade/positionSide/dual" in c.url.path]
+    margin_calls = [c for c in calls if "/trade/marginType" in c.url.path]
+    assert len(dual_calls) == 1
+    assert "dualSidePosition=false" in str(dual_calls[0].url)
+    assert len(margin_calls) == 1
+    assert "marginType=ISOLATED" in str(margin_calls[0].url)
+
+    # Una segunda orden en el mismo symbol no repite la verificación (cacheada).
+    adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440011"))
+    assert len([c for c in calls if "/trade/positionSide/dual" in c.url.path]) == 1
+    assert len([c for c in calls if "/trade/marginType" in c.url.path]) == 1
 
 
 def test_place_order_limit_includes_price() -> None:
@@ -423,7 +448,7 @@ def test_place_order_limit_includes_price() -> None:
             price=Decimal("49000"),
         )
     )
-    post_calls = [c for c in calls if c.method == "POST"]
+    post_calls = _order_post_calls(calls)
     assert len(post_calls) == 1
     assert "price=49000" in str(post_calls[0].url)
     assert "type=LIMIT" in str(post_calls[0].url)
@@ -443,7 +468,7 @@ def test_place_order_is_idempotent_by_client_order_id() -> None:
 
     result = adapter.place_order(_order_request(client_order_id=client_oid))
     assert result.client_order_id == client_oid
-    assert all(c.method == "GET" for c in calls), "no debe haber POST si la orden ya existe"
+    assert not _order_post_calls(calls), "no debe haber POST a /trade/order si la orden ya existe"
 
 
 # ---------------------------------------------------------------------------

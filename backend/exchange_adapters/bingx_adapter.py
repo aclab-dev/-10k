@@ -12,6 +12,10 @@ Métodos de escritura (tarjeta [99]):
   - set_leverage       →  POST   /openApi/swap/v2/trade/leverage
   - set_margin_type    →  POST   /openApi/swap/v2/trade/marginType
 
+place_order fuerza ONE_WAY (POST /trade/positionSide/dual) e ISOLATED
+(vía set_margin_type) antes de la primera orden — una vez por instancia y por
+símbolo respectivamente (ver docs/bingx_api_reference.md §9.4).
+
 El bloqueo de ENVIRONMENT=LIVE (Environment Guard / Execution Engine, PDF 01.1 §4.5)
 no vive en este adapter — su única responsabilidad es abstraer el exchange.
 
@@ -106,6 +110,11 @@ class BingXAdapter(ExchangeAdapter):
         self._http = http_client or httpx.Client(timeout=httpx.Timeout(10.0))
         # clientOrderId → symbol; poblado por get_open_orders para optimizar get_order_status.
         self._order_symbol_cache: dict[str, str] = {}
+        # ONE_WAY es global a la cuenta; ISOLATED se fuerza por símbolo. Ambos se
+        # verifican/fuerzan una única vez por instancia (ver _ensure_one_way_mode
+        # y _ensure_isolated_margin), no en cada orden.
+        self._one_way_verified = False
+        self._isolated_verified_symbols: set[str] = set()
 
     @property
     def environment(self) -> Environment:
@@ -202,6 +211,12 @@ class BingXAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     def place_order(self, request: OrderRequest) -> OrderResult:
+        self._ensure_one_way_mode()
+        self._ensure_isolated_margin(request.symbol)
+
+        # No es atómico con el POST de abajo: asume que el caller (Execution Engine)
+        # serializa place_order por client_order_id, igual que exige la idempotencia
+        # documentada en base.py. BingX también rechaza clientOrderID duplicado.
         existing = self._query_order(request.symbol, request.client_order_id)
         if existing is not None:
             _log.info(
@@ -300,8 +315,32 @@ class BingXAdapter(ExchangeAdapter):
     # HTTP / firma
     # ------------------------------------------------------------------
 
+    def _ensure_one_way_mode(self) -> None:
+        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs)."""
+        if self._one_way_verified:
+            return
+        self._signed_request(
+            "POST",
+            "/openApi/swap/v2/trade/positionSide/dual",
+            {"dualSidePosition": "false"},
+        )
+        self._one_way_verified = True
+        _log.info("bingx_adapter.one_way_mode_forced")
+
+    def _ensure_isolated_margin(self, symbol: str) -> None:
+        """Fuerza marginType=ISOLATED para symbol. Una sola vez por símbolo (§9.4 docs)."""
+        if symbol in self._isolated_verified_symbols:
+            return
+        self.set_margin_type(symbol, MarginType.ISOLATED)
+        self._isolated_verified_symbols.add(symbol)
+
     def _query_order(self, symbol: str, client_order_id: str) -> OrderResult | None:
-        """Consulta puntual de una orden por symbol+client_order_id. None si no existe."""
+        """Consulta puntual de una orden por symbol+client_order_id. None si no existe.
+
+        A diferencia de get_order_status, no atrapa httpx.HTTPStatusError: un error
+        HTTP transitorio acá debe abortar place_order (fail-closed) en vez de
+        arriesgar un POST duplicado con información incompleta.
+        """
         try:
             data: dict[str, Any] = self._signed_get(
                 "/openApi/swap/v2/trade/order",
