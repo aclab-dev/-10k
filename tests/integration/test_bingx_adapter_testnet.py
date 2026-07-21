@@ -1,13 +1,13 @@
 """Tests de integración para BingXAdapter (tarjeta [101]) — requieren cuenta demo real.
 
-BingX no ofrece un host TESTNET separado (ver docs/bingx_api_reference.md §7):
-estos tests golpean el mismo host de producción (https://open-api.bingx.com)
-usando credenciales de una cuenta demo/sandbox de BingX (fondos virtuales,
-separados de cualquier cuenta real).
+BingX expone un host de demo/sandbox (VST) separado del de producción, con fondos
+virtuales propios. El adapter en Environment.TESTNET apunta a ese host VST
+(https://open-api-vst.bingx.com); estos tests corren ahí, sin tocar fondos reales.
 
-Requiere BINGX_API_KEY y BINGX_API_SECRET en el entorno (credenciales de la
-cuenta demo, con permisos Read + Trade y retiro deshabilitado). Si no están
-seteadas, todos los tests de este archivo se saltean.
+Requiere BINGX_API_KEY y BINGX_API_SECRET en el entorno (credenciales de la cuenta,
+con permisos Read + Trade y retiro deshabilitado) y saldo virtual en la cuenta demo
+de Perpetual Futures USDT-M. Si las credenciales no están seteadas, todos los tests
+de este archivo se saltean.
 
 Ejecutar con:
     BINGX_API_KEY=... BINGX_API_SECRET=... pytest -m integration -k bingx
@@ -38,7 +38,9 @@ from backend.exchange_adapters.schemas import (
 _log = structlog.get_logger(__name__)
 
 _SYMBOL = "BTCUSDT"
-_QUOTE_BASE_URL = "https://open-api.bingx.com"
+# El precio se lee del host VST (mismo que usa el adapter en TESTNET) para que la
+# banda de precio válida coincida con la que evalúa el exchange al colocar la orden.
+_QUOTE_BASE_URL = "https://open-api-vst.bingx.com"
 
 # La orden resting debe quedar lejos del precio real (para no fillear) pero dentro
 # de la banda de precio que BingX valida contra el mark price actual — un precio

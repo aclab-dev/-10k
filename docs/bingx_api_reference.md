@@ -304,7 +304,21 @@ Respuesta esperada:
 
 ## 7. Sandbox
 
-BingX **no ofrece un entorno testnet separado** con URL distinta (a diferencia de Binance).
+> **Corrección (tarjeta [101])**: la investigación original afirmaba que BingX no
+> tiene un host de testnet separado. Es **incorrecto**. BingX expone un host de
+> demo/sandbox (VST — Virtual Simulated Trading) con fondos virtuales propios:
+>
+> | Entorno | Host |
+> |---------|------|
+> | Producción (LIVE)      | `https://open-api.bingx.com`     |
+> | Demo/sandbox (VST)     | `https://open-api-vst.bingx.com` |
+>
+> Confirmado contra la implementación de [ccxt](https://github.com/ccxt/ccxt/blob/master/python/ccxt/bingx.py)
+> (`urls['api']` vs `urls['test']`). El adapter selecciona el host por `Environment`:
+> `LIVE` → producción, `TESTNET`/`PAPER` → VST. Las credenciales de la cuenta demo
+> se generan desde la misma API Management, pero su balance/posiciones viven en el
+> host VST — pegarle al host de producción con esas credenciales devuelve una cuenta
+> vacía (balance 0), no un error.
 
 Opciones disponibles para testing:
 
@@ -322,7 +336,7 @@ El sistema -10k implementa su propio PAPER mode (F10) que simula la ejecución d
 
 ### 7.3 Cuentas demo
 
-BingX ofrece cuentas demo directamente en su plataforma web (https://bingx.com), con **fondos virtuales y credenciales separadas** de la cuenta real. No hay una URL de API diferente para el modo demo — las cuentas demo no tienen acceso a la API pública de la misma forma que las cuentas de producción. No confundir las credenciales de una cuenta demo con las de producción.
+BingX ofrece cuentas demo directamente en su plataforma web (https://bingx.com), con **fondos virtuales**. El acceso por API es vía el host VST (ver corrección al inicio de esta sección): `https://open-api-vst.bingx.com`. No confundir el balance de la cuenta demo (host VST) con el de producción (host normal).
 
 ---
 
@@ -341,7 +355,7 @@ Los valores exactos varían por par y nivel VIP de la cuenta. Confirmar con `/op
 
 ## 9. Notas para el adaptador (F13)
 
-1. **No hay testnet real** — el adapter debe soportar `ENVIRONMENT=PAPER` para bypasear las calls al exchange.
+1. **Host por entorno** — el adapter selecciona el host según `Environment`: `LIVE` → `open-api.bingx.com`, `TESTNET`/`PAPER` → `open-api-vst.bingx.com` (VST/demo, fondos virtuales). Ver sección 7.
 2. **Firma HMAC-SHA256 hexdigest** — distinta a la firma base64 usada en la V1 legacy.
 3. **Symbol format** es `BTC-USDT` (con guión), no `BTCUSDT` como en Binance.
 4. **Modos obligatorios al inicializar** — el adapter debe verificar y forzar dos configuraciones antes de operar: (a) `dualSidePosition=false` (ONE_WAY, ver sección 5.4) — todas las órdenes usan `positionSide=BOTH`; (b) `marginType=ISOLATED` — `CROSS` está prohibido (ver nota en sección 5.3).

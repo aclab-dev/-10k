@@ -87,6 +87,16 @@ def test_environment_property_reflects_constructor_arg() -> None:
     assert adapter.environment == Environment.LIVE
 
 
+def test_base_url_selected_by_environment() -> None:
+    """LIVE opera contra producción; TESTNET/PAPER contra el host VST/demo (tarjeta [101])."""
+    live = BingXAdapter(api_key="k", api_secret="s", environment=Environment.LIVE)
+    testnet = BingXAdapter(api_key="k", api_secret="s", environment=Environment.TESTNET)
+    paper = BingXAdapter(api_key="k", api_secret="s", environment=Environment.PAPER)
+    assert live._base_url == "https://open-api.bingx.com"
+    assert testnet._base_url == "https://open-api-vst.bingx.com"
+    assert paper._base_url == "https://open-api-vst.bingx.com"
+
+
 def test_paper_and_bingx_adapters_share_the_same_contract() -> None:
     """Ambos adapters son intercambiables donde se tipa ExchangeAdapter (compatibilidad F10)."""
     paper = PaperAdapter()

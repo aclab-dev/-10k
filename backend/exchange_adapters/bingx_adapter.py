@@ -20,7 +20,8 @@ El bloqueo de ENVIRONMENT=LIVE (Environment Guard / Execution Engine, PDF 01.1 �
 no vive en este adapter — su única responsabilidad es abstraer el exchange.
 
 Notas de la API de BingX (ver docs/bingx_api_reference.md):
-- No existe un host de TESTNET separado: TESTNET y LIVE apuntan al mismo host.
+- Host por entorno: LIVE → open-api.bingx.com, TESTNET/PAPER → open-api-vst.bingx.com
+  (VST/demo, fondos virtuales). Ver _BASE_URL_BY_ENV.
 - El formato de símbolo de BingX es "BTC-USDT" (con guión), distinto del
   formato interno del proyecto "BTCUSDT" (ALLOWED_SYMBOLS en schemas.py).
 - Firma: HMAC-SHA256(api_secret, query_string).hexdigest() + X-BX-APIKEY header.
@@ -55,7 +56,20 @@ from backend.market_data.schemas import ALLOWED_SYMBOLS
 
 _log = structlog.get_logger(__name__)
 
-_BASE_URL = "https://open-api.bingx.com"
+# BingX expone un host de demo/sandbox (VST — Virtual Simulated Trading) separado
+# del de producción, con fondos virtuales y balance propio. Confirmado contra la
+# implementación de ccxt (github.com/ccxt/ccxt): urls['api'] vs urls['test'].
+# LIVE opera contra producción real; TESTNET y PAPER usan el host VST para no tocar
+# fondos reales. Corrige la afirmación errónea de docs/bingx_api_reference.md §7
+# ("no existe host de TESTNET separado"), detectada en la tarjeta [101].
+_PROD_BASE_URL = "https://open-api.bingx.com"
+_VST_BASE_URL = "https://open-api-vst.bingx.com"
+
+_BASE_URL_BY_ENV: dict[Environment, str] = {
+    Environment.PAPER: _VST_BASE_URL,
+    Environment.TESTNET: _VST_BASE_URL,
+    Environment.LIVE: _PROD_BASE_URL,
+}
 
 _STATUS_MAP: dict[str, OrderStatus] = {
     "NEW": OrderStatus.PENDING,
@@ -114,6 +128,8 @@ class BingXAdapter(ExchangeAdapter):
         self._api_key = api_key
         self._api_secret = api_secret
         self._environment = environment
+        # Host según entorno: LIVE → producción real, TESTNET/PAPER → VST (demo).
+        self._base_url = _BASE_URL_BY_ENV[environment]
         self._http = http_client or httpx.Client(timeout=httpx.Timeout(10.0))
         # clientOrderId → symbol; poblado por get_open_orders para optimizar get_order_status.
         self._order_symbol_cache: dict[str, str] = {}
@@ -401,7 +417,7 @@ class BingXAdapter(ExchangeAdapter):
             query_string.encode(),
             hashlib.sha256,
         ).hexdigest()
-        url = f"{_BASE_URL}{path}?{query_string}&signature={signature}"
+        url = f"{self._base_url}{path}?{query_string}&signature={signature}"
         response = self._http.request(method, url, headers={"X-BX-APIKEY": self._api_key})
         response.raise_for_status()
         body: dict[str, Any] = response.json()
