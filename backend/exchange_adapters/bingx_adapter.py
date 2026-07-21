@@ -1,12 +1,23 @@
 """BingXAdapter — implementación de ExchangeAdapter contra BingX Futures (USDT-M).
 
-Métodos implementados en esta tarjeta ([98]):
+Métodos de lectura (tarjeta [98]):
   - get_account_state  →  GET /openApi/swap/v2/user/balance
   - get_position       →  GET /openApi/swap/v2/user/positions
   - get_open_orders    →  GET /openApi/swap/v2/trade/openOrders
   - get_order_status   →  GET /openApi/swap/v2/trade/order
 
-Métodos pendientes ([99]): place_order, cancel_order, set_leverage, set_margin_type.
+Métodos de escritura (tarjeta [99]):
+  - place_order        →  POST   /openApi/swap/v2/trade/order
+  - cancel_order       →  DELETE /openApi/swap/v2/trade/order
+  - set_leverage       →  POST   /openApi/swap/v2/trade/leverage
+  - set_margin_type    →  POST   /openApi/swap/v2/trade/marginType
+
+place_order fuerza ONE_WAY (POST /trade/positionSide/dual) e ISOLATED
+(vía set_margin_type) antes de la primera orden — una vez por instancia y por
+símbolo respectivamente (ver docs/bingx_api_reference.md §9.4).
+
+El bloqueo de ENVIRONMENT=LIVE (Environment Guard / Execution Engine, PDF 01.1 §4.5)
+no vive en este adapter — su única responsabilidad es abstraer el exchange.
 
 Notas de la API de BingX (ver docs/bingx_api_reference.md):
 - No existe un host de TESTNET separado: TESTNET y LIVE apuntan al mismo host.
@@ -21,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+import urllib.parse
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -63,6 +75,14 @@ _ORDER_TYPE_MAP: dict[str, OrderType] = {
     "TAKE_PROFIT_MARKET": OrderType.TAKE_PROFIT_MARKET,
 }
 
+# Leverage máximo permitido por entorno (PDF 01.1 §4.9: PAPER 10x, TESTNET 5x, LIVE absoluto 5x).
+# El tope de 3x "LIVE inicial" es un límite operativo del checklist F17, no de esta clase.
+_MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
+    Environment.PAPER: 10,
+    Environment.TESTNET: 5,
+    Environment.LIVE: 5,
+}
+
 
 def _to_bingx_symbol(symbol: str) -> str:
     """BTCUSDT → BTC-USDT (todos los símbolos permitidos terminan en USDT)."""
@@ -74,7 +94,13 @@ class BingXApiError(Exception):
 
 
 class BingXAdapter(ExchangeAdapter):
-    """Adapter contra BingX Futures (USDT-M). Ver docs/bingx_api_reference.md."""
+    """Adapter contra BingX Futures (USDT-M). Ver docs/bingx_api_reference.md.
+
+    Nota de thread safety: `_order_symbol_cache`, `_one_way_verified` y
+    `_isolated_verified_symbols` no tienen locks. El adapter asume ejecución
+    single-threaded o que el caller (Execution Engine) serializa las llamadas
+    de escritura (place_order, cancel_order, set_leverage, set_margin_type).
+    """
 
     def __init__(
         self,
@@ -91,6 +117,11 @@ class BingXAdapter(ExchangeAdapter):
         self._http = http_client or httpx.Client(timeout=httpx.Timeout(10.0))
         # clientOrderId → symbol; poblado por get_open_orders para optimizar get_order_status.
         self._order_symbol_cache: dict[str, str] = {}
+        # ONE_WAY es global a la cuenta; ISOLATED se fuerza por símbolo. Ambos se
+        # verifican/fuerzan una única vez por instancia (ver _ensure_one_way_mode
+        # y _ensure_isolated_margin), no en cada orden.
+        self._one_way_verified = False
+        self._isolated_verified_symbols: set[str] = set()
 
     @property
     def environment(self) -> Environment:
@@ -187,25 +218,174 @@ class BingXAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     def place_order(self, request: OrderRequest) -> OrderResult:
-        raise NotImplementedError("BingXAdapter.place_order: implementado en la tarjeta [99]")
+        self._ensure_one_way_mode()
+        self._ensure_isolated_margin(request.symbol)
+
+        # No es atómico con el POST de abajo: asume que el caller (Execution Engine)
+        # serializa place_order por client_order_id, igual que exige la idempotencia
+        # documentada en base.py. BingX también rechaza clientOrderID duplicado.
+        existing = self._query_order(request.symbol, request.client_order_id)
+        if existing is not None:
+            _log.info(
+                "bingx_adapter.idempotent_order",
+                client_order_id=request.client_order_id,
+                symbol=request.symbol,
+            )
+            return existing
+
+        params: dict[str, str] = {
+            "symbol": _to_bingx_symbol(request.symbol),
+            "type": request.order_type.value,
+            "side": request.side.value,
+            "positionSide": "BOTH",  # ONE_WAY mode obligatorio.
+            "quantity": str(request.quantity),
+            "clientOrderID": request.client_order_id,
+            "reduceOnly": "true" if request.is_reduce_only else "false",
+        }
+        if request.price is not None:
+            params["price"] = str(request.price)
+        if request.stop_price is not None:
+            params["stopPrice"] = str(request.stop_price)
+
+        data: dict[str, Any] = self._signed_request("POST", "/openApi/swap/v2/trade/order", params)
+        # Sin fallback: si BingX no devuelve "order", queremos un KeyError claro acá
+        # en vez de un fallo opaco más adelante en _parse_order.
+        raw_order: dict[str, Any] = data["order"]
+        result = self._parse_order(raw_order, request.symbol)
+        self._order_symbol_cache[result.client_order_id] = request.symbol
+        _log.info(
+            "bingx_adapter.order_placed",
+            client_order_id=result.client_order_id,
+            symbol=request.symbol,
+            side=request.side,
+            status=result.status,
+        )
+        return result
 
     def cancel_order(self, client_order_id: str) -> bool:
-        raise NotImplementedError("BingXAdapter.cancel_order: implementado en la tarjeta [99]")
+        existing = self.get_order_status(client_order_id)
+        if existing is None or existing.status not in (
+            OrderStatus.PENDING,
+            OrderStatus.PARTIALLY_FILLED,
+        ):
+            return False
+
+        try:
+            self._signed_request(
+                "DELETE",
+                "/openApi/swap/v2/trade/order",
+                {
+                    "symbol": _to_bingx_symbol(existing.symbol),
+                    "clientOrderID": client_order_id,
+                },
+            )
+        except BingXApiError as exc:
+            _log.warning(
+                "bingx_adapter.cancel_order_failed",
+                client_order_id=client_order_id,
+                error=str(exc),
+            )
+            return False
+
+        _log.info("bingx_adapter.order_cancelled", client_order_id=client_order_id)
+        return True
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
-        raise NotImplementedError("BingXAdapter.set_leverage: implementado en la tarjeta [99]")
+        cap = _MAX_LEVERAGE_BY_ENV[self._environment]
+        if leverage < 1 or leverage > cap:
+            raise ValueError(
+                f"Leverage {leverage}x fuera del rango permitido en {self._environment} (1–{cap}x)"
+            )
+        self._signed_request(
+            "POST",
+            "/openApi/swap/v2/trade/leverage",
+            {
+                "symbol": _to_bingx_symbol(symbol),
+                "side": "BOTH",
+                "leverage": str(leverage),
+            },
+        )
+        _log.info("bingx_adapter.leverage_set", symbol=symbol, leverage=leverage)
 
     def set_margin_type(self, symbol: str, margin_type: MarginType) -> None:
-        raise NotImplementedError("BingXAdapter.set_margin_type: implementado en la tarjeta [99]")
+        if margin_type == MarginType.CROSS:
+            raise ValueError("Cross margin está prohibido. Solo se permite ISOLATED.")
+        self._signed_request(
+            "POST",
+            "/openApi/swap/v2/trade/marginType",
+            {
+                "symbol": _to_bingx_symbol(symbol),
+                "marginType": margin_type.value,
+            },
+        )
+        _log.info("bingx_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
 
     # ------------------------------------------------------------------
     # HTTP / firma
     # ------------------------------------------------------------------
 
+    def _ensure_one_way_mode(self) -> None:
+        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs)."""
+        if self._one_way_verified:
+            return
+        try:
+            self._signed_request(
+                "POST",
+                "/openApi/swap/v2/trade/positionSide/dual",
+                {"dualSidePosition": "false"},
+            )
+        except BingXApiError as exc:
+            _log.warning("bingx_adapter.ensure_one_way_failed", error=str(exc))
+            raise
+        self._one_way_verified = True
+        _log.info("bingx_adapter.one_way_mode_forced")
+
+    def _ensure_isolated_margin(self, symbol: str) -> None:
+        """Fuerza marginType=ISOLATED para symbol. Una sola vez por símbolo (§9.4 docs)."""
+        if symbol in self._isolated_verified_symbols:
+            return
+        try:
+            self.set_margin_type(symbol, MarginType.ISOLATED)
+        except BingXApiError as exc:
+            _log.warning("bingx_adapter.ensure_isolated_failed", symbol=symbol, error=str(exc))
+            raise
+        self._isolated_verified_symbols.add(symbol)
+
+    def _query_order(self, symbol: str, client_order_id: str) -> OrderResult | None:
+        """Consulta puntual de una orden por symbol+client_order_id. None si no existe.
+
+        A diferencia de get_order_status, no atrapa httpx.HTTPStatusError: un error
+        HTTP transitorio acá debe abortar place_order (fail-closed) en vez de
+        arriesgar un POST duplicado con información incompleta.
+        """
+        try:
+            data: dict[str, Any] = self._signed_get(
+                "/openApi/swap/v2/trade/order",
+                {"symbol": _to_bingx_symbol(symbol), "clientOrderID": client_order_id},
+            )
+        except BingXApiError:
+            # Cualquier error de API (incluido auth/rate-limit, no solo "order not
+            # found") se trata como "no existe". Si el error era transitorio y la
+            # orden sí existía, el POST siguiente en place_order falla con el mismo
+            # error — no hay riesgo de duplicado silencioso.
+            return None
+        if not data:
+            return None
+        self._order_symbol_cache[client_order_id] = symbol
+        return self._parse_order(data, symbol)
+
     def _signed_get(self, path: str, params: dict[str, str]) -> Any:
-        """GET autenticado: añade timestamp y firma HMAC-SHA256 al query string."""
+        return self._signed_request("GET", path, params)
+
+    def _signed_request(self, method: str, path: str, params: dict[str, str]) -> Any:
+        """Request autenticado: añade timestamp y firma HMAC-SHA256 al query string.
+
+        BingX Futures espera los parámetros en el query string para todos los
+        métodos (GET/POST/DELETE), no en el body. Los valores se URL-encodean
+        antes de firmar para que la firma coincida siempre con lo que se envía.
+        """
         ts = str(int(time.time() * 1000))
-        query_parts = [f"{k}={v}" for k, v in params.items()]
+        query_parts = [f"{k}={urllib.parse.quote(v, safe='')}" for k, v in params.items()]
         query_parts.append(f"timestamp={ts}")
         query_string = "&".join(query_parts)
         signature = hmac.new(
@@ -214,7 +394,7 @@ class BingXAdapter(ExchangeAdapter):
             hashlib.sha256,
         ).hexdigest()
         url = f"{_BASE_URL}{path}?{query_string}&signature={signature}"
-        response = self._http.get(url, headers={"X-BX-APIKEY": self._api_key})
+        response = self._http.request(method, url, headers={"X-BX-APIKEY": self._api_key})
         response.raise_for_status()
         body: dict[str, Any] = response.json()
         if body.get("code", -1) != 0:

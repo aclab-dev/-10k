@@ -2,6 +2,8 @@
 
 Tarjeta [97]: contrato de interfaz (sin llamadas reales).
 Tarjeta [98]: métodos de lectura con httpx mockeado.
+Tarjeta [99]: métodos de escritura (place_order, cancel_order, set_leverage,
+set_margin_type) con httpx mockeado.
 """
 
 from __future__ import annotations
@@ -41,14 +43,24 @@ def _make_adapter(responses: dict[str, Any]) -> BingXAdapter:
     return BingXAdapter(api_key="test-key", api_secret="test-secret", http_client=client)
 
 
-def _order_request() -> OrderRequest:
-    return OrderRequest(
-        symbol="BTCUSDT",
-        side=OrderSide.BUY,
-        order_type=OrderType.MARKET,
-        quantity=Decimal("0.001"),
-        price=Decimal("50000"),
-    )
+def _order_request(
+    *,
+    client_order_id: str | None = None,
+    order_type: OrderType = OrderType.MARKET,
+    price: Decimal | None = Decimal("50000"),
+    stop_price: Decimal | None = None,
+) -> OrderRequest:
+    kwargs: dict[str, Any] = {
+        "symbol": "BTCUSDT",
+        "side": OrderSide.BUY,
+        "order_type": order_type,
+        "quantity": Decimal("0.001"),
+        "price": price,
+        "stop_price": stop_price,
+    }
+    if client_order_id is not None:
+        kwargs["client_order_id"] = client_order_id
+    return OrderRequest(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -70,26 +82,6 @@ def test_bingx_adapter_is_exchange_adapter(adapter: BingXAdapter) -> None:
 def test_environment_property_reflects_constructor_arg() -> None:
     adapter = BingXAdapter(api_key="k", api_secret="s", environment=Environment.LIVE)
     assert adapter.environment == Environment.LIVE
-
-
-def test_place_order_not_implemented(adapter: BingXAdapter) -> None:
-    with pytest.raises(NotImplementedError):
-        adapter.place_order(_order_request())
-
-
-def test_cancel_order_not_implemented(adapter: BingXAdapter) -> None:
-    with pytest.raises(NotImplementedError):
-        adapter.cancel_order("some-client-order-id")
-
-
-def test_set_leverage_not_implemented(adapter: BingXAdapter) -> None:
-    with pytest.raises(NotImplementedError):
-        adapter.set_leverage("BTCUSDT", 5)
-
-
-def test_set_margin_type_not_implemented(adapter: BingXAdapter) -> None:
-    with pytest.raises(NotImplementedError):
-        adapter.set_margin_type("BTCUSDT", MarginType.ISOLATED)
 
 
 def test_paper_and_bingx_adapters_share_the_same_contract() -> None:
@@ -371,3 +363,320 @@ def test_parse_order_logs_warning_on_unknown_type() -> None:
     result = adapter.get_order_status("550e8400-e29b-41d4-a716-446655440001")
     assert result is not None
     assert result.order_type == OrderType.MARKET
+
+
+# ---------------------------------------------------------------------------
+# place_order — tarjeta [99]
+# ---------------------------------------------------------------------------
+
+_PLACED_MARKET_ORDER = {
+    "symbol": "BTC-USDT",
+    "orderId": "555000111",
+    "clientOrderId": "650e8400-e29b-41d4-a716-446655440010",
+    "type": "MARKET",
+    "side": "BUY",
+    "positionSide": "BOTH",
+    "price": "0",
+    "avgPrice": "50000.00",
+    "origQty": "0.001",
+    "executedQty": "0.001",
+    "status": "FILLED",
+    "time": 1700000000000,
+    "updateTime": 1700000000000,
+}
+
+
+def _adapter_with_calls() -> tuple[BingXAdapter, list[httpx.Request]]:
+    """Adapter con transport mockeado que registra cada request para inspección."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/trade/order" in request.url.path and request.method == "GET":
+            return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
+        account_setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    return adapter, calls
+
+
+def _order_post_calls(calls: list[httpx.Request]) -> list[httpx.Request]:
+    return [c for c in calls if c.method == "POST" and "/trade/order" in c.url.path]
+
+
+def test_place_order_market_success() -> None:
+    adapter, calls = _adapter_with_calls()
+    request = _order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010")
+    result = adapter.place_order(request)
+    assert result.status == OrderStatus.FILLED
+    assert result.fill_price == Decimal("50000.00")
+    assert result.symbol == "BTCUSDT"
+
+    post_calls = _order_post_calls(calls)
+    assert len(post_calls) == 1
+    assert "positionSide=BOTH" in str(post_calls[0].url)
+
+
+def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    dual_calls = [c for c in calls if "/trade/positionSide/dual" in c.url.path]
+    margin_calls = [c for c in calls if "/trade/marginType" in c.url.path]
+    assert len(dual_calls) == 1
+    assert "dualSidePosition=false" in str(dual_calls[0].url)
+    assert len(margin_calls) == 1
+    assert "marginType=ISOLATED" in str(margin_calls[0].url)
+
+    # Una segunda orden en el mismo symbol no repite la verificación (cacheada).
+    adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440011"))
+    assert len([c for c in calls if "/trade/positionSide/dual" in c.url.path]) == 1
+    assert len([c for c in calls if "/trade/marginType" in c.url.path]) == 1
+
+
+def test_place_order_aborts_when_one_way_mode_forcing_fails() -> None:
+    """Fail-closed: si falla forzar ONE_WAY, no se intenta colocar la orden."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/trade/positionSide/dual" in request.url.path:
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    assert not _order_post_calls(calls)
+    assert adapter._one_way_verified is False
+
+
+def test_place_order_aborts_when_isolated_margin_forcing_fails() -> None:
+    """Fail-closed: si falla forzar ISOLATED, no se intenta colocar la orden."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/trade/marginType" in request.url.path:
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    assert not _order_post_calls(calls)
+    assert "BTCUSDT" not in adapter._isolated_verified_symbols
+
+
+def test_place_order_limit_includes_price() -> None:
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(
+        _order_request(
+            client_order_id="650e8400-e29b-41d4-a716-446655440010",
+            order_type=OrderType.LIMIT,
+            price=Decimal("49000"),
+        )
+    )
+    post_calls = _order_post_calls(calls)
+    assert len(post_calls) == 1
+    assert "price=49000" in str(post_calls[0].url)
+    assert "type=LIMIT" in str(post_calls[0].url)
+
+
+def test_place_order_stop_market_includes_stop_price() -> None:
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(
+        _order_request(
+            client_order_id="650e8400-e29b-41d4-a716-446655440010",
+            order_type=OrderType.STOP_MARKET,
+            price=None,
+            stop_price=Decimal("48000"),
+        )
+    )
+    post_calls = _order_post_calls(calls)
+    assert len(post_calls) == 1
+    assert "stopPrice=48000" in str(post_calls[0].url)
+    assert "type=STOP_MARKET" in str(post_calls[0].url)
+
+
+def test_place_order_is_idempotent_by_client_order_id() -> None:
+    """Si ya existe una orden con ese client_order_id, no se crea una nueva (POST)."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440010"
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"code": 0, "data": _PLACED_MARKET_ORDER})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    result = adapter.place_order(_order_request(client_order_id=client_oid))
+    assert result.client_order_id == client_oid
+    assert not _order_post_calls(calls), "no debe haber POST a /trade/order si la orden ya existe"
+
+
+# ---------------------------------------------------------------------------
+# cancel_order — tarjeta [99]
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_order_returns_true_when_pending() -> None:
+    client_oid = _OPEN_ORDER["clientOrderId"]
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is True
+    assert any(c.method == "DELETE" for c in calls)
+
+
+def test_cancel_order_returns_false_when_not_found() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    assert adapter.cancel_order("nonexistent-id") is False
+
+
+def test_cancel_order_returns_false_when_already_filled() -> None:
+    client_oid = _FILLED_ORDER["clientOrderId"]
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"code": 0, "data": _FILLED_ORDER})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is False
+    assert all(c.method != "DELETE" for c in calls), "orden ya FILLED no debe intentar cancelarse"
+
+
+def test_cancel_order_returns_false_when_delete_fails() -> None:
+    client_oid = _OPEN_ORDER["clientOrderId"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+        return httpx.Response(200, json={"code": 100400, "msg": "order does not exist"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is False
+
+
+def test_cancel_order_returns_true_when_partially_filled() -> None:
+    partially_filled_order = {**_OPEN_ORDER, "status": "PARTIALLY_FILLED", "executedQty": "0.0004"}
+    client_oid = partially_filled_order["clientOrderId"]
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"code": 0, "data": partially_filled_order})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is True
+    assert any(c.method == "DELETE" for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# set_leverage — tarjeta [99]
+# ---------------------------------------------------------------------------
+
+
+def test_set_leverage_success_within_cap() -> None:
+    adapter = _make_adapter({"/trade/leverage": {"code": 0, "data": {}}})
+    adapter.set_leverage("BTCUSDT", 5)  # TESTNET (default) cap = 5x
+
+
+def test_set_leverage_raises_when_exceeds_testnet_cap() -> None:
+    adapter = BingXAdapter(api_key="k", api_secret="s", environment=Environment.TESTNET)
+    with pytest.raises(ValueError, match="TESTNET"):
+        adapter.set_leverage("BTCUSDT", 6)
+
+
+def test_set_leverage_raises_when_exceeds_paper_cap() -> None:
+    adapter = BingXAdapter(api_key="k", api_secret="s", environment=Environment.PAPER)
+    with pytest.raises(ValueError, match="PAPER"):
+        adapter.set_leverage("BTCUSDT", 11)
+
+
+def test_set_leverage_live_cap_is_five() -> None:
+    """LIVE absoluto: 5x (el tope de 3x inicial es operativo, no de esta clase)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    adapter = BingXAdapter(
+        api_key="k",
+        api_secret="s",
+        environment=Environment.LIVE,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    adapter.set_leverage("BTCUSDT", 5)
+    with pytest.raises(ValueError, match="LIVE"):
+        adapter.set_leverage("BTCUSDT", 6)
+
+
+# ---------------------------------------------------------------------------
+# set_margin_type — tarjeta [99]
+# ---------------------------------------------------------------------------
+
+
+def test_set_margin_type_success_sets_isolated() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    adapter.set_margin_type("BTCUSDT", MarginType.ISOLATED)
+    assert len(calls) == 1
+    assert "marginType=ISOLATED" in str(calls[0].url)
+
+
+def test_set_margin_type_raises_on_cross() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no debe llamar a la API si margin_type=CROSS")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(ValueError, match="Cross margin"):
+        adapter.set_margin_type("BTCUSDT", MarginType.CROSS)
