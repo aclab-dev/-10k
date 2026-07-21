@@ -103,6 +103,19 @@ def _to_bingx_symbol(symbol: str) -> str:
     return f"{symbol[:-4]}-USDT"
 
 
+def _extract_order(data: dict[str, Any]) -> dict[str, Any]:
+    """Desanida la orden de la respuesta de BingX.
+
+    GET /trade/order (consulta de una orden) y POST /trade/order envuelven la orden
+    bajo la clave "order" (data.order). Igual que ccxt (safe_dict(data, 'order', data)),
+    con fallback a `data` por si algún endpoint la devuelve al nivel superior.
+    Detectado en la tarjeta [101]: sin esto, _parse_order recibía {"order": {...}} y
+    fallaba con KeyError('side').
+    """
+    order = data.get("order")
+    return order if isinstance(order, dict) else data
+
+
 class BingXApiError(Exception):
     """Raised when BingX API returns a non-zero error code."""
 
@@ -210,9 +223,10 @@ class BingXAdapter(ExchangeAdapter):
                         "clientOrderID": client_order_id,
                     },
                 )
-                if data:
+                order = _extract_order(data)
+                if order:
                     self._order_symbol_cache[client_order_id] = symbol
-                    return self._parse_order(data, symbol)
+                    return self._parse_order(order, symbol)
             except BingXApiError as exc:
                 _log.debug(
                     "get_order_status: order not found for symbol, trying next",
@@ -393,10 +407,11 @@ class BingXAdapter(ExchangeAdapter):
             # orden sí existía, el POST siguiente en place_order falla con el mismo
             # error — no hay riesgo de duplicado silencioso.
             return None
-        if not data:
+        order = _extract_order(data)
+        if not order:
             return None
         self._order_symbol_cache[client_order_id] = symbol
-        return self._parse_order(data, symbol)
+        return self._parse_order(order, symbol)
 
     def _signed_get(self, path: str, params: dict[str, str]) -> Any:
         return self._signed_request("GET", path, params)

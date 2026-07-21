@@ -307,6 +307,23 @@ def test_get_order_status_returns_none_when_not_found() -> None:
     assert adapter.get_order_status("550e8400-e29b-41d4-a716-446655440099") is None
 
 
+def test_get_order_status_unwraps_nested_order_key() -> None:
+    """GET /trade/order real devuelve la orden anidada bajo data.order — el adapter
+    debe desanidarla antes de parsear (tarjeta [101], si no falla con KeyError)."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Formato real de BingX: la orden viene envuelta en {"order": {...}}.
+        return httpx.Response(200, json={"code": 0, "data": {"order": _OPEN_ORDER}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.get_order_status(client_oid)
+    assert result is not None
+    assert result.client_order_id == client_oid
+    assert result.status == OrderStatus.PENDING
+
+
 # ---------------------------------------------------------------------------
 # BingXApiError
 # ---------------------------------------------------------------------------
