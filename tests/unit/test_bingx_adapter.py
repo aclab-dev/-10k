@@ -436,6 +436,33 @@ def test_place_order_market_success() -> None:
     assert "positionSide=BOTH" in str(post_calls[0].url)
 
 
+def test_parse_order_reads_uppercase_client_order_id_key() -> None:
+    """La API real de BingX devuelve 'clientOrderID' (ID mayúscula), no 'clientOrderId'
+    — _parse_order debe leer ambas casings para no perder el id (tarjeta [101])."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440099"
+    real_response_order = {
+        "orderId": 1234567890,
+        "clientOrderID": client_oid,  # casing real de BingX
+        "symbol": "BTC-USDT",
+        "side": "BUY",
+        "type": "LIMIT",
+        "status": "NEW",
+        "origQty": "0.001",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/trade/order" in request.url.path and request.method == "GET":
+            return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 0, "data": {"order": real_response_order}})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.place_order(_order_request(client_order_id=client_oid))
+    assert result.client_order_id == client_oid
+
+
 def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
     adapter, calls = _adapter_with_calls()
     adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))

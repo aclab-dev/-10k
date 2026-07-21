@@ -450,9 +450,15 @@ class BingXAdapter(ExchangeAdapter):
         ts_ms: int = int(raw.get("time") or raw.get("updateTime") or 0)
         ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC) if ts_ms else datetime.now(UTC)
 
+        # BingX devuelve el campo como "clientOrderID" (ID mayúscula) en la respuesta
+        # real de POST /trade/order, no "clientOrderId". Se leen ambas casings — igual
+        # que ccxt (safe_string_n(['clientOrderID', 'clientOrderId', ...])) — para no
+        # perder el id de idempotencia. Detectado en la tarjeta [101] contra el host VST.
+        client_order_id = raw.get("clientOrderID") or raw.get("clientOrderId") or ""
+
         return OrderResult(
             order_id=str(raw.get("orderId", "")),
-            client_order_id=str(raw.get("clientOrderId", "")),
+            client_order_id=str(client_order_id),
             symbol=symbol,
             side=OrderSide(raw["side"]),
             order_type=order_type,
