@@ -40,5 +40,8 @@ jobs:
       - name: Tests (unit only)
         run: uv run pytest -m "not integration"
 
-      - name: Integration tests (Postgres real)
+      - name: Integration tests (Postgres + BingX demo)
+        env:
+          BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}
+          BINGX_API_SECRET: ${{ secrets.BINGX_API_SECRET }}
         run: uv run pytest -m integration -v
