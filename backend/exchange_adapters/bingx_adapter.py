@@ -12,7 +12,7 @@ Métodos de escritura (tarjeta [99]):
   - set_leverage       →  POST   /openApi/swap/v2/trade/leverage
   - set_margin_type    →  POST   /openApi/swap/v2/trade/marginType
 
-place_order fuerza ONE_WAY (POST /trade/positionSide/dual) e ISOLATED
+place_order fuerza ONE_WAY (POST /openApi/swap/v1/positionSide/dual) e ISOLATED
 (vía set_margin_type) antes de la primera orden — una vez por instancia y por
 símbolo respectivamente (ver docs/bingx_api_reference.md §9.4).
 
@@ -325,13 +325,21 @@ class BingXAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     def _ensure_one_way_mode(self) -> None:
-        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs)."""
+        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs).
+
+        Endpoint bajo /swap/v1/ (no /v2/trade/): confirmado contra la API real de
+        BingX y contra la implementación de ccxt (github.com/ccxt/ccxt), que expone
+        este endpoint como swap.v1.private.{get,post}['positionSide/dual'], sin
+        segmento "/trade/". El path /v2/trade/positionSide/dual documentado
+        originalmente en docs/bingx_api_reference.md no existe (BingX responde
+        "code: 100400, this api is not exist").
+        """
         if self._one_way_verified:
             return
         try:
             self._signed_request(
                 "POST",
-                "/openApi/swap/v2/trade/positionSide/dual",
+                "/openApi/swap/v1/positionSide/dual",
                 {"dualSidePosition": "false"},
             )
         except BingXApiError as exc:

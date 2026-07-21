@@ -399,7 +399,7 @@ def _adapter_with_calls() -> tuple[BingXAdapter, list[httpx.Request]]:
             return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
         if "/trade/order" in request.url.path and request.method == "POST":
             return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
-        account_setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
         if any(p in request.url.path for p in account_setup_paths):
             return httpx.Response(200, json={"code": 0, "data": {}})
         return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
@@ -430,7 +430,7 @@ def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
     adapter, calls = _adapter_with_calls()
     adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
 
-    dual_calls = [c for c in calls if "/trade/positionSide/dual" in c.url.path]
+    dual_calls = [c for c in calls if "v1/positionSide/dual" in c.url.path]
     margin_calls = [c for c in calls if "/trade/marginType" in c.url.path]
     assert len(dual_calls) == 1
     assert "dualSidePosition=false" in str(dual_calls[0].url)
@@ -439,7 +439,7 @@ def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
 
     # Una segunda orden en el mismo symbol no repite la verificación (cacheada).
     adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440011"))
-    assert len([c for c in calls if "/trade/positionSide/dual" in c.url.path]) == 1
+    assert len([c for c in calls if "v1/positionSide/dual" in c.url.path]) == 1
     assert len([c for c in calls if "/trade/marginType" in c.url.path]) == 1
 
 
@@ -449,7 +449,7 @@ def test_place_order_aborts_when_one_way_mode_forcing_fails() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        if "/trade/positionSide/dual" in request.url.path:
+        if "v1/positionSide/dual" in request.url.path:
             return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
         return httpx.Response(200, json={"code": 0, "data": {}})
 
@@ -729,7 +729,7 @@ def test_place_order_aborts_on_http_error_during_idempotency_check() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        setup_paths = ("v1/positionSide/dual", "/trade/marginType")
         if any(p in request.url.path for p in setup_paths):
             return httpx.Response(200, json={"code": 0, "data": {}})
         return httpx.Response(429, json={})

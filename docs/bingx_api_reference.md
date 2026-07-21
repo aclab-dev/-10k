@@ -167,8 +167,8 @@ Todos los endpoints retornan JSON con la estructura:
 | `/openApi/swap/v2/trade/marginType`           | GET    | Consultar modo de margen actual      |
 | `/openApi/swap/v2/trade/marginType`           | POST   | Cambiar modo de margen (`marginType`) |
 | `/openApi/swap/v2/trade/positionMargin`       | POST   | Ajustar margen aislado               |
-| `/openApi/swap/v2/trade/positionSide/dual`    | GET    | Consultar modo de posición (ONE_WAY / hedge) |
-| `/openApi/swap/v2/trade/positionSide/dual`    | POST   | Cambiar modo de posición (`dualSidePosition`) |
+| `/openApi/swap/v1/positionSide/dual`          | GET    | Consultar modo de posición (ONE_WAY / hedge) — ver nota §5.4 |
+| `/openApi/swap/v1/positionSide/dual`          | POST   | Cambiar modo de posición (`dualSidePosition`) — ver nota §5.4 |
 
 > **Regla no negociable del proyecto — Margin Type:** el adapter debe verificar y forzar `marginType=ISOLATED` al inicializar la conexión.
 > `CROSS` está prohibido. Igual que con el modo de posición, este chequeo debe ocurrir antes de colocar cualquier orden.
@@ -193,8 +193,15 @@ Todos los endpoints retornan JSON con la estructura:
 
 | Endpoint                                       | Método | Descripción                                    |
 |------------------------------------------------|--------|------------------------------------------------|
-| `/openApi/swap/v2/trade/positionSide/dual`     | GET    | Consultar modo actual (`dualSidePosition`)     |
-| `/openApi/swap/v2/trade/positionSide/dual`     | POST   | Cambiar modo (`dualSidePosition=true/false`)   |
+| `/openApi/swap/v1/positionSide/dual`           | GET    | Consultar modo actual (`dualSidePosition`)     |
+| `/openApi/swap/v1/positionSide/dual`           | POST   | Cambiar modo (`dualSidePosition=true/false`)   |
+
+> **Corrección (tarjeta [101])**: la investigación original documentó este endpoint
+> como `/openApi/swap/v2/trade/positionSide/dual`. Contra la cuenta demo real, BingX
+> rechaza ese path con `code 100400: this api is not exist`. Confirmado contra la
+> implementación de [ccxt](https://github.com/ccxt/ccxt/blob/master/python/ccxt/bingx.py)
+> que el endpoint real vive bajo `/swap/v1/` (no `/v2/trade/`), sin segmento `/trade/`.
+> El adapter (`bingx_adapter.py::_ensure_one_way_mode`) ya usa el path corregido.
 
 **Parámetro:**
 
