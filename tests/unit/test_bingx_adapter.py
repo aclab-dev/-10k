@@ -4,15 +4,18 @@ Tarjeta [97]: contrato de interfaz (sin llamadas reales).
 Tarjeta [98]: métodos de lectura con httpx mockeado.
 Tarjeta [99]: métodos de escritura (place_order, cancel_order, set_leverage,
 set_margin_type) con httpx mockeado.
+Tarjeta [100]: idempotencia con clientOrderId UUID.
 """
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from backend.core.config import Environment, MarginType
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -680,3 +683,61 @@ def test_set_margin_type_raises_on_cross() -> None:
 
     with pytest.raises(ValueError, match="Cross margin"):
         adapter.set_margin_type("BTCUSDT", MarginType.CROSS)
+
+
+# ---------------------------------------------------------------------------
+# clientOrderId idempotencia — tarjeta [100]
+# ---------------------------------------------------------------------------
+
+
+def test_order_request_auto_generates_uuid_client_order_id() -> None:
+    """Si no se pasa client_order_id, OrderRequest genera un UUID v4 válido."""
+    req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.001"),
+    )
+    uuid.UUID(req.client_order_id)  # lanza ValueError si no es UUID válido
+
+
+def test_order_request_rejects_non_uuid_client_order_id() -> None:
+    """Un client_order_id que no sea UUID válido se rechaza al construir el request."""
+    with pytest.raises(ValidationError):
+        OrderRequest(
+            client_order_id="not-a-uuid",
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=Decimal("0.001"),
+        )
+
+
+def test_place_order_sends_client_order_id_in_api_request() -> None:
+    """El clientOrderID del request aparece en la URL del POST enviado a BingX."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440099"
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(_order_request(client_order_id=client_oid))
+    post_calls = _order_post_calls(calls)
+    assert len(post_calls) == 1
+    assert client_oid in str(post_calls[0].url)
+
+
+def test_place_order_aborts_on_http_error_during_idempotency_check() -> None:
+    """HTTP error (ej. 429) en la consulta previa aborta place_order sin hacer POST."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(429, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    assert not _order_post_calls(calls), "no debe POST cuando el GET de idempotencia falla"
