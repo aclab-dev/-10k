@@ -37,13 +37,14 @@ from backend.exchange_adapters.schemas import (
 _log = structlog.get_logger(__name__)
 
 _SYMBOL = "BTCUSDT"
-_TEST_LEVERAGE = 2
 
 # Precio y cantidad elegidos para que la orden LIMIT quede lejos del mercado real
 # (nunca debería fillear) y a la vez respete tradeMinUSDT: 2 USDT (docs/bingx_api_reference.md
-# §7) y el cap de margen del proyecto (≤10 USDT): notional = 0.0005 * 5000 = 2.5 USDT,
-# margen a 2x = 1.25 USDT. Precio estático: si BTC llegara a cotizar cerca de este nivel,
-# la orden podría fillear — revisar si estos tests empiezan a fallar de forma inesperada.
+# §7) y el cap de margen del proyecto (≤10 USDT). No fijamos leverage explícito (ver
+# nota en el fixture `adapter`): en el peor caso, 1x, margen = notional = 0.0005 * 5000
+# = 2.5 USDT, igual dentro del cap. Precio estático: si BTC llegara a cotizar cerca de
+# este nivel, la orden podría fillear — revisar si estos tests empiezan a fallar de
+# forma inesperada.
 _SAFE_LIMIT_PRICE = Decimal("5000")
 _SAFE_QUANTITY = Decimal("0.0005")
 
@@ -67,8 +68,15 @@ def adapter() -> Iterator[BingXAdapter]:
             "BINGX_API_KEY/BINGX_API_SECRET no configuradas — test de integración BingX omitido."
         )
 
+    # No llamamos set_leverage() acá a propósito: BingXAdapter sólo fuerza ONE_WAY
+    # mode (positionSide/dual) de forma perezosa dentro de place_order(). Una cuenta
+    # demo nueva arranca en Hedge Mode por default de BingX, y set_leverage() asume
+    # ONE_WAY ya activo (manda side="BOTH") — llamarlo antes de cualquier place_order()
+    # falla con "BingX error 109400: In the Hedge mode, the 'Side' field can only be
+    # set to LONG, SHORT or ALL." Dejamos el leverage default de la cuenta; el cálculo
+    # de margen de _SAFE_QUANTITY/_SAFE_LIMIT_PRICE ya es seguro incluso en el peor
+    # caso (1x, sin reducción de margen).
     bingx = BingXAdapter(api_key=api_key, api_secret=api_secret, environment=Environment.TESTNET)
-    bingx.set_leverage(_SYMBOL, _TEST_LEVERAGE)
     yield bingx
 
     # Cleanup defensivo: cancela cualquier orden que haya quedado abierta si un
