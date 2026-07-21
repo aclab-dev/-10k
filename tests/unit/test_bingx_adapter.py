@@ -48,6 +48,7 @@ def _order_request(
     client_order_id: str | None = None,
     order_type: OrderType = OrderType.MARKET,
     price: Decimal | None = Decimal("50000"),
+    stop_price: Decimal | None = None,
 ) -> OrderRequest:
     kwargs: dict[str, Any] = {
         "symbol": "BTCUSDT",
@@ -55,6 +56,7 @@ def _order_request(
         "order_type": order_type,
         "quantity": Decimal("0.001"),
         "price": price,
+        "stop_price": stop_price,
     }
     if client_order_id is not None:
         kwargs["client_order_id"] = client_order_id
@@ -493,6 +495,22 @@ def test_place_order_limit_includes_price() -> None:
     assert "type=LIMIT" in str(post_calls[0].url)
 
 
+def test_place_order_stop_market_includes_stop_price() -> None:
+    adapter, calls = _adapter_with_calls()
+    adapter.place_order(
+        _order_request(
+            client_order_id="650e8400-e29b-41d4-a716-446655440010",
+            order_type=OrderType.STOP_MARKET,
+            price=None,
+            stop_price=Decimal("48000"),
+        )
+    )
+    post_calls = _order_post_calls(calls)
+    assert len(post_calls) == 1
+    assert "stopPrice=48000" in str(post_calls[0].url)
+    assert "type=STOP_MARKET" in str(post_calls[0].url)
+
+
 def test_place_order_is_idempotent_by_client_order_id() -> None:
     """Si ya existe una orden con ese client_order_id, no se crea una nueva (POST)."""
     client_oid = "650e8400-e29b-41d4-a716-446655440010"
@@ -573,6 +591,25 @@ def test_cancel_order_returns_false_when_delete_fails() -> None:
     adapter._order_symbol_cache[client_oid] = "BTCUSDT"
 
     assert adapter.cancel_order(client_oid) is False
+
+
+def test_cancel_order_returns_true_when_partially_filled() -> None:
+    partially_filled_order = {**_OPEN_ORDER, "status": "PARTIALLY_FILLED", "executedQty": "0.0004"}
+    client_oid = partially_filled_order["clientOrderId"]
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"code": 0, "data": partially_filled_order})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is True
+    assert any(c.method == "DELETE" for c in calls)
 
 
 # ---------------------------------------------------------------------------

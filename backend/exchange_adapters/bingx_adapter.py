@@ -248,7 +248,9 @@ class BingXAdapter(ExchangeAdapter):
             params["stopPrice"] = str(request.stop_price)
 
         data: dict[str, Any] = self._signed_request("POST", "/openApi/swap/v2/trade/order", params)
-        raw_order: dict[str, Any] = data.get("order", data)
+        # Sin fallback: si BingX no devuelve "order", queremos un KeyError claro acá
+        # en vez de un fallo opaco más adelante en _parse_order.
+        raw_order: dict[str, Any] = data["order"]
         result = self._parse_order(raw_order, request.symbol)
         self._order_symbol_cache[result.client_order_id] = request.symbol
         _log.info(
@@ -332,8 +334,8 @@ class BingXAdapter(ExchangeAdapter):
                 "/openApi/swap/v2/trade/positionSide/dual",
                 {"dualSidePosition": "false"},
             )
-        except BingXApiError:
-            _log.warning("bingx_adapter.ensure_one_way_failed")
+        except BingXApiError as exc:
+            _log.warning("bingx_adapter.ensure_one_way_failed", error=str(exc))
             raise
         self._one_way_verified = True
         _log.info("bingx_adapter.one_way_mode_forced")
@@ -344,8 +346,8 @@ class BingXAdapter(ExchangeAdapter):
             return
         try:
             self.set_margin_type(symbol, MarginType.ISOLATED)
-        except BingXApiError:
-            _log.warning("bingx_adapter.ensure_isolated_failed", symbol=symbol)
+        except BingXApiError as exc:
+            _log.warning("bingx_adapter.ensure_isolated_failed", symbol=symbol, error=str(exc))
             raise
         self._isolated_verified_symbols.add(symbol)
 
@@ -362,6 +364,10 @@ class BingXAdapter(ExchangeAdapter):
                 {"symbol": _to_bingx_symbol(symbol), "clientOrderID": client_order_id},
             )
         except BingXApiError:
+            # Cualquier error de API (incluido auth/rate-limit, no solo "order not
+            # found") se trata como "no existe". Si el error era transitorio y la
+            # orden sí existía, el POST siguiente en place_order falla con el mismo
+            # error — no hay riesgo de duplicado silencioso.
             return None
         if not data:
             return None
