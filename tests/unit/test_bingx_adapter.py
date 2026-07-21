@@ -438,6 +438,46 @@ def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
     assert len([c for c in calls if "/trade/marginType" in c.url.path]) == 1
 
 
+def test_place_order_aborts_when_one_way_mode_forcing_fails() -> None:
+    """Fail-closed: si falla forzar ONE_WAY, no se intenta colocar la orden."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/trade/positionSide/dual" in request.url.path:
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    assert not _order_post_calls(calls)
+    assert adapter._one_way_verified is False
+
+
+def test_place_order_aborts_when_isolated_margin_forcing_fails() -> None:
+    """Fail-closed: si falla forzar ISOLATED, no se intenta colocar la orden."""
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/trade/marginType" in request.url.path:
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
+
+    assert not _order_post_calls(calls)
+    assert "BTCUSDT" not in adapter._isolated_verified_symbols
+
+
 def test_place_order_limit_includes_price() -> None:
     adapter, calls = _adapter_with_calls()
     adapter.place_order(

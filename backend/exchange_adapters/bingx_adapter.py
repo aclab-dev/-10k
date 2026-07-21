@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+import urllib.parse
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -93,7 +94,13 @@ class BingXApiError(Exception):
 
 
 class BingXAdapter(ExchangeAdapter):
-    """Adapter contra BingX Futures (USDT-M). Ver docs/bingx_api_reference.md."""
+    """Adapter contra BingX Futures (USDT-M). Ver docs/bingx_api_reference.md.
+
+    Nota de thread safety: `_order_symbol_cache`, `_one_way_verified` y
+    `_isolated_verified_symbols` no tienen locks. El adapter asume ejecución
+    single-threaded o que el caller (Execution Engine) serializa las llamadas
+    de escritura (place_order, cancel_order, set_leverage, set_margin_type).
+    """
 
     def __init__(
         self,
@@ -319,11 +326,15 @@ class BingXAdapter(ExchangeAdapter):
         """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs)."""
         if self._one_way_verified:
             return
-        self._signed_request(
-            "POST",
-            "/openApi/swap/v2/trade/positionSide/dual",
-            {"dualSidePosition": "false"},
-        )
+        try:
+            self._signed_request(
+                "POST",
+                "/openApi/swap/v2/trade/positionSide/dual",
+                {"dualSidePosition": "false"},
+            )
+        except BingXApiError:
+            _log.warning("bingx_adapter.ensure_one_way_failed")
+            raise
         self._one_way_verified = True
         _log.info("bingx_adapter.one_way_mode_forced")
 
@@ -331,7 +342,11 @@ class BingXAdapter(ExchangeAdapter):
         """Fuerza marginType=ISOLATED para symbol. Una sola vez por símbolo (§9.4 docs)."""
         if symbol in self._isolated_verified_symbols:
             return
-        self.set_margin_type(symbol, MarginType.ISOLATED)
+        try:
+            self.set_margin_type(symbol, MarginType.ISOLATED)
+        except BingXApiError:
+            _log.warning("bingx_adapter.ensure_isolated_failed", symbol=symbol)
+            raise
         self._isolated_verified_symbols.add(symbol)
 
     def _query_order(self, symbol: str, client_order_id: str) -> OrderResult | None:
@@ -357,9 +372,14 @@ class BingXAdapter(ExchangeAdapter):
         return self._signed_request("GET", path, params)
 
     def _signed_request(self, method: str, path: str, params: dict[str, str]) -> Any:
-        """Request autenticado: añade timestamp y firma HMAC-SHA256 al query string."""
+        """Request autenticado: añade timestamp y firma HMAC-SHA256 al query string.
+
+        BingX Futures espera los parámetros en el query string para todos los
+        métodos (GET/POST/DELETE), no en el body. Los valores se URL-encodean
+        antes de firmar para que la firma coincida siempre con lo que se envía.
+        """
         ts = str(int(time.time() * 1000))
-        query_parts = [f"{k}={v}" for k, v in params.items()]
+        query_parts = [f"{k}={urllib.parse.quote(v, safe='')}" for k, v in params.items()]
         query_parts.append(f"timestamp={ts}")
         query_string = "&".join(query_parts)
         signature = hmac.new(
