@@ -398,7 +398,6 @@ def _adapter_with_calls() -> tuple[BingXAdapter, list[httpx.Request]]:
         if any(p in request.url.path for p in account_setup_paths):
             return httpx.Response(200, json={"code": 0, "data": {}})
         return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
-        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
