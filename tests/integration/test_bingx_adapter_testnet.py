@@ -19,10 +19,12 @@ import os
 from collections.abc import Iterator
 from decimal import Decimal
 
+import httpx
 import pytest
+import structlog
 
 from backend.core.config import Environment
-from backend.exchange_adapters.bingx_adapter import BingXAdapter
+from backend.exchange_adapters.bingx_adapter import BingXAdapter, BingXApiError
 from backend.exchange_adapters.schemas import (
     AccountState,
     OrderRequest,
@@ -32,13 +34,16 @@ from backend.exchange_adapters.schemas import (
     PositionState,
 )
 
+_log = structlog.get_logger(__name__)
+
 _SYMBOL = "BTCUSDT"
 _TEST_LEVERAGE = 2
 
 # Precio y cantidad elegidos para que la orden LIMIT quede lejos del mercado real
 # (nunca debería fillear) y a la vez respete tradeMinUSDT: 2 USDT (docs/bingx_api_reference.md
 # §7) y el cap de margen del proyecto (≤10 USDT): notional = 0.0005 * 5000 = 2.5 USDT,
-# margen a 2x = 1.25 USDT.
+# margen a 2x = 1.25 USDT. Precio estático: si BTC llegara a cotizar cerca de este nivel,
+# la orden podría fillear — revisar si estos tests empiezan a fallar de forma inesperada.
 _SAFE_LIMIT_PRICE = Decimal("5000")
 _SAFE_QUANTITY = Decimal("0.0005")
 
@@ -68,8 +73,16 @@ def adapter() -> Iterator[BingXAdapter]:
 
     # Cleanup defensivo: cancela cualquier orden que haya quedado abierta si un
     # test falló a mitad de camino, para no ensuciar la cuenta demo entre corridas.
+    # Un error puntual de la API no debe cortar el barrido del resto de las órdenes.
     for order in bingx.get_open_orders(_SYMBOL):
-        bingx.cancel_order(order.client_order_id)
+        try:
+            bingx.cancel_order(order.client_order_id)
+        except (BingXApiError, httpx.HTTPStatusError) as exc:
+            _log.warning(
+                "bingx_testnet_cleanup.cancel_failed",
+                client_order_id=order.client_order_id,
+                error=str(exc),
+            )
 
 
 @pytest.mark.integration
@@ -79,6 +92,8 @@ class TestBingXAdapterReadMethods:
     def test_get_account_state_returns_real_balance(self, adapter: BingXAdapter) -> None:
         state = adapter.get_account_state()
         assert isinstance(state, AccountState)
+        # BingXAdapter.get_account_state() siempre hardcodea is_simulated=False
+        # (a diferencia de PaperAdapter) — no depende de Environment.TESTNET.
         assert state.is_simulated is False
 
     def test_get_position_returns_none_or_valid_state(self, adapter: BingXAdapter) -> None:
@@ -106,7 +121,9 @@ class TestBingXAdapterOrderLifecycle:
             assert status is not None
             assert status.status == OrderStatus.PENDING
         finally:
-            assert adapter.cancel_order(request.client_order_id) is True
+            # Cleanup incondicional: no assertar acá para no enmascarar un fallo
+            # real del bloque try con un AssertionError distinto en el finally.
+            adapter.cancel_order(request.client_order_id)
 
 
 @pytest.mark.integration
