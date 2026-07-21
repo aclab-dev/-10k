@@ -12,7 +12,7 @@ Métodos de escritura (tarjeta [99]):
   - set_leverage       →  POST   /openApi/swap/v2/trade/leverage
   - set_margin_type    →  POST   /openApi/swap/v2/trade/marginType
 
-place_order fuerza ONE_WAY (POST /trade/positionSide/dual) e ISOLATED
+place_order fuerza ONE_WAY (POST /openApi/swap/v1/positionSide/dual) e ISOLATED
 (vía set_margin_type) antes de la primera orden — una vez por instancia y por
 símbolo respectivamente (ver docs/bingx_api_reference.md §9.4).
 
@@ -20,7 +20,8 @@ El bloqueo de ENVIRONMENT=LIVE (Environment Guard / Execution Engine, PDF 01.1 �
 no vive en este adapter — su única responsabilidad es abstraer el exchange.
 
 Notas de la API de BingX (ver docs/bingx_api_reference.md):
-- No existe un host de TESTNET separado: TESTNET y LIVE apuntan al mismo host.
+- Host por entorno: LIVE → open-api.bingx.com, TESTNET/PAPER → open-api-vst.bingx.com
+  (VST/demo, fondos virtuales). Ver _BASE_URL_BY_ENV.
 - El formato de símbolo de BingX es "BTC-USDT" (con guión), distinto del
   formato interno del proyecto "BTCUSDT" (ALLOWED_SYMBOLS en schemas.py).
 - Firma: HMAC-SHA256(api_secret, query_string).hexdigest() + X-BX-APIKEY header.
@@ -55,7 +56,20 @@ from backend.market_data.schemas import ALLOWED_SYMBOLS
 
 _log = structlog.get_logger(__name__)
 
-_BASE_URL = "https://open-api.bingx.com"
+# BingX expone un host de demo/sandbox (VST — Virtual Simulated Trading) separado
+# del de producción, con fondos virtuales y balance propio. Confirmado contra la
+# implementación de ccxt (github.com/ccxt/ccxt): urls['api'] vs urls['test'].
+# LIVE opera contra producción real; TESTNET y PAPER usan el host VST para no tocar
+# fondos reales. Corrige la afirmación errónea de docs/bingx_api_reference.md §7
+# ("no existe host de TESTNET separado"), detectada en la tarjeta [101].
+_PROD_BASE_URL = "https://open-api.bingx.com"
+_VST_BASE_URL = "https://open-api-vst.bingx.com"
+
+_BASE_URL_BY_ENV: dict[Environment, str] = {
+    Environment.PAPER: _VST_BASE_URL,
+    Environment.TESTNET: _VST_BASE_URL,
+    Environment.LIVE: _PROD_BASE_URL,
+}
 
 _STATUS_MAP: dict[str, OrderStatus] = {
     "NEW": OrderStatus.PENDING,
@@ -89,6 +103,19 @@ def _to_bingx_symbol(symbol: str) -> str:
     return f"{symbol[:-4]}-USDT"
 
 
+def _extract_order(data: dict[str, Any]) -> dict[str, Any]:
+    """Desanida la orden de la respuesta de BingX.
+
+    GET /trade/order (consulta de una orden) y POST /trade/order envuelven la orden
+    bajo la clave "order" (data.order). Igual que ccxt (safe_dict(data, 'order', data)),
+    con fallback a `data` por si algún endpoint la devuelve al nivel superior.
+    Detectado en la tarjeta [101]: sin esto, _parse_order recibía {"order": {...}} y
+    fallaba con KeyError('side').
+    """
+    order = data.get("order")
+    return order if isinstance(order, dict) else data
+
+
 class BingXApiError(Exception):
     """Raised when BingX API returns a non-zero error code."""
 
@@ -114,6 +141,8 @@ class BingXAdapter(ExchangeAdapter):
         self._api_key = api_key
         self._api_secret = api_secret
         self._environment = environment
+        # Host según entorno: LIVE → producción real, TESTNET/PAPER → VST (demo).
+        self._base_url = _BASE_URL_BY_ENV[environment]
         self._http = http_client or httpx.Client(timeout=httpx.Timeout(10.0))
         # clientOrderId → symbol; poblado por get_open_orders para optimizar get_order_status.
         self._order_symbol_cache: dict[str, str] = {}
@@ -194,9 +223,10 @@ class BingXAdapter(ExchangeAdapter):
                         "clientOrderID": client_order_id,
                     },
                 )
-                if data:
+                order = _extract_order(data)
+                if order:
                     self._order_symbol_cache[client_order_id] = symbol
-                    return self._parse_order(data, symbol)
+                    return self._parse_order(order, symbol)
             except BingXApiError as exc:
                 _log.debug(
                     "get_order_status: order not found for symbol, trying next",
@@ -325,13 +355,21 @@ class BingXAdapter(ExchangeAdapter):
     # ------------------------------------------------------------------
 
     def _ensure_one_way_mode(self) -> None:
-        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs)."""
+        """Fuerza dualSidePosition=false (ONE_WAY). Una sola vez por instancia (§9.4 docs).
+
+        Endpoint bajo /swap/v1/ (no /v2/trade/): confirmado contra la API real de
+        BingX y contra la implementación de ccxt (github.com/ccxt/ccxt), que expone
+        este endpoint como swap.v1.private.{get,post}['positionSide/dual'], sin
+        segmento "/trade/". El path /v2/trade/positionSide/dual documentado
+        originalmente en docs/bingx_api_reference.md no existe (BingX responde
+        "code: 100400, this api is not exist").
+        """
         if self._one_way_verified:
             return
         try:
             self._signed_request(
                 "POST",
-                "/openApi/swap/v2/trade/positionSide/dual",
+                "/openApi/swap/v1/positionSide/dual",
                 {"dualSidePosition": "false"},
             )
         except BingXApiError as exc:
@@ -369,10 +407,11 @@ class BingXAdapter(ExchangeAdapter):
             # orden sí existía, el POST siguiente en place_order falla con el mismo
             # error — no hay riesgo de duplicado silencioso.
             return None
-        if not data:
+        order = _extract_order(data)
+        if not order:
             return None
         self._order_symbol_cache[client_order_id] = symbol
-        return self._parse_order(data, symbol)
+        return self._parse_order(order, symbol)
 
     def _signed_get(self, path: str, params: dict[str, str]) -> Any:
         return self._signed_request("GET", path, params)
@@ -393,7 +432,7 @@ class BingXAdapter(ExchangeAdapter):
             query_string.encode(),
             hashlib.sha256,
         ).hexdigest()
-        url = f"{_BASE_URL}{path}?{query_string}&signature={signature}"
+        url = f"{self._base_url}{path}?{query_string}&signature={signature}"
         response = self._http.request(method, url, headers={"X-BX-APIKEY": self._api_key})
         response.raise_for_status()
         body: dict[str, Any] = response.json()
@@ -426,9 +465,15 @@ class BingXAdapter(ExchangeAdapter):
         ts_ms: int = int(raw.get("time") or raw.get("updateTime") or 0)
         ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC) if ts_ms else datetime.now(UTC)
 
+        # BingX devuelve el campo como "clientOrderID" (ID mayúscula) en la respuesta
+        # real de POST /trade/order, no "clientOrderId". Se leen ambas casings — igual
+        # que ccxt (safe_string_n(['clientOrderID', 'clientOrderId', ...])) — para no
+        # perder el id de idempotencia. Detectado en la tarjeta [101] contra el host VST.
+        client_order_id = raw.get("clientOrderID") or raw.get("clientOrderId") or ""
+
         return OrderResult(
             order_id=str(raw.get("orderId", "")),
-            client_order_id=str(raw.get("clientOrderId", "")),
+            client_order_id=str(client_order_id),
             symbol=symbol,
             side=OrderSide(raw["side"]),
             order_type=order_type,

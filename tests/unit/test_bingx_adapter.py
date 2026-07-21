@@ -87,6 +87,16 @@ def test_environment_property_reflects_constructor_arg() -> None:
     assert adapter.environment == Environment.LIVE
 
 
+def test_base_url_selected_by_environment() -> None:
+    """LIVE opera contra producción; TESTNET/PAPER contra el host VST/demo (tarjeta [101])."""
+    live = BingXAdapter(api_key="k", api_secret="s", environment=Environment.LIVE)
+    testnet = BingXAdapter(api_key="k", api_secret="s", environment=Environment.TESTNET)
+    paper = BingXAdapter(api_key="k", api_secret="s", environment=Environment.PAPER)
+    assert live._base_url == "https://open-api.bingx.com"
+    assert testnet._base_url == "https://open-api-vst.bingx.com"
+    assert paper._base_url == "https://open-api-vst.bingx.com"
+
+
 def test_paper_and_bingx_adapters_share_the_same_contract() -> None:
     """Ambos adapters son intercambiables donde se tipa ExchangeAdapter (compatibilidad F10)."""
     paper = PaperAdapter()
@@ -297,6 +307,23 @@ def test_get_order_status_returns_none_when_not_found() -> None:
     assert adapter.get_order_status("550e8400-e29b-41d4-a716-446655440099") is None
 
 
+def test_get_order_status_unwraps_nested_order_key() -> None:
+    """GET /trade/order real devuelve la orden anidada bajo data.order — el adapter
+    debe desanidarla antes de parsear (tarjeta [101], si no falla con KeyError)."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Formato real de BingX: la orden viene envuelta en {"order": {...}}.
+        return httpx.Response(200, json={"code": 0, "data": {"order": _OPEN_ORDER}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.get_order_status(client_oid)
+    assert result is not None
+    assert result.client_order_id == client_oid
+    assert result.status == OrderStatus.PENDING
+
+
 # ---------------------------------------------------------------------------
 # BingXApiError
 # ---------------------------------------------------------------------------
@@ -399,7 +426,7 @@ def _adapter_with_calls() -> tuple[BingXAdapter, list[httpx.Request]]:
             return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
         if "/trade/order" in request.url.path and request.method == "POST":
             return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
-        account_setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
         if any(p in request.url.path for p in account_setup_paths):
             return httpx.Response(200, json={"code": 0, "data": {}})
         return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
@@ -426,11 +453,38 @@ def test_place_order_market_success() -> None:
     assert "positionSide=BOTH" in str(post_calls[0].url)
 
 
+def test_parse_order_reads_uppercase_client_order_id_key() -> None:
+    """La API real de BingX devuelve 'clientOrderID' (ID mayúscula), no 'clientOrderId'
+    — _parse_order debe leer ambas casings para no perder el id (tarjeta [101])."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440099"
+    real_response_order = {
+        "orderId": 1234567890,
+        "clientOrderID": client_oid,  # casing real de BingX
+        "symbol": "BTC-USDT",
+        "side": "BUY",
+        "type": "LIMIT",
+        "status": "NEW",
+        "origQty": "0.001",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/trade/order" in request.url.path and request.method == "GET":
+            return httpx.Response(200, json={"code": 100400, "msg": "order not found", "data": {}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 0, "data": {"order": real_response_order}})
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    result = adapter.place_order(_order_request(client_order_id=client_oid))
+    assert result.client_order_id == client_oid
+
+
 def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
     adapter, calls = _adapter_with_calls()
     adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
 
-    dual_calls = [c for c in calls if "/trade/positionSide/dual" in c.url.path]
+    dual_calls = [c for c in calls if "v1/positionSide/dual" in c.url.path]
     margin_calls = [c for c in calls if "/trade/marginType" in c.url.path]
     assert len(dual_calls) == 1
     assert "dualSidePosition=false" in str(dual_calls[0].url)
@@ -439,7 +493,7 @@ def test_place_order_forces_one_way_and_isolated_before_first_order() -> None:
 
     # Una segunda orden en el mismo symbol no repite la verificación (cacheada).
     adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440011"))
-    assert len([c for c in calls if "/trade/positionSide/dual" in c.url.path]) == 1
+    assert len([c for c in calls if "v1/positionSide/dual" in c.url.path]) == 1
     assert len([c for c in calls if "/trade/marginType" in c.url.path]) == 1
 
 
@@ -449,7 +503,7 @@ def test_place_order_aborts_when_one_way_mode_forcing_fails() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        if "/trade/positionSide/dual" in request.url.path:
+        if "v1/positionSide/dual" in request.url.path:
             return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
         return httpx.Response(200, json={"code": 0, "data": {}})
 
@@ -729,7 +783,7 @@ def test_place_order_aborts_on_http_error_during_idempotency_check() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        setup_paths = ("/trade/positionSide/dual", "/trade/marginType")
+        setup_paths = ("v1/positionSide/dual", "/trade/marginType")
         if any(p in request.url.path for p in setup_paths):
             return httpx.Response(200, json={"code": 0, "data": {}})
         return httpx.Response(429, json={})
