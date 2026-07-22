@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
+
+import pytest
 
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
@@ -388,7 +391,6 @@ class TestPositionManagerEdge:
 
 class TestPositionConfigValidator:
     def test_all_none_raises(self) -> None:
-        import pytest
 
         with pytest.raises(ValueError, match="At least one"):
             PositionConfig(symbol="BTCUSDT")
@@ -627,7 +629,6 @@ class TestMultiTP:
 
     def test_tp_levels_mutual_exclusion_with_take_profit(self) -> None:
         """take_profit y take_profit_levels no pueden coexistir."""
-        import pytest
 
         with pytest.raises(ValueError, match="mutually exclusive"):
             PositionConfig(
@@ -640,7 +641,6 @@ class TestMultiTP:
 
     def test_tp_levels_each_fraction_at_most_one(self) -> None:
         """Cada nivel individual debe tener close_fraction <= 1."""
-        import pytest
 
         with pytest.raises(ValueError):
             TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("1.1"))
@@ -695,8 +695,6 @@ class TestMultiTP:
 
     def test_partial_tp_level_preserved_when_order_fails(self) -> None:
         """Si place_order falla en un nivel parcial, el nivel no se consume (reintento)."""
-        import pytest
-        from unittest.mock import patch
 
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
         _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
@@ -723,8 +721,6 @@ class TestMultiTP:
 
     def test_last_tp_level_config_removed_even_when_order_fails(self) -> None:
         """Si place_order falla en el último nivel (full-close), la config se elimina igual."""
-        import pytest
-        from unittest.mock import patch
 
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
         _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
@@ -829,7 +825,6 @@ class TestDynamicSlTpUpdate:
 
     def test_update_sl_on_missing_symbol_raises(self) -> None:
         """update_sl sobre símbolo sin config lanza KeyError."""
-        import pytest
 
         adapter = PaperAdapter()
         pm = PositionManager(adapter)
@@ -838,7 +833,6 @@ class TestDynamicSlTpUpdate:
 
     def test_update_tp_on_missing_symbol_raises(self) -> None:
         """update_tp sobre símbolo sin config lanza KeyError."""
-        import pytest
 
         adapter = PaperAdapter()
         pm = PositionManager(adapter)
@@ -973,7 +967,6 @@ class TestSetupInvalidation:
 
     def test_invalidation_action_requires_at_least_one_field(self) -> None:
         """InvalidationAction sin new_sl ni close_fraction > 0 falla."""
-        import pytest
 
         with pytest.raises(ValueError, match="at least"):
             InvalidationAction()
