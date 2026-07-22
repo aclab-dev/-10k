@@ -122,9 +122,15 @@ class PositionManager:
         """
         if symbol not in self._configs:
             raise KeyError(f"No active config for symbol {symbol!r}")
+        n_discarded = len(self._remaining_tp_levels.get(symbol, []))
         self._remaining_tp_levels[symbol] = []
         self._effective_tp[symbol] = new_tp
-        _log.info("position_manager.tp_updated", symbol=symbol, new_tp=str(new_tp))
+        _log.info(
+            "position_manager.tp_updated",
+            symbol=symbol,
+            new_tp=str(new_tp),
+            n_levels_discarded=n_discarded,
+        )
 
     # ------------------------------------------------------------------
     # Invalidación de setup (F14)
@@ -148,14 +154,6 @@ class PositionManager:
         close_order_id: str | None = None
         closed_fraction: Decimal | None = None
 
-        if action.new_sl is not None:
-            self._effective_sl[symbol] = action.new_sl
-            _log.info(
-                "position_manager.invalidation_sl_moved",
-                symbol=symbol,
-                new_sl=str(action.new_sl),
-            )
-
         if action.close_fraction > Decimal("0"):
             close_qty = position.quantity * action.close_fraction
             is_full_close = action.close_fraction >= Decimal("1")
@@ -168,8 +166,15 @@ class PositionManager:
                     self.remove_config(symbol)
             closed_fraction = action.close_fraction
 
-        if close_order_id is None and action.new_sl is None:
-            return None
+        # Aplicar nuevo SL después de confirmar la orden (o si no hay orden).
+        # Si el config fue eliminado por full-close, la actualización de SL es innecesaria.
+        if action.new_sl is not None and symbol in self._configs:
+            self._effective_sl[symbol] = action.new_sl
+            _log.info(
+                "position_manager.invalidation_sl_moved",
+                symbol=symbol,
+                new_sl=str(action.new_sl),
+            )
 
         _log.info(
             "position_manager.setup_invalidated",
@@ -295,11 +300,16 @@ class PositionManager:
             if tp_hit:
                 tp_idx = len(config.take_profit_levels) - len(remaining_levels)
                 close_qty = position.quantity * next_level.close_fraction
-                order_id = self._place_close_order(symbol, close_qty, mark_price, side)
-                remaining_levels.pop(0)
-                is_last_level = not remaining_levels
-                if is_last_level:
-                    self.remove_config(symbol)
+                is_last_level = len(remaining_levels) == 1
+                # try/finally garantiza limpieza aunque place_order lance:
+                # el nivel se consume y, si era el último, la config se elimina.
+                # Consistent con el comportamiento de SL_HIT y TP_HIT (single).
+                try:
+                    order_id = self._place_close_order(symbol, close_qty, mark_price, side)
+                finally:
+                    remaining_levels.pop(0)
+                    if is_last_level:
+                        self.remove_config(symbol)
                 trigger = (
                     PositionTriggerReason.TP_HIT
                     if is_last_level

@@ -20,7 +20,12 @@ class PositionTriggerReason(StrEnum):
 class TakeProfitLevel(BaseModel):
     """Un nivel de take profit parcial para soporte multi-TP.
 
-    close_fraction: fracción de la cantidad total de la posición a cerrar en este nivel.
+    close_fraction: fracción de la cantidad *remanente* de la posición al momento
+    del tick en que se dispara este nivel (no de la cantidad original). Para cerrar
+    todo en el último nivel, usar close_fraction=1. Ejemplo: dos niveles con
+    close_fraction=0.5 y close_fraction=1 cierran 50% en el primero y 100% del
+    remanente (otro 50% original) en el segundo.
+
     El caller es responsable de que los niveles estén ordenados correctamente
     (ascendente para LONG, descendente para SHORT).
     """
@@ -111,7 +116,8 @@ class TickResult(BaseModel):
     close_order_id: str | None = None
     # Índice del nivel de TP disparado (0-based, solo en multi-TP)
     tp_level_index: int | None = None
-    # Fracción de la posición cerrada en este tick (solo en TP_PARTIAL y SETUP_INVALIDATED)
+    # Fracción de la posición cerrada en este tick:
+    # TP_PARTIAL, TP_HIT de multi-TP, y SETUP_INVALIDATED con cierre parcial/total.
     closed_fraction: Decimal | None = None
 
     model_config = {"frozen": True}

@@ -645,6 +645,35 @@ class TestMultiTP:
         with pytest.raises(ValueError):
             TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("1.1"))
 
+    def test_trailing_stop_continues_after_partial_tp(self) -> None:
+        """El trailing stop sigue avanzando y disparándose tras un cierre parcial de TP."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_delta=Decimal("1000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        # TP1 parcial
+        pm.tick("BTCUSDT", Decimal("55000"))
+        assert adapter.get_position("BTCUSDT") is not None
+
+        # Precio sube: trailing stop debe avanzar
+        pm.tick("BTCUSDT", Decimal("57000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("56000")
+
+        # Precio cae al trailing → cierra el remanente
+        r = pm.tick("BTCUSDT", Decimal("56000"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
     def test_remaining_levels_accessible(self) -> None:
         """get_remaining_tp_levels refleja niveles pendientes."""
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
