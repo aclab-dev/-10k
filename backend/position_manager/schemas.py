@@ -12,37 +12,92 @@ class PositionTriggerReason(StrEnum):
     NONE = "NONE"
     SL_HIT = "SL_HIT"
     TP_HIT = "TP_HIT"
+    TP_PARTIAL = "TP_PARTIAL"  # cierre parcial en un nivel de multi-TP
     TRAILING_SL_HIT = "TRAILING_SL_HIT"
+    SETUP_INVALIDATED = "SETUP_INVALIDATED"  # acción por invalidación de setup
+
+
+class TakeProfitLevel(BaseModel):
+    """Un nivel de take profit parcial para soporte multi-TP.
+
+    close_fraction: fracción de la cantidad total de la posición a cerrar en este nivel.
+    El caller es responsable de que los niveles estén ordenados correctamente
+    (ascendente para LONG, descendente para SHORT).
+    """
+
+    price: Decimal = Field(gt=Decimal("0"))
+    close_fraction: Decimal = Field(gt=Decimal("0"), le=Decimal("1"))
+
+    model_config = {"frozen": True}
+
+
+class InvalidationAction(BaseModel):
+    """Acción a ejecutar cuando el setup que originó la posición se invalida.
+
+    Al menos uno de new_sl o close_fraction > 0 debe estar presente.
+    new_sl: nuevo SL efectivo a aplicar (None = no cambiar).
+    close_fraction: fracción de la posición a cerrar inmediatamente (0 = no cerrar).
+    """
+
+    new_sl: Decimal | None = Field(default=None, gt=Decimal("0"))
+    close_fraction: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), le=Decimal("1"))
+
+    model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def at_least_one_action(self) -> InvalidationAction:
+        if self.new_sl is None and self.close_fraction == Decimal("0"):
+            raise ValueError(
+                "InvalidationAction must specify at least new_sl or close_fraction > 0."
+            )
+        return self
 
 
 class PositionConfig(BaseModel):
     """Configuración de salida para una posición abierta.
 
-    Al menos uno de stop_loss, take_profit o trailing_delta debe estar presente.
+    take_profit y take_profit_levels son mutuamente excluyentes.
+    Al menos uno de stop_loss, take_profit, take_profit_levels o trailing_delta debe estar presente.
+
     be_trigger_delta: si se setea, mueve el SL efectivo a entry_price cuando el precio
-    se aleja be_trigger_delta unidades a favor (funciona con o sin stop_loss inicial).
+    se aleja be_trigger_delta unidades a favor.
+
+    invalidation_action: acción a aplicar al llamar trigger_setup_invalidation().
 
     Nota de diseño: no se valida que stop_loss/take_profit sean coherentes con el lado
-    de la posición (ej. SL por encima del entry en un LONG) porque entry_price no se
-    conoce en el momento de construcción de esta config. La validación contextual
-    es responsabilidad del caller.
+    de la posición porque entry_price no se conoce en el momento de construcción.
+    La validación contextual es responsabilidad del caller.
     """
 
     symbol: str
     stop_loss: Decimal | None = Field(default=None, gt=Decimal("0"))
     take_profit: Decimal | None = Field(default=None, gt=Decimal("0"))
-    # Distancia fija en unidades de precio que el trailing stop mantiene respecto al high-water.
+    take_profit_levels: list[TakeProfitLevel] = Field(default_factory=list)
     trailing_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
-    # Distancia a favor desde entry_price que activa el movimiento del SL efectivo a entry_price.
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
+    invalidation_action: InvalidationAction | None = None
 
     model_config = {"frozen": True}
 
     @model_validator(mode="after")
-    def at_least_one_trigger(self) -> PositionConfig:
-        if self.stop_loss is None and self.take_profit is None and self.trailing_delta is None:
+    def validate_config(self) -> PositionConfig:
+        # take_profit y take_profit_levels son mutuamente excluyentes
+        if self.take_profit is not None and self.take_profit_levels:
             raise ValueError(
-                "At least one of stop_loss, take_profit, or trailing_delta must be set."
+                "take_profit and take_profit_levels are mutually exclusive."
+            )
+
+        # Al menos un mecanismo de salida debe estar presente
+        has_exit = (
+            self.stop_loss is not None
+            or self.take_profit is not None
+            or bool(self.take_profit_levels)
+            or self.trailing_delta is not None
+        )
+        if not has_exit:
+            raise ValueError(
+                "At least one of stop_loss, take_profit, take_profit_levels,"
+                " or trailing_delta must be set."
             )
         return self
 
@@ -53,7 +108,10 @@ class TickResult(BaseModel):
     symbol: str
     trigger: PositionTriggerReason
     mark_price: Decimal
-    # client_order_id de la orden de cierre si se disparó un trigger, None si no.
     close_order_id: str | None = None
+    # Índice del nivel de TP disparado (0-based, solo en multi-TP)
+    tp_level_index: int | None = None
+    # Fracción de la posición cerrada en este tick (solo en TP_PARTIAL y SETUP_INVALIDATED)
+    closed_fraction: Decimal | None = None
 
     model_config = {"frozen": True}
