@@ -64,8 +64,9 @@ class PositionConfig(BaseModel):
     take_profit y take_profit_levels son mutuamente excluyentes.
     Al menos uno de stop_loss, take_profit, take_profit_levels o trailing_delta debe estar presente.
 
-    be_trigger_delta: si se setea, mueve el SL efectivo a entry_price cuando el precio
-    se aleja be_trigger_delta unidades a favor.
+    be_trigger_delta: si se setea, mueve el SL efectivo a entry_price + be_sl_offset
+    (LONG) o entry_price - be_sl_offset (SHORT) cuando el precio se aleja
+    be_trigger_delta unidades a favor. be_sl_offset=0 (default) mueve exactamente a entry.
 
     invalidation_action: acción a aplicar al llamar trigger_setup_invalidation().
 
@@ -80,6 +81,7 @@ class PositionConfig(BaseModel):
     take_profit_levels: list[TakeProfitLevel] = Field(default_factory=list)
     trailing_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
+    be_sl_offset: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     invalidation_action: InvalidationAction | None = None
 
     model_config = {"frozen": True}
