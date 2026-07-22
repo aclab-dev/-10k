@@ -5,8 +5,13 @@ Responsabilidades:
 - En cada tick(symbol, mark_price):
     1. Actualiza el high-water del trailing stop.
     2. Evalúa break-even y mueve el SL efectivo si corresponde.
-    3. Evalúa SL efectivo → TP → trailing stop (primer trigger gana).
+    3. Evalúa (por prioridad): SL efectivo → TP (single o multi) → trailing stop.
     4. Si hay trigger → coloca MARKET reduce-only y limpia la config.
+
+Gestión SL/TP avanzada (F14):
+- update_sl / update_tp: actualización dinámica sin resetear trailing ni BE.
+- take_profit_levels: multi-TP con cierre parcial en cada nivel.
+- trigger_setup_invalidation: aplica la InvalidationAction configurada.
 
 Estado en memoria (sin persistencia). El caller es responsable de los ticks periódicos.
 """
@@ -24,6 +29,7 @@ from backend.position_manager.break_even import maybe_move_to_break_even
 from backend.position_manager.schemas import (
     PositionConfig,
     PositionTriggerReason,
+    TakeProfitLevel,
     TickResult,
 )
 from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
@@ -34,29 +40,34 @@ _log = structlog.get_logger(__name__)
 class PositionManager:
     """Gestor de posiciones paper: monitorea SL, TP, trailing stop y break-even.
 
-    Nota de thread safety: los dicts internos (_configs, _high_water, _trailing_stop,
-    _effective_sl) se mutan en tick(). No es seguro llamar tick() concurrentemente
-    para el mismo símbolo sin sincronización externa. El caller debe garantizar
-    ejecución single-threaded o serializar el acceso por símbolo.
+    Nota de thread safety: los dicts internos se mutan en tick(). No es seguro llamar
+    tick() concurrentemente para el mismo símbolo sin sincronización externa.
     """
 
     def __init__(self, adapter: ExchangeAdapter) -> None:
         self._adapter = adapter
-        # Configuración de salida por símbolo
         self._configs: dict[str, PositionConfig] = {}
-        # High-water mark para el trailing stop, por símbolo
+        # High-water mark para el trailing stop
         self._high_water: dict[str, Decimal] = {}
-        # Trailing stop price actual (calculado en el último tick)
+        # Trailing stop price actual
         self._trailing_stop: dict[str, Decimal] = {}
-        # SL efectivo: puede diferir de config.stop_loss tras un movimiento a break-even
+        # SL efectivo: puede diferir de config.stop_loss tras break-even o update_sl()
         self._effective_sl: dict[str, Decimal | None] = {}
+        # TP efectivo para single-TP dinámico (puede diferir de config.take_profit)
+        self._effective_tp: dict[str, Decimal | None] = {}
+        # Niveles de multi-TP pendientes de dispararse (copia mutable de config)
+        self._remaining_tp_levels: dict[str, list[TakeProfitLevel]] = {}
+
+    # ------------------------------------------------------------------
+    # Configuración
+    # ------------------------------------------------------------------
 
     def set_config(self, config: PositionConfig) -> None:
         """Registra o reemplaza la configuración de salida para un símbolo."""
         self._configs[config.symbol] = config
-        # Inicializar SL efectivo desde config; se actualizará si break-even se activa
         self._effective_sl[config.symbol] = config.stop_loss
-        # Resetear estado de trailing al reconfigurar
+        self._effective_tp[config.symbol] = config.take_profit
+        self._remaining_tp_levels[config.symbol] = list(config.take_profit_levels)
         self._high_water.pop(config.symbol, None)
         self._trailing_stop.pop(config.symbol, None)
         _log.info(
@@ -64,6 +75,7 @@ class PositionManager:
             symbol=config.symbol,
             stop_loss=str(config.stop_loss),
             take_profit=str(config.take_profit),
+            tp_levels=len(config.take_profit_levels),
             trailing_delta=str(config.trailing_delta),
             be_trigger_delta=str(config.be_trigger_delta),
         )
@@ -72,12 +84,16 @@ class PositionManager:
         return self._configs.get(symbol)
 
     def get_trailing_stop(self, symbol: str) -> Decimal | None:
-        """Retorna el precio de trailing stop activo para `symbol`, o None si no aplica."""
         return self._trailing_stop.get(symbol)
 
     def get_effective_sl(self, symbol: str) -> Decimal | None:
-        """Retorna el SL efectivo actual para `symbol` (puede haber sido movido a break-even)."""
         return self._effective_sl.get(symbol)
+
+    def get_effective_tp(self, symbol: str) -> Decimal | None:
+        return self._effective_tp.get(symbol)
+
+    def get_remaining_tp_levels(self, symbol: str) -> list[TakeProfitLevel]:
+        return list(self._remaining_tp_levels.get(symbol, []))
 
     def remove_config(self, symbol: str) -> None:
         """Elimina la configuración y el estado de tracking para un símbolo."""
@@ -85,19 +101,116 @@ class PositionManager:
         self._high_water.pop(symbol, None)
         self._trailing_stop.pop(symbol, None)
         self._effective_sl.pop(symbol, None)
+        self._effective_tp.pop(symbol, None)
+        self._remaining_tp_levels.pop(symbol, None)
+
+    # ------------------------------------------------------------------
+    # Actualización dinámica de SL/TP (F14)
+    # ------------------------------------------------------------------
+
+    def update_sl(self, symbol: str, new_sl: Decimal) -> None:
+        """Actualiza el SL efectivo sin resetear trailing ni break-even."""
+        if symbol not in self._configs:
+            raise KeyError(f"No active config for symbol {symbol!r}")
+        self._effective_sl[symbol] = new_sl
+        _log.info("position_manager.sl_updated", symbol=symbol, new_sl=str(new_sl))
+
+    def update_tp(self, symbol: str, new_tp: Decimal) -> None:
+        """Actualiza el TP efectivo (single-TP mode).
+
+        Si hay niveles multi-TP activos, los descarta y pasa a single-TP con new_tp.
+        """
+        if symbol not in self._configs:
+            raise KeyError(f"No active config for symbol {symbol!r}")
+        n_discarded = len(self._remaining_tp_levels.get(symbol, []))
+        self._remaining_tp_levels[symbol] = []
+        self._effective_tp[symbol] = new_tp
+        _log.info(
+            "position_manager.tp_updated",
+            symbol=symbol,
+            new_tp=str(new_tp),
+            n_levels_discarded=n_discarded,
+        )
+
+    # ------------------------------------------------------------------
+    # Invalidación de setup (F14)
+    # ------------------------------------------------------------------
+
+    def trigger_setup_invalidation(self, symbol: str, mark_price: Decimal) -> TickResult | None:
+        """Aplica la InvalidationAction configurada para el símbolo.
+
+        Retorna TickResult con trigger=SETUP_INVALIDATED si se tomó alguna acción,
+        o None si no hay config, no hay action, o no hay posición abierta.
+        """
+        config = self._configs.get(symbol)
+        if config is None or config.invalidation_action is None:
+            return None
+
+        position = self._adapter.get_position(symbol)
+        if position is None:
+            return None
+
+        action = config.invalidation_action
+        close_order_id: str | None = None
+        closed_fraction: Decimal | None = None
+
+        if action.close_fraction > Decimal("0"):
+            close_qty = position.quantity * action.close_fraction
+            is_full_close = action.close_fraction >= Decimal("1")
+            try:
+                close_order_id = self._place_close_order(
+                    symbol, close_qty, mark_price, position.side
+                )
+            finally:
+                if is_full_close:
+                    self.remove_config(symbol)
+            closed_fraction = action.close_fraction
+
+        # Aplicar nuevo SL después de confirmar la orden (o si no hay orden).
+        # Si el config fue eliminado por full-close, la actualización de SL es innecesaria.
+        if action.new_sl is not None and symbol in self._configs:
+            self._effective_sl[symbol] = action.new_sl
+            _log.info(
+                "position_manager.invalidation_sl_moved",
+                symbol=symbol,
+                new_sl=str(action.new_sl),
+            )
+
+        _log.info(
+            "position_manager.setup_invalidated",
+            symbol=symbol,
+            close_order_id=close_order_id,
+            closed_fraction=str(closed_fraction) if closed_fraction is not None else None,
+            new_sl=str(action.new_sl) if action.new_sl is not None else None,
+        )
+
+        return TickResult(
+            symbol=symbol,
+            trigger=PositionTriggerReason.SETUP_INVALIDATED,
+            mark_price=mark_price,
+            close_order_id=close_order_id,
+            closed_fraction=closed_fraction,
+        )
+
+    # ------------------------------------------------------------------
+    # Tick principal
+    # ------------------------------------------------------------------
 
     def tick(self, symbol: str, mark_price: Decimal) -> TickResult:
         """Evalúa triggers para `symbol` al precio `mark_price`.
 
-        Orden de evaluación: SL efectivo → TP → trailing stop.
-        El primero que se activa gana; se coloca la orden y se limpia la config.
+        Orden de evaluación: SL efectivo → TP (single o multi) → trailing stop.
+        El primero que se activa gana.
 
-        Si no hay posición abierta o no hay config → retorna NONE.
+        Para multi-TP: en cada nivel disparado se hace un cierre parcial y se
+        continúa el monitoreo (config no se elimina hasta que no queden niveles o
+        se dispare SL/trailing). TickResult.trigger es TP_PARTIAL si aún quedan
+        niveles, TP_HIT si fue el último.
 
-        Manejo de excepciones: si `place_order` lanza (timeout, error del adapter, etc.),
-        la excepción se propaga al caller Y la config ya fue limpiada (via try/finally).
-        Esto significa que la posición queda sin monitoreo activo. El caller debe capturar
-        la excepción y llamar `set_config` de nuevo si quiere reintentar el cierre.
+        Manejo de excepciones — full-close (SL, TP_HIT single, último nivel multi-TP,
+        trailing): config limpiada via try/finally; el caller debe capturar y llamar
+        set_config para reintentar. Nivel parcial de multi-TP: si place_order lanza,
+        el nivel NO se consume; el próximo tick lo reintenta automáticamente.
         """
         position = self._adapter.get_position(symbol)
         if position is None:
@@ -117,7 +230,7 @@ class PositionManager:
 
         side = position.side
 
-        # --- Trailing stop: actualizar high-water y precio de trailing ---
+        # --- Trailing stop: actualizar high-water ---
         trailing_stop_price: Decimal | None = None
         if config.trailing_delta is not None:
             hw, trailing_stop_price = compute_trailing_stop(
@@ -129,7 +242,7 @@ class PositionManager:
             self._high_water[symbol] = hw
             self._trailing_stop[symbol] = trailing_stop_price
 
-        # --- Break-even: mover SL efectivo a entry_price si se cumple la condición ---
+        # --- Break-even: mover SL efectivo a entry_price si corresponde ---
         if config.be_trigger_delta is not None:
             current_sl = self._effective_sl.get(symbol)
             new_sl = maybe_move_to_break_even(
@@ -149,73 +262,138 @@ class PositionManager:
                     new_sl=str(new_sl),
                 )
 
-        # --- Evaluación de triggers ---
+        # --- 1. SL efectivo (mayor prioridad) ---
         effective_sl = self._effective_sl.get(symbol)
-        trigger = self._evaluate_trigger(
-            side, mark_price, config, effective_sl, trailing_stop_price
-        )
+        if effective_sl is not None:
+            sl_hit = (side == OrderSide.BUY and mark_price <= effective_sl) or (
+                side == OrderSide.SELL and mark_price >= effective_sl
+            )
+            if sl_hit:
+                try:
+                    order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
+                finally:
+                    self.remove_config(symbol)
+                _log.info(
+                    "position_manager.trigger_fired",
+                    symbol=symbol,
+                    trigger=PositionTriggerReason.SL_HIT,
+                    mark_price=str(mark_price),
+                    close_order_id=order_id,
+                )
+                return TickResult(
+                    symbol=symbol,
+                    trigger=PositionTriggerReason.SL_HIT,
+                    mark_price=mark_price,
+                    close_order_id=order_id,
+                )
 
-        if trigger == PositionTriggerReason.NONE:
+        # --- 2. TP: multi-TP o single TP ---
+        remaining_levels = self._remaining_tp_levels.get(symbol, [])
+        if remaining_levels:
+            next_level = remaining_levels[0]
+            # Nota: si el precio salta varios niveles en un mismo tick, solo se
+            # dispara el primero; los demás se evalúan en ticks posteriores.
+            tp_hit = (side == OrderSide.BUY and mark_price >= next_level.price) or (
+                side == OrderSide.SELL and mark_price <= next_level.price
+            )
+            if tp_hit:
+                tp_idx = len(config.take_profit_levels) - len(remaining_levels)
+                # TODO: close_qty puede quedar fuera del step size del par.
+                # PaperAdapter no cuantiza; el ExchangeAdapter real debe hacerlo
+                # antes de enviar la orden al exchange (riesgo de rechazo en live).
+                close_qty = position.quantity * next_level.close_fraction
+                is_last_level = len(remaining_levels) == 1
+                # Para el último nivel (full-close): remove_config en finally garantiza
+                # limpieza aunque place_order lance, consistente con SL_HIT/TP_HIT.
+                # Para niveles parciales: pop(0) va FUERA del finally — si la orden
+                # falla, el nivel se preserva y el próximo tick puede reintentar.
+                try:
+                    order_id = self._place_close_order(symbol, close_qty, mark_price, side)
+                finally:
+                    if is_last_level:
+                        self.remove_config(symbol)
+                remaining_levels.pop(0)
+                trigger = (
+                    PositionTriggerReason.TP_HIT
+                    if is_last_level
+                    else PositionTriggerReason.TP_PARTIAL
+                )
+                _log.info(
+                    "position_manager.trigger_fired",
+                    symbol=symbol,
+                    trigger=trigger,
+                    tp_level_index=tp_idx,
+                    mark_price=str(mark_price),
+                    close_order_id=order_id,
+                    closed_fraction=str(next_level.close_fraction),
+                )
+                return TickResult(
+                    symbol=symbol,
+                    trigger=trigger,
+                    mark_price=mark_price,
+                    close_order_id=order_id,
+                    tp_level_index=tp_idx,
+                    closed_fraction=next_level.close_fraction,
+                )
+        else:
+            # Single TP: usar _effective_tp (puede haber sido actualizado dinámicamente)
+            effective_tp = self._effective_tp.get(symbol)
+            if effective_tp is not None:
+                tp_hit = (side == OrderSide.BUY and mark_price >= effective_tp) or (
+                    side == OrderSide.SELL and mark_price <= effective_tp
+                )
+                if tp_hit:
+                    try:
+                        order_id = self._place_close_order(
+                            symbol, position.quantity, mark_price, side
+                        )
+                    finally:
+                        self.remove_config(symbol)
+                    _log.info(
+                        "position_manager.trigger_fired",
+                        symbol=symbol,
+                        trigger=PositionTriggerReason.TP_HIT,
+                        mark_price=str(mark_price),
+                        close_order_id=order_id,
+                    )
+                    return TickResult(
+                        symbol=symbol,
+                        trigger=PositionTriggerReason.TP_HIT,
+                        mark_price=mark_price,
+                        close_order_id=order_id,
+                    )
+
+        # --- 3. Trailing stop ---
+        if trailing_stop_price is not None and is_trailing_stop_hit(
+            side, mark_price, trailing_stop_price
+        ):
+            try:
+                order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
+            finally:
+                self.remove_config(symbol)
+            _log.info(
+                "position_manager.trigger_fired",
+                symbol=symbol,
+                trigger=PositionTriggerReason.TRAILING_SL_HIT,
+                mark_price=str(mark_price),
+                close_order_id=order_id,
+            )
             return TickResult(
                 symbol=symbol,
-                trigger=PositionTriggerReason.NONE,
+                trigger=PositionTriggerReason.TRAILING_SL_HIT,
                 mark_price=mark_price,
+                close_order_id=order_id,
             )
-
-        # remove_config en finally: si place_order lanza, la config queda limpia y el
-        # siguiente tick no intentará cerrar de nuevo (evita doble orden al migrar a live).
-        try:
-            close_order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
-        finally:
-            self.remove_config(symbol)
-
-        _log.info(
-            "position_manager.trigger_fired",
-            symbol=symbol,
-            trigger=trigger,
-            mark_price=str(mark_price),
-            close_order_id=close_order_id,
-        )
 
         return TickResult(
             symbol=symbol,
-            trigger=trigger,
+            trigger=PositionTriggerReason.NONE,
             mark_price=mark_price,
-            close_order_id=close_order_id,
         )
 
     # ------------------------------------------------------------------
     # Helpers internos
     # ------------------------------------------------------------------
-
-    def _evaluate_trigger(
-        self,
-        side: OrderSide,
-        mark_price: Decimal,
-        config: PositionConfig,
-        effective_sl: Decimal | None,
-        trailing_stop_price: Decimal | None,
-    ) -> PositionTriggerReason:
-        # SL efectivo (puede ser el original o el movido a break-even)
-        if effective_sl is not None:
-            if side == OrderSide.BUY and mark_price <= effective_sl:
-                return PositionTriggerReason.SL_HIT
-            if side == OrderSide.SELL and mark_price >= effective_sl:
-                return PositionTriggerReason.SL_HIT
-
-        # TP
-        if config.take_profit is not None:
-            if side == OrderSide.BUY and mark_price >= config.take_profit:
-                return PositionTriggerReason.TP_HIT
-            if side == OrderSide.SELL and mark_price <= config.take_profit:
-                return PositionTriggerReason.TP_HIT
-
-        # Trailing stop
-        if trailing_stop_price is not None:
-            if is_trailing_stop_hit(side, mark_price, trailing_stop_price):
-                return PositionTriggerReason.TRAILING_SL_HIT
-
-        return PositionTriggerReason.NONE
 
     def _place_close_order(
         self,

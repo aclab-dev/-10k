@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
+
+import pytest
 
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
-from backend.position_manager import PositionConfig, PositionManager, PositionTriggerReason
+from backend.position_manager import (
+    InvalidationAction,
+    PositionConfig,
+    PositionManager,
+    PositionTriggerReason,
+    TakeProfitLevel,
+)
 from backend.position_manager.break_even import maybe_move_to_break_even
 from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
 
@@ -382,7 +391,6 @@ class TestPositionManagerEdge:
 
 class TestPositionConfigValidator:
     def test_all_none_raises(self) -> None:
-        import pytest
 
         with pytest.raises(ValueError, match="At least one"):
             PositionConfig(symbol="BTCUSDT")
@@ -510,4 +518,475 @@ class TestPositionManagerBreakEven:
 
         # Si el precio cae por debajo del entry → SL_HIT
         r = pm.tick("BTCUSDT", entry_price - Decimal("1"))
+        assert r.trigger == PositionTriggerReason.SL_HIT
+
+
+# ---------------------------------------------------------------------------
+# F14 — Multi-TP (take_profit_levels)
+# ---------------------------------------------------------------------------
+
+
+class TestMultiTP:
+    def test_long_two_levels_first_partial(self) -> None:
+        """Primer nivel de multi-TP cierra parcialmente; posición sigue abierta."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("0.5")),
+                ],
+            )
+        )
+
+        r = pm.tick("BTCUSDT", Decimal("55000"))
+
+        assert r.trigger == PositionTriggerReason.TP_PARTIAL
+        assert r.tp_level_index == 0
+        assert r.closed_fraction == Decimal("0.5")
+        assert r.close_order_id is not None
+        # Posición sigue abierta con ~50% de la cantidad
+        pos = adapter.get_position("BTCUSDT")
+        assert pos is not None
+
+    def test_long_two_levels_second_closes_all(self) -> None:
+        """Segundo nivel cierra el resto; trigger es TP_HIT (cierre total).
+
+        close_fraction es fracción del remanente en cada nivel: para cerrar todo en
+        dos niveles, el segundo nivel debe tener close_fraction=1.
+        """
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        pm.tick("BTCUSDT", Decimal("55000"))  # TP1 → TP_PARTIAL
+        r = pm.tick("BTCUSDT", Decimal("60000"))  # TP2 → TP_HIT
+
+        assert r.trigger == PositionTriggerReason.TP_HIT
+        assert r.tp_level_index == 1
+        assert r.closed_fraction == Decimal("1")
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_sl_still_triggers_after_partial_tp(self) -> None:
+        """SL sigue activo después de un cierre parcial por TP."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("0.5")),
+                ],
+            )
+        )
+
+        pm.tick("BTCUSDT", Decimal("55000"))  # TP1 parcial
+        r = pm.tick("BTCUSDT", Decimal("47999"))  # SL hit
+
+        assert r.trigger == PositionTriggerReason.SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_short_multi_tp(self) -> None:
+        """Multi-TP en SHORT: niveles descendentes. El último nivel usa close_fraction=1."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("52000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("47000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("44000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        r1 = pm.tick("BTCUSDT", Decimal("47000"))
+        assert r1.trigger == PositionTriggerReason.TP_PARTIAL
+        assert adapter.get_position("BTCUSDT") is not None
+
+        r2 = pm.tick("BTCUSDT", Decimal("44000"))
+        assert r2.trigger == PositionTriggerReason.TP_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_tp_levels_mutual_exclusion_with_take_profit(self) -> None:
+        """take_profit y take_profit_levels no pueden coexistir."""
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                take_profit=Decimal("55000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("1"))
+                ],
+            )
+
+    def test_tp_levels_each_fraction_at_most_one(self) -> None:
+        """Cada nivel individual debe tener close_fraction <= 1."""
+
+        with pytest.raises(ValueError):
+            TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("1.1"))
+
+    def test_trailing_stop_continues_after_partial_tp(self) -> None:
+        """El trailing stop sigue avanzando y disparándose tras un cierre parcial de TP."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_delta=Decimal("1000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        # TP1 parcial
+        pm.tick("BTCUSDT", Decimal("55000"))
+        assert adapter.get_position("BTCUSDT") is not None
+
+        # Precio sube: trailing stop debe avanzar
+        pm.tick("BTCUSDT", Decimal("57000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("56000")
+
+        # Precio cae al trailing → cierra el remanente
+        r = pm.tick("BTCUSDT", Decimal("56000"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_remaining_levels_accessible(self) -> None:
+        """get_remaining_tp_levels refleja niveles pendientes."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("0.5")),
+                ],
+            )
+        )
+
+        assert len(pm.get_remaining_tp_levels("BTCUSDT")) == 2
+        pm.tick("BTCUSDT", Decimal("55000"))
+        assert len(pm.get_remaining_tp_levels("BTCUSDT")) == 1
+
+    def test_partial_tp_level_preserved_when_order_fails(self) -> None:
+        """Si place_order falla en un nivel parcial, el nivel no se consume (reintento)."""
+
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        with patch.object(pm, "_place_close_order", side_effect=RuntimeError("order failed")):
+            with pytest.raises(RuntimeError, match="order failed"):
+                pm.tick("BTCUSDT", Decimal("55000"))
+
+        # Nivel 0 debe seguir pendiente para que el próximo tick reintente
+        assert len(pm.get_remaining_tp_levels("BTCUSDT")) == 2
+        # Config sigue activa — posición bajo monitoreo
+        assert pm.get_config("BTCUSDT") is not None
+
+    def test_last_tp_level_config_removed_even_when_order_fails(self) -> None:
+        """Si place_order falla en el último nivel (full-close), la config se elimina igual."""
+
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        with patch.object(pm, "_place_close_order", side_effect=RuntimeError("order failed")):
+            with pytest.raises(RuntimeError, match="order failed"):
+                pm.tick("BTCUSDT", Decimal("60000"))
+
+        # Config eliminada (evita doble orden en el siguiente tick)
+        assert pm.get_config("BTCUSDT") is None
+
+
+# ---------------------------------------------------------------------------
+# F14 — Actualización dinámica de SL/TP
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicSlTpUpdate:
+    def test_update_sl_changes_effective_sl(self) -> None:
+        """update_sl actualiza el SL efectivo sin resetear trailing."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                trailing_delta=Decimal("1000"),
+            )
+        )
+
+        # Avanzar trailing stop
+        pm.tick("BTCUSDT", Decimal("53000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+        # Actualizar SL dinámicamente — trailing no se resetea
+        pm.update_sl("BTCUSDT", Decimal("51000"))
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("51000")
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+    def test_update_sl_triggers_on_next_tick(self) -> None:
+        """El nuevo SL se evalúa en el siguiente tick."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("45000")))
+
+        pm.update_sl("BTCUSDT", Decimal("49000"))
+        r = pm.tick("BTCUSDT", Decimal("48999"))
+
+        assert r.trigger == PositionTriggerReason.SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_update_tp_changes_effective_tp(self) -> None:
+        """update_tp actualiza el TP dinámicamente."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", take_profit=Decimal("55000")))
+
+        # Precio no llega al TP original
+        r = pm.tick("BTCUSDT", Decimal("52000"))
+        assert r.trigger == PositionTriggerReason.NONE
+
+        # Bajar el TP
+        pm.update_tp("BTCUSDT", Decimal("52000"))
+        r = pm.tick("BTCUSDT", Decimal("52000"))
+        assert r.trigger == PositionTriggerReason.TP_HIT
+
+    def test_update_tp_clears_multi_tp_levels(self) -> None:
+        """update_tp convierte multi-TP a single TP."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("0.5")),
+                ],
+            )
+        )
+
+        pm.update_tp("BTCUSDT", Decimal("53000"))
+        assert pm.get_remaining_tp_levels("BTCUSDT") == []
+        assert pm.get_effective_tp("BTCUSDT") == Decimal("53000")
+
+        r = pm.tick("BTCUSDT", Decimal("53000"))
+        assert r.trigger == PositionTriggerReason.TP_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_update_sl_on_missing_symbol_raises(self) -> None:
+        """update_sl sobre símbolo sin config lanza KeyError."""
+
+        adapter = PaperAdapter()
+        pm = PositionManager(adapter)
+        with pytest.raises(KeyError):
+            pm.update_sl("BTCUSDT", Decimal("49000"))
+
+    def test_update_tp_on_missing_symbol_raises(self) -> None:
+        """update_tp sobre símbolo sin config lanza KeyError."""
+
+        adapter = PaperAdapter()
+        pm = PositionManager(adapter)
+        with pytest.raises(KeyError):
+            pm.update_tp("BTCUSDT", Decimal("55000"))
+
+
+# ---------------------------------------------------------------------------
+# F14 — Invalidación de setup
+# ---------------------------------------------------------------------------
+
+
+class TestSetupInvalidation:
+    def test_invalidation_moves_sl(self) -> None:
+        """trigger_setup_invalidation mueve el SL efectivo al valor configurado."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                invalidation_action=InvalidationAction(new_sl=Decimal("49500")),
+            )
+        )
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+
+        assert result is not None
+        assert result.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        assert result.close_order_id is None
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("49500")
+        # Posición sigue abierta
+        assert adapter.get_position("BTCUSDT") is not None
+
+    def test_invalidation_partial_close(self) -> None:
+        """trigger_setup_invalidation cierra una fracción de la posición."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        initial_qty = adapter.get_position("BTCUSDT").quantity
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                invalidation_action=InvalidationAction(close_fraction=Decimal("0.5")),
+            )
+        )
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+
+        assert result is not None
+        assert result.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        assert result.close_order_id is not None
+        assert result.closed_fraction == Decimal("0.5")
+        # Posición sigue abierta con el 50% restante
+        pos = adapter.get_position("BTCUSDT")
+        assert pos is not None
+        assert pos.quantity < initial_qty
+        # Config sigue activa (cierre parcial no la elimina)
+        assert pm.get_config("BTCUSDT") is not None
+
+    def test_invalidation_full_close_removes_config(self) -> None:
+        """Invalidación con close_fraction=1 cierra la posición y elimina config."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                invalidation_action=InvalidationAction(close_fraction=Decimal("1")),
+            )
+        )
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+
+        assert result is not None
+        assert result.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        assert adapter.get_position("BTCUSDT") is None
+        assert pm.get_config("BTCUSDT") is None
+
+    def test_invalidation_sl_and_partial_close_combined(self) -> None:
+        """Invalidación combina mover SL y cierre parcial en un solo call."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                invalidation_action=InvalidationAction(
+                    new_sl=Decimal("49800"),
+                    close_fraction=Decimal("0.5"),
+                ),
+            )
+        )
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+
+        assert result is not None
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("49800")
+        assert result.close_order_id is not None
+        assert adapter.get_position("BTCUSDT") is not None
+
+    def test_invalidation_no_action_returns_none(self) -> None:
+        """Sin invalidation_action configurada retorna None."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+
+        assert result is None
+
+    def test_invalidation_no_position_returns_none(self) -> None:
+        """Sin posición abierta retorna None."""
+        adapter = PaperAdapter()
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                invalidation_action=InvalidationAction(new_sl=Decimal("49000")),
+            )
+        )
+
+        result = pm.trigger_setup_invalidation("BTCUSDT", Decimal("50000"))
+
+        assert result is None
+
+    def test_invalidation_action_requires_at_least_one_field(self) -> None:
+        """InvalidationAction sin new_sl ni close_fraction > 0 falla."""
+
+        with pytest.raises(ValueError, match="at least"):
+            InvalidationAction()
+
+    def test_new_sl_after_invalidation_used_in_next_tick(self) -> None:
+        """Tras invalidación con new_sl, el nuevo SL se evalúa en el siguiente tick."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("45000"),
+                invalidation_action=InvalidationAction(new_sl=Decimal("49500")),
+            )
+        )
+
+        pm.trigger_setup_invalidation("BTCUSDT", Decimal("51000"))
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("49500")
+
+        # Precio cae por debajo del nuevo SL → SL_HIT
+        r = pm.tick("BTCUSDT", Decimal("49499"))
         assert r.trigger == PositionTriggerReason.SL_HIT
