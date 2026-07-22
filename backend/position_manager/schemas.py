@@ -88,9 +88,7 @@ class PositionConfig(BaseModel):
     def validate_config(self) -> PositionConfig:
         # take_profit y take_profit_levels son mutuamente excluyentes
         if self.take_profit is not None and self.take_profit_levels:
-            raise ValueError(
-                "take_profit and take_profit_levels are mutually exclusive."
-            )
+            raise ValueError("take_profit and take_profit_levels are mutually exclusive.")
 
         # Al menos un mecanismo de salida debe estar presente
         has_exit = (

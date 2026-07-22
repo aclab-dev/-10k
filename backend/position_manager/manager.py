@@ -264,15 +264,12 @@ class PositionManager:
         # --- 1. SL efectivo (mayor prioridad) ---
         effective_sl = self._effective_sl.get(symbol)
         if effective_sl is not None:
-            sl_hit = (
-                (side == OrderSide.BUY and mark_price <= effective_sl)
-                or (side == OrderSide.SELL and mark_price >= effective_sl)
+            sl_hit = (side == OrderSide.BUY and mark_price <= effective_sl) or (
+                side == OrderSide.SELL and mark_price >= effective_sl
             )
             if sl_hit:
                 try:
-                    order_id = self._place_close_order(
-                        symbol, position.quantity, mark_price, side
-                    )
+                    order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
                 finally:
                     self.remove_config(symbol)
                 _log.info(
@@ -293,9 +290,8 @@ class PositionManager:
         remaining_levels = self._remaining_tp_levels.get(symbol, [])
         if remaining_levels:
             next_level = remaining_levels[0]
-            tp_hit = (
-                (side == OrderSide.BUY and mark_price >= next_level.price)
-                or (side == OrderSide.SELL and mark_price <= next_level.price)
+            tp_hit = (side == OrderSide.BUY and mark_price >= next_level.price) or (
+                side == OrderSide.SELL and mark_price <= next_level.price
             )
             if tp_hit:
                 tp_idx = len(config.take_profit_levels) - len(remaining_levels)
@@ -336,9 +332,8 @@ class PositionManager:
             # Single TP: usar _effective_tp (puede haber sido actualizado dinámicamente)
             effective_tp = self._effective_tp.get(symbol)
             if effective_tp is not None:
-                tp_hit = (
-                    (side == OrderSide.BUY and mark_price >= effective_tp)
-                    or (side == OrderSide.SELL and mark_price <= effective_tp)
+                tp_hit = (side == OrderSide.BUY and mark_price >= effective_tp) or (
+                    side == OrderSide.SELL and mark_price <= effective_tp
                 )
                 if tp_hit:
                     try:
@@ -366,9 +361,7 @@ class PositionManager:
             side, mark_price, trailing_stop_price
         ):
             try:
-                order_id = self._place_close_order(
-                    symbol, position.quantity, mark_price, side
-                )
+                order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
             finally:
                 self.remove_config(symbol)
             _log.info(
