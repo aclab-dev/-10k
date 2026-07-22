@@ -207,9 +207,10 @@ class PositionManager:
         se dispare SL/trailing). TickResult.trigger es TP_PARTIAL si aún quedan
         niveles, TP_HIT si fue el último.
 
-        Manejo de excepciones: si place_order lanza, la excepción se propaga Y la
-        config ya fue limpiada (via try/finally) para full-close. El caller debe
-        capturar y llamar set_config si quiere reintentar.
+        Manejo de excepciones — full-close (SL, TP_HIT single, último nivel multi-TP,
+        trailing): config limpiada via try/finally; el caller debe capturar y llamar
+        set_config para reintentar. Nivel parcial de multi-TP: si place_order lanza,
+        el nivel NO se consume; el próximo tick lo reintenta automáticamente.
         """
         position = self._adapter.get_position(symbol)
         if position is None:
@@ -290,22 +291,28 @@ class PositionManager:
         remaining_levels = self._remaining_tp_levels.get(symbol, [])
         if remaining_levels:
             next_level = remaining_levels[0]
+            # Nota: si el precio salta varios niveles en un mismo tick, solo se
+            # dispara el primero; los demás se evalúan en ticks posteriores.
             tp_hit = (side == OrderSide.BUY and mark_price >= next_level.price) or (
                 side == OrderSide.SELL and mark_price <= next_level.price
             )
             if tp_hit:
                 tp_idx = len(config.take_profit_levels) - len(remaining_levels)
+                # TODO: close_qty puede quedar fuera del step size del par.
+                # PaperAdapter no cuantiza; el ExchangeAdapter real debe hacerlo
+                # antes de enviar la orden al exchange (riesgo de rechazo en live).
                 close_qty = position.quantity * next_level.close_fraction
                 is_last_level = len(remaining_levels) == 1
-                # try/finally garantiza limpieza aunque place_order lance:
-                # el nivel se consume y, si era el último, la config se elimina.
-                # Consistent con el comportamiento de SL_HIT y TP_HIT (single).
+                # Para el último nivel (full-close): remove_config en finally garantiza
+                # limpieza aunque place_order lance, consistente con SL_HIT/TP_HIT.
+                # Para niveles parciales: pop(0) va FUERA del finally — si la orden
+                # falla, el nivel se preserva y el próximo tick puede reintentar.
                 try:
                     order_id = self._place_close_order(symbol, close_qty, mark_price, side)
                 finally:
-                    remaining_levels.pop(0)
                     if is_last_level:
                         self.remove_config(symbol)
+                remaining_levels.pop(0)
                 trigger = (
                     PositionTriggerReason.TP_HIT
                     if is_last_level

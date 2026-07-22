@@ -693,6 +693,59 @@ class TestMultiTP:
         pm.tick("BTCUSDT", Decimal("55000"))
         assert len(pm.get_remaining_tp_levels("BTCUSDT")) == 1
 
+    def test_partial_tp_level_preserved_when_order_fails(self) -> None:
+        """Si place_order falla en un nivel parcial, el nivel no se consume (reintento)."""
+        import pytest
+        from unittest.mock import patch
+
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.5")),
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        with patch.object(pm, "_place_close_order", side_effect=RuntimeError("order failed")):
+            with pytest.raises(RuntimeError, match="order failed"):
+                pm.tick("BTCUSDT", Decimal("55000"))
+
+        # Nivel 0 debe seguir pendiente para que el próximo tick reintente
+        assert len(pm.get_remaining_tp_levels("BTCUSDT")) == 2
+        # Config sigue activa — posición bajo monitoreo
+        assert pm.get_config("BTCUSDT") is not None
+
+    def test_last_tp_level_config_removed_even_when_order_fails(self) -> None:
+        """Si place_order falla en el último nivel (full-close), la config se elimina igual."""
+        import pytest
+        from unittest.mock import patch
+
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                take_profit_levels=[
+                    TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("1")),
+                ],
+            )
+        )
+
+        with patch.object(pm, "_place_close_order", side_effect=RuntimeError("order failed")):
+            with pytest.raises(RuntimeError, match="order failed"):
+                pm.tick("BTCUSDT", Decimal("60000"))
+
+        # Config eliminada (evita doble orden en el siguiente tick)
+        assert pm.get_config("BTCUSDT") is None
+
 
 # ---------------------------------------------------------------------------
 # F14 — Actualización dinámica de SL/TP
