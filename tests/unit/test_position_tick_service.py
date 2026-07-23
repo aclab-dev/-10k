@@ -96,6 +96,48 @@ class TestTickAll:
         assert queried == ["BTCUSDT"]
 
 
+class TestTickAllFailureIsolation:
+    def test_one_symbol_failing_does_not_block_the_others(self) -> None:
+        """Un símbolo que falla no debe impedir que se tickeen los demás ni
+        crashear tick_all() entero (PositionManager es 100% in-memory: un crash
+        del ciclo pierde el monitoreo de todas las posiciones, no solo la que
+        falló)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("5000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        _open_long(adapter, "ETHUSDT", Decimal("1"), Decimal("3000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("1")))
+        pm.set_config(PositionConfig(symbol="ETHUSDT", stop_loss=Decimal("1")))
+
+        def get_mark_price(symbol: str) -> Decimal:
+            if symbol == "BTCUSDT":
+                raise TimeoutError("simulated network hang")
+            return Decimal("3050")
+
+        service = PositionTickService(pm, get_mark_price)
+
+        results = service.tick_all()
+
+        assert {r.symbol for r in results} == {"ETHUSDT"}
+        # El símbolo que falló conserva su config: se reintenta el próximo ciclo.
+        assert "BTCUSDT" in pm.configured_symbols()
+
+    def test_all_symbols_failing_returns_empty_without_raising(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("1")))
+
+        def get_mark_price(symbol: str) -> Decimal:
+            raise TimeoutError("simulated network hang")
+
+        service = PositionTickService(pm, get_mark_price)
+
+        results = service.tick_all()
+
+        assert results == []
+
+
 class TestTickAllSerialization:
     def test_concurrent_calls_do_not_interleave(self) -> None:
         """Dos tick_all() disparados en paralelo no deben pisarse (lock)."""

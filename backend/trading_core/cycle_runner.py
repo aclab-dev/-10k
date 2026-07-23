@@ -92,9 +92,11 @@ class CycleRunner:
     def _tick(self) -> None:
         """Una iteracion del ciclo: heartbeat + tick de posiciones (F14).
 
-        Si position_tick_service lanza, se propaga sin capturar: un fallo al
-        tickear SL/TP/trailing no debe quedar silenciado en un sistema que
-        mueve dinero real.
+        PositionTickService aisla las fallas por símbolo internamente (loguea
+        ERROR y sigue con el resto) en vez de propagar: PositionManager vive
+        100% en memoria, así que un crash del ciclo por un solo símbolo con
+        problemas de red perdería el monitoreo de SL/TP de todas las demás
+        posiciones abiertas al reiniciar el proceso. Ver tick_service.py.
         """
         self._heartbeat_file.touch(exist_ok=True)
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
