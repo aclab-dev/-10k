@@ -61,6 +61,44 @@ def test_leverage_defaults_within_limits(monkeypatch: pytest.MonkeyPatch) -> Non
     assert cfg.leverage.max_leverage_live_initial <= 3
 
 
+def test_trailing_defaults_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch)
+    pm = cfg.position_management
+    assert pm.trailing_default_mode == "ATR"
+    assert pm.trailing_default_percent == 0.02
+    assert pm.trailing_default_atr_multiplier == 2.5
+
+
+def test_blocks_invalid_trailing_mode() -> None:
+    from backend.core.config import PositionManagementConfig
+
+    with pytest.raises(ConfigError, match="trailing_default_mode"):
+        PositionManagementConfig(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="BOGUS",
+            trailing_default_percent=0.02,
+            trailing_default_atr_multiplier=2.5,
+        )
+
+
+def test_blocks_trailing_percent_out_of_range() -> None:
+    from backend.core.config import PositionManagementConfig
+
+    with pytest.raises(ConfigError, match="trailing_default_percent"):
+        PositionManagementConfig(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="PERCENT",
+            trailing_default_percent=1.5,
+            trailing_default_atr_multiplier=2.5,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests de override por env vars
 # ---------------------------------------------------------------------------

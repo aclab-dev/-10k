@@ -309,6 +309,39 @@ class PositionManagementConfig(BaseModel):
     partial_close_enabled_future_phase: bool
     break_even_enabled: bool
     trailing_stop_enabled: bool
+    # Defaults del trailing stop configurable (F14). Declarados y validados al boot;
+    # el consumidor (wiring del PositionManager a un loop) los mapeará a PositionConfig.
+    # trailing_default_mode se valida contra el enum TrailingMode (import lazy en el
+    # validador para evitar el ciclo core.config <-> position_manager vía exchange_adapters).
+    trailing_default_mode: str
+    trailing_default_percent: float
+    trailing_default_atr_multiplier: float
+
+    @field_validator("trailing_default_mode")
+    @classmethod
+    def mode_is_valid(cls, v: str) -> str:
+        from backend.position_manager.schemas import TrailingMode
+
+        try:
+            TrailingMode(v)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in TrailingMode)
+            raise ConfigError(f"trailing_default_mode={v!r} inválido. Válidos: {valid}.") from exc
+        return v
+
+    @field_validator("trailing_default_percent")
+    @classmethod
+    def percent_in_open_unit_interval(cls, v: float) -> float:
+        if not 0.0 < v < 1.0:
+            raise ConfigError(f"trailing_default_percent={v} debe estar en (0, 1).")
+        return v
+
+    @field_validator("trailing_default_atr_multiplier")
+    @classmethod
+    def atr_multiplier_positive(cls, v: float) -> float:
+        if v <= 0.0:
+            raise ConfigError(f"trailing_default_atr_multiplier={v} debe ser > 0.")
+        return v
 
 
 class FailurePolicyConfig(BaseModel):
