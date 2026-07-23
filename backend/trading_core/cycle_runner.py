@@ -3,9 +3,10 @@
 Cada iteracion del ciclo:
   1) consulta el state machine para saber si debe seguir corriendo
   2) registra heartbeat (archivo + log estructurado)
-  3) duerme el intervalo configurado, respondiendo rapido a shutdown
+  3) tickea el PositionManager via position_tick_service, si esta inyectado (F14)
+  4) duerme el intervalo configurado, respondiendo rapido a shutdown
 
-La logica real del ciclo (Market Data -> Quant -> Risk -> Execution)
+El resto de la logica del ciclo (Market Data -> Quant -> Risk -> Execution)
 se agrega en fases posteriores; este skeleton solo asegura que el
 proceso este vivo y respete el state machine.
 """
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import structlog
 
+from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotStateMachine
 
 log = structlog.get_logger(__name__)
@@ -37,12 +39,14 @@ class CycleRunner:
         state_machine: BotStateMachine,
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
+        position_tick_service: PositionTickService | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(f"interval_seconds must be > 0, got {interval_seconds}")
         self._state_machine = state_machine
         self._interval_seconds = interval_seconds
         self._heartbeat_file = heartbeat_file
+        self._position_tick_service = position_tick_service
         self._shutdown_event = threading.Event()
         log.info(
             "cycle_runner.init",
@@ -86,9 +90,16 @@ class CycleRunner:
         log.info("cycle_runner.stopped")
 
     def _tick(self) -> None:
-        """Una iteracion del ciclo. Por ahora solo heartbeat."""
+        """Una iteracion del ciclo: heartbeat + tick de posiciones (F14).
+
+        Si position_tick_service lanza, se propaga sin capturar: un fallo al
+        tickear SL/TP/trailing no debe quedar silenciado en un sistema que
+        mueve dinero real.
+        """
         self._heartbeat_file.touch(exist_ok=True)
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
+        if self._position_tick_service is not None:
+            self._position_tick_service.tick_all()
 
 
 def parse_interval_from_env(raw: str | None, default: int = DEFAULT_INTERVAL_SECONDS) -> int:

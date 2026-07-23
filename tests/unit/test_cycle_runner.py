@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import (
     DEFAULT_INTERVAL_SECONDS,
@@ -80,6 +82,28 @@ def test_run_skips_tick_when_state_machine_not_running(heartbeat_file: Path) -> 
 
     # No se debe tocar el heartbeat porque el state no esta running.
     assert not heartbeat_file.exists()
+
+
+def test_tick_calls_position_tick_service_when_provided(heartbeat_file: Path) -> None:
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    tick_service = Mock(spec=PositionTickService)
+    runner = CycleRunner(
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, position_tick_service=tick_service
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    tick_service.tick_all.assert_called_once()
+
+
+def test_tick_without_position_tick_service_still_heartbeats(heartbeat_file: Path) -> None:
+    """Compat: position_tick_service es opcional y default None."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert heartbeat_file.exists()
 
 
 def test_request_shutdown_is_idempotent(heartbeat_file: Path) -> None:
