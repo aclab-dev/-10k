@@ -84,6 +84,23 @@ def test_blocks_invalid_trailing_mode() -> None:
         )
 
 
+def test_blocks_fixed_trailing_mode_at_boot() -> None:
+    """FIXED es un TrailingMode válido pero sin default de distancia: falla al boot,
+    no al abrir la primera posición (ver build_position_config)."""
+    from backend.core.config import PositionManagementConfig
+
+    with pytest.raises(ConfigError, match="FIXED"):
+        PositionManagementConfig(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="FIXED",
+            trailing_default_percent=0.02,
+            trailing_default_atr_multiplier=2.5,
+        )
+
+
 def test_blocks_trailing_percent_out_of_range() -> None:
     from backend.core.config import PositionManagementConfig
 

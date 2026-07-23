@@ -84,13 +84,26 @@ class TestBuildPositionConfigTrailingAtr:
 
 class TestBuildPositionConfigTrailingFixed:
     def test_fixed_mode_raises(self) -> None:
+        """Defensa en profundidad: PositionManagementConfig ya rechaza FIXED al
+        construirse (ver test_config.py::test_blocks_fixed_trailing_mode_at_boot),
+        pero el mapper también lo guarda por si el modelo se arma sin pasar por el
+        validador (ej. model_construct), en vez de mapear trailing en silencio."""
+        defaults = PositionManagementConfig.model_construct(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="FIXED",
+            trailing_default_percent=0.02,
+            trailing_default_atr_multiplier=2.5,
+        )
         with pytest.raises(ValueError, match="FIXED"):
             build_position_config(
                 symbol="BTCUSDT",
                 stop_loss=Decimal("48000"),
                 take_profit=Decimal("53000"),
                 use_trailing_stop=True,
-                defaults=_defaults(trailing_default_mode="FIXED"),
+                defaults=defaults,
             )
 
 

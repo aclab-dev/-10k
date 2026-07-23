@@ -323,10 +323,19 @@ class PositionManagementConfig(BaseModel):
         from backend.position_manager.schemas import TrailingMode
 
         try:
-            TrailingMode(v)
+            mode = TrailingMode(v)
         except ValueError as exc:
             valid = ", ".join(m.value for m in TrailingMode)
             raise ConfigError(f"trailing_default_mode={v!r} inválido. Válidos: {valid}.") from exc
+        # FIXED es un modo válido de TrailingMode pero esta sección no define un
+        # trailing_default_delta: no hay valor de distancia default para mapear.
+        # Rechazar acá (boot) en vez de en build_position_config (al abrir la
+        # primera posición) — falla rápido en vez de explotar en el peor momento.
+        if mode is TrailingMode.FIXED:
+            raise ConfigError(
+                "trailing_default_mode=FIXED no está soportado: no hay un "
+                "trailing_default_delta definido en position_management. Usar PERCENT o ATR."
+            )
         return v
 
     @field_validator("trailing_default_percent")
