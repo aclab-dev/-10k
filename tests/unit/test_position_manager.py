@@ -574,6 +574,45 @@ class TestPositionManagerEdge:
         assert adapter.get_position("ETHUSDT") is not None
 
 
+class TestConfiguredSymbols:
+    def test_empty_when_no_config(self) -> None:
+        adapter = PaperAdapter()
+        pm = PositionManager(adapter)
+        assert pm.configured_symbols() == []
+
+    def test_populated_after_set_config(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("5000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        _open_long(adapter, "ETHUSDT", Decimal("1"), Decimal("3000"))
+        pm = PositionManager(adapter)
+
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+        pm.set_config(PositionConfig(symbol="ETHUSDT", stop_loss=Decimal("2800")))
+
+        assert set(pm.configured_symbols()) == {"BTCUSDT", "ETHUSDT"}
+
+    def test_removed_after_remove_config(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+        pm.remove_config("BTCUSDT")
+
+        assert pm.configured_symbols() == []
+
+    def test_removed_after_full_close_trigger(self) -> None:
+        """Un trigger de cierre total (ej. SL_HIT) saca al símbolo de la lista."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+        pm.tick("BTCUSDT", Decimal("47000"))
+
+        assert pm.configured_symbols() == []
+
+
 # ---------------------------------------------------------------------------
 # PositionConfig — model_validator
 # ---------------------------------------------------------------------------
