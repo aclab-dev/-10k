@@ -138,6 +138,11 @@ position_management:
   partial_close_enabled_future_phase: true
   break_even_enabled: true
   trailing_stop_enabled: true
+  # Trailing stop configurable (F14). Modo: FIXED (delta absoluto) |
+  # PERCENT (fracción del high-water) | ATR (atr * multiplier).
+  trailing_default_mode: ATR
+  trailing_default_percent: 0.02        # 2% del high-water (modo PERCENT)
+  trailing_default_atr_multiplier: 2.5  # atr_1h * 2.5 (modo ATR)
 
 failure_policy:
   gpt_failure_blocks_new_entries: true

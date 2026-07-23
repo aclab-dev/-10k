@@ -15,9 +15,16 @@ from backend.position_manager import (
     PositionManager,
     PositionTriggerReason,
     TakeProfitLevel,
+    TrailingMode,
 )
 from backend.position_manager.break_even import maybe_move_to_break_even
-from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
+from backend.position_manager.trailing import (
+    compute_trailing_stop,
+    is_trailing_stop_hit,
+    resolve_trailing_delta,
+    trailing_stop_from_delta,
+    update_high_water,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,6 +115,85 @@ class TestIsTrailingStopHit:
 
     def test_short_not_hit(self) -> None:
         assert is_trailing_stop_hit(OrderSide.SELL, Decimal("94"), Decimal("95")) is False
+
+
+# ---------------------------------------------------------------------------
+# update_high_water / trailing_stop_from_delta (funciones puras)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateHighWater:
+    def test_long_first_tick(self) -> None:
+        assert update_high_water(OrderSide.BUY, Decimal("100"), None) == Decimal("100")
+
+    def test_long_rises(self) -> None:
+        assert update_high_water(OrderSide.BUY, Decimal("110"), Decimal("100")) == Decimal("110")
+
+    def test_long_falls_keeps_high(self) -> None:
+        assert update_high_water(OrderSide.BUY, Decimal("90"), Decimal("100")) == Decimal("100")
+
+    def test_short_first_tick(self) -> None:
+        assert update_high_water(OrderSide.SELL, Decimal("100"), None) == Decimal("100")
+
+    def test_short_falls(self) -> None:
+        assert update_high_water(OrderSide.SELL, Decimal("90"), Decimal("100")) == Decimal("90")
+
+    def test_short_rises_keeps_low(self) -> None:
+        assert update_high_water(OrderSide.SELL, Decimal("110"), Decimal("100")) == Decimal("100")
+
+
+class TestTrailingStopFromDelta:
+    def test_long_subtracts(self) -> None:
+        stop = trailing_stop_from_delta(OrderSide.BUY, Decimal("100"), Decimal("5"))
+        assert stop == Decimal("95")
+
+    def test_short_adds(self) -> None:
+        stop = trailing_stop_from_delta(OrderSide.SELL, Decimal("100"), Decimal("5"))
+        assert stop == Decimal("105")
+
+
+# ---------------------------------------------------------------------------
+# resolve_trailing_delta (función pura) — modos FIXED / PERCENT / ATR
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTrailingDelta:
+    def test_fixed_returns_delta(self) -> None:
+        delta = resolve_trailing_delta(
+            TrailingMode.FIXED, Decimal("50000"), fixed_delta=Decimal("1000")
+        )
+        assert delta == Decimal("1000")
+
+    def test_fixed_missing_raises(self) -> None:
+        with pytest.raises(ValueError, match="FIXED trailing requires fixed_delta"):
+            resolve_trailing_delta(TrailingMode.FIXED, Decimal("50000"))
+
+    def test_percent_of_reference(self) -> None:
+        delta = resolve_trailing_delta(
+            TrailingMode.PERCENT, Decimal("50000"), percent=Decimal("0.02")
+        )
+        assert delta == Decimal("1000.00")
+
+    def test_percent_missing_raises(self) -> None:
+        with pytest.raises(ValueError, match="PERCENT trailing requires percent"):
+            resolve_trailing_delta(TrailingMode.PERCENT, Decimal("50000"))
+
+    def test_atr_times_multiplier(self) -> None:
+        delta = resolve_trailing_delta(
+            TrailingMode.ATR,
+            Decimal("50000"),
+            atr_value=Decimal("400"),
+            atr_multiplier=Decimal("2.5"),
+        )
+        assert delta == Decimal("1000.0")
+
+    def test_atr_default_multiplier_is_one(self) -> None:
+        delta = resolve_trailing_delta(TrailingMode.ATR, Decimal("50000"), atr_value=Decimal("400"))
+        assert delta == Decimal("400")
+
+    def test_atr_missing_raises(self) -> None:
+        with pytest.raises(ValueError, match="ATR trailing requires atr_value"):
+            resolve_trailing_delta(TrailingMode.ATR, Decimal("50000"))
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +399,110 @@ class TestPositionManagerTrailing:
 
 
 # ---------------------------------------------------------------------------
+# PositionManager — trailing stop por PORCENTAJE y ATR (F14), series sintéticas
+# ---------------------------------------------------------------------------
+
+
+class TestPositionManagerTrailingPercent:
+    def test_long_percent_stop_grows_with_price(self) -> None:
+        """PERCENT LONG: la distancia se recalcula sobre el high-water (crece con el precio)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_percent=Decimal("0.02")))
+
+        # Sube a 53000: stop = 53000 - 53000*0.02 = 51940
+        r = pm.tick("BTCUSDT", Decimal("53000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("51940.00")
+
+        # Sube a 55000: stop = 55000 - 1100 = 53900 (creció con el high-water)
+        r = pm.tick("BTCUSDT", Decimal("55000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53900.00")
+
+        # Cae al stop (high_water sigue en 55000) → cierre
+        r = pm.tick("BTCUSDT", Decimal("53900"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_short_percent_stop_follows_price_down(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_percent=Decimal("0.02")))
+
+        # Baja a 45000: stop = 45000 + 45000*0.02 = 45900
+        r = pm.tick("BTCUSDT", Decimal("45000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("45900.00")
+
+        # Rebota al stop → cierre
+        r = pm.tick("BTCUSDT", Decimal("45900"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+
+class TestPositionManagerTrailingATR:
+    def test_long_atr_constant_distance(self) -> None:
+        """ATR LONG: distancia = atr_value * multiplier (constante). 400 * 2.5 = 1000."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr=Decimal("400"),
+                trailing_atr_multiplier=Decimal("2.5"),
+            )
+        )
+
+        r = pm.tick("BTCUSDT", Decimal("53000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000.0")
+
+        # Retroceso que no toca el stop
+        r = pm.tick("BTCUSDT", Decimal("52500"))
+        assert r.trigger == PositionTriggerReason.NONE
+
+        # Cae al stop → cierre
+        r = pm.tick("BTCUSDT", Decimal("52000"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_short_atr_constant_distance(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr=Decimal("400"),
+                trailing_atr_multiplier=Decimal("2.5"),
+            )
+        )
+
+        r = pm.tick("BTCUSDT", Decimal("47000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("48000.0")
+
+        r = pm.tick("BTCUSDT", Decimal("48000"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_atr_default_multiplier(self) -> None:
+        """Sin multiplier, la distancia ATR es el atr_value crudo (multiplier=1)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr=Decimal("1000")))
+
+        r = pm.tick("BTCUSDT", Decimal("53000"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+
+# ---------------------------------------------------------------------------
 # PositionManager — casos edge
 # ---------------------------------------------------------------------------
 
@@ -406,6 +596,37 @@ class TestPositionConfigValidator:
     def test_only_trailing_valid(self) -> None:
         cfg = PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000"))
         assert cfg.trailing_delta == Decimal("1000")
+        assert cfg.resolved_trailing_mode == TrailingMode.FIXED
+
+    def test_only_trailing_percent_valid(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", trailing_percent=Decimal("0.02"))
+        assert cfg.trailing_percent == Decimal("0.02")
+        assert cfg.resolved_trailing_mode == TrailingMode.PERCENT
+
+    def test_only_trailing_atr_valid(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", trailing_atr=Decimal("400"))
+        assert cfg.trailing_atr == Decimal("400")
+        assert cfg.resolved_trailing_mode == TrailingMode.ATR
+
+    def test_no_trailing_mode_is_none(self) -> None:
+        cfg = PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000"))
+        assert cfg.resolved_trailing_mode is None
+
+    def test_trailing_modes_mutually_exclusive(self) -> None:
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_delta=Decimal("1000"),
+                trailing_percent=Decimal("0.02"),
+            )
+
+    def test_atr_multiplier_requires_atr(self) -> None:
+        with pytest.raises(ValueError, match="trailing_atr_multiplier requires trailing_atr"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_delta=Decimal("1000"),
+                trailing_atr_multiplier=Decimal("2.5"),
+            )
 
 
 # ---------------------------------------------------------------------------

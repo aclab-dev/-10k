@@ -32,7 +32,12 @@ from backend.position_manager.schemas import (
     TakeProfitLevel,
     TickResult,
 )
-from backend.position_manager.trailing import compute_trailing_stop, is_trailing_stop_hit
+from backend.position_manager.trailing import (
+    is_trailing_stop_hit,
+    resolve_trailing_delta,
+    trailing_stop_from_delta,
+    update_high_water,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -76,7 +81,11 @@ class PositionManager:
             stop_loss=str(config.stop_loss),
             take_profit=str(config.take_profit),
             tp_levels=len(config.take_profit_levels),
+            trailing_mode=config.resolved_trailing_mode,
             trailing_delta=str(config.trailing_delta),
+            trailing_percent=str(config.trailing_percent),
+            trailing_atr=str(config.trailing_atr),
+            trailing_atr_multiplier=str(config.trailing_atr_multiplier),
             be_trigger_delta=str(config.be_trigger_delta),
         )
 
@@ -230,15 +239,22 @@ class PositionManager:
 
         side = position.side
 
-        # --- Trailing stop: actualizar high-water ---
+        # --- Trailing stop: actualizar high-water y precio de trailing ---
         trailing_stop_price: Decimal | None = None
-        if config.trailing_delta is not None:
-            hw, trailing_stop_price = compute_trailing_stop(
-                side=side,
-                mark_price=mark_price,
-                trailing_delta=config.trailing_delta,
-                high_water=self._high_water.get(symbol),
+        trailing_mode = config.resolved_trailing_mode
+        if trailing_mode is not None:
+            hw = update_high_water(side, mark_price, self._high_water.get(symbol))
+            # reference_price = high-water: para PERCENT la distancia se recalcula por
+            # tick sobre el high-water (crece con el precio a favor).
+            delta = resolve_trailing_delta(
+                trailing_mode,
+                reference_price=hw,
+                fixed_delta=config.trailing_delta,
+                percent=config.trailing_percent,
+                atr_value=config.trailing_atr,
+                atr_multiplier=config.trailing_atr_multiplier,
             )
+            trailing_stop_price = trailing_stop_from_delta(side, hw, delta)
             self._high_water[symbol] = hw
             self._trailing_stop[symbol] = trailing_stop_price
 
