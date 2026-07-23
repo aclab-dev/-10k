@@ -104,6 +104,25 @@ class PositionConfig(BaseModel):
                 "At least one of stop_loss, take_profit, take_profit_levels,"
                 " or trailing_delta must be set."
             )
+
+        # be_sl_offset solo tiene efecto cuando be_trigger_delta está configurado
+        if self.be_sl_offset > Decimal("0") and self.be_trigger_delta is None:
+            raise ValueError(
+                "be_sl_offset has no effect when be_trigger_delta is None."
+            )
+
+        # Si be_sl_offset >= be_trigger_delta, el SL queda al nivel del trigger o por
+        # encima del mark en el mismo tick que activa el break-even, cerrando la posición.
+        if (
+            self.be_trigger_delta is not None
+            and self.be_sl_offset >= self.be_trigger_delta
+        ):
+            raise ValueError(
+                "be_sl_offset must be less than be_trigger_delta; otherwise the SL"
+                " lands at or beyond the trigger price and closes the position"
+                " immediately on activation."
+            )
+
         return self
 
 

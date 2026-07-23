@@ -407,6 +407,32 @@ class TestPositionConfigValidator:
         cfg = PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000"))
         assert cfg.trailing_delta == Decimal("1000")
 
+    def test_be_sl_offset_ge_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset must be less than be_trigger_delta"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("500"),
+                be_sl_offset=Decimal("500"),
+            )
+
+    def test_be_sl_offset_gt_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset must be less than be_trigger_delta"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("500"),
+                be_sl_offset=Decimal("600"),
+            )
+
+    def test_be_sl_offset_without_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset has no effect"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_sl_offset=Decimal("50"),
+            )
+
 
 # ---------------------------------------------------------------------------
 # PositionManager — break-even integrado
