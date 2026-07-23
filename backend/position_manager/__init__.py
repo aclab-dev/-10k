@@ -1,3 +1,4 @@
+from backend.position_manager.config_mapper import build_position_config
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.schemas import (
     InvalidationAction,
@@ -7,6 +8,7 @@ from backend.position_manager.schemas import (
     TickResult,
     TrailingMode,
 )
+from backend.position_manager.tick_service import PositionTickService
 
 __all__ = [
     "PositionManager",
@@ -16,4 +18,6 @@ __all__ = [
     "InvalidationAction",
     "TickResult",
     "TrailingMode",
+    "PositionTickService",
+    "build_position_config",
 ]
