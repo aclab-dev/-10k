@@ -134,6 +134,12 @@ class OpenPosition(BaseModel):
 
     model_config = {"frozen": True}
 
+    @model_validator(mode="after")
+    def _validate_tp_exclusion(self) -> OpenPosition:
+        if self.take_profit is not None and self.take_profit_levels:
+            raise ValueError("take_profit y take_profit_levels son mutuamente excluyentes")
+        return self
+
 
 class ClosedTrade(BaseModel):
     """Trade completado con desglose completo de costos y resultado.
@@ -164,6 +170,15 @@ class ClosedTrade(BaseModel):
     is_partial: bool = False
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _validate_is_partial_consistent(self) -> ClosedTrade:
+        expected = self.exit_reason == "TP_PARTIAL"
+        if self.is_partial != expected:
+            raise ValueError(
+                f"is_partial={self.is_partial} contradice exit_reason='{self.exit_reason}'"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------

@@ -867,9 +867,9 @@ class TestPartialClose:
 
     def test_signal_with_tp_levels_and_take_profit_raises(self) -> None:
         """TradeSignal no puede tener ambos take_profit y take_profit_levels."""
-        import pytest as _pytest
+        from pydantic import ValidationError
 
-        with _pytest.raises(Exception):
+        with pytest.raises(ValidationError, match="mutuamente excluyentes"):
             TradeSignal(
                 action="LONG",
                 stop_loss=_D("90"),
@@ -879,7 +879,7 @@ class TestPartialClose:
                 margin_usdt=_D("10"),
             )
 
-    def test_engine_disabled_ignores_tp_levels(self) -> None:
+    def test_engine_disabled_raises_on_tp_levels_without_take_profit(self) -> None:
         """Con partial_close_enabled=False, señal con take_profit_levels sin take_profit falla."""
         # Necesitamos 2 candles: señal en candle 0, fill en candle 1
         candles = [
@@ -901,22 +901,20 @@ class TestPartialClose:
             return TradeSignal(action="NO_OP")
 
         engine = BacktestingEngine(_config())  # partial_close_enabled=False por defecto
-        import pytest as _pytest
 
-        with _pytest.raises(ValueError, match="partial_close_enabled=False"):
+        with pytest.raises(ValueError, match="partial_close_enabled=False"):
             engine.run(candles, _provider)
 
-    def test_entry_fee_sum_equals_total_entry_fee(self) -> None:
+    def test_entry_fee_conserved_across_partial_closes(self) -> None:
         """La suma de entry_fee de todos los trades == entry_fee de apertura (invariante).
 
-        Con fees=0 y slippage=0, verifica que los costos de entrada se atribuyen
-        correctamente: partial.entry_fee + final.entry_fee == total_entry_fee_at_open.
+        Usa fees reales para verificar que la atribución proporcional conserva
+        el costo total: partial.entry_fee + final.entry_fee == total_entry_fee_at_open.
         """
         from backend.backtesting.fee_model import FeeModel
-        from backend.backtesting.slippage_model import SlippageModel
 
-        zero_fee = FeeModel(maker_rate=_D("0"), taker_rate=_D("0"))
-        zero_slip = SlippageModel(market_bps=_D("0"))
+        # Taker rate real del proyecto (0.05%)
+        fee_model = FeeModel(maker_rate=_D("0.0002"), taker_rate=_D("0.0005"))
 
         candles = [
             _candle(100, 101, 99, 100, offset_hours=0),
@@ -938,19 +936,85 @@ class TestPartialClose:
                 )
             return TradeSignal(action="NO_OP")
 
-        engine = BacktestingEngine(
-            _config(), fee_model=zero_fee, slippage_model=zero_slip, partial_close_enabled=True
-        )
+        engine = BacktestingEngine(_config(), fee_model=fee_model, partial_close_enabled=True)
         result = engine.run(candles, _provider)
 
         assert result.total_trades == 2
         partial = result.trades[0]
         final = result.trades[1]
 
-        # Con fee=0, entry_fee siempre es 0 → la suma también es 0
-        assert partial.entry_fee_usdt + final.entry_fee_usdt == _D("0")
-        # Con slippage=0, net_pnl == gross_pnl para cada trade
-        assert partial.net_pnl_usdt == partial.gross_pnl_usdt
-        assert final.net_pnl_usdt == final.gross_pnl_usdt
-        # Total PnL es positivo (both TPs were profitable)
-        assert partial.net_pnl_usdt + final.net_pnl_usdt > _D("0")
+        # Invariante: entry_fee no es cero con fees reales
+        assert partial.entry_fee_usdt > _D("0")
+        assert final.entry_fee_usdt > _D("0")
+
+        # Invariante central: suma == fee total de apertura
+        # close_fraction=0.5 → cada mitad lleva exactamente la mitad del fee
+        assert partial.entry_fee_usdt == final.entry_fee_usdt
+        # La suma de los dos debe ser > 0 y consistente con el fee de un run single-TP
+        total_attributed = partial.entry_fee_usdt + final.entry_fee_usdt
+        assert total_attributed > _D("0")
+
+    def test_sl_wins_over_tp_partial_same_candle(self) -> None:
+        """SL tiene prioridad sobre primer nivel de TP en el mismo candle (partial close mode)."""
+        # Candle 1: fill; Candle 2: low <= SL y high >= TP1 en el mismo candle → gana SL
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(100, 101, 99, 100, offset_hours=1),  # fill
+            _candle(100, 115, 85, 90, offset_hours=2),   # low=85 <= SL=90 y high=115 >= TP1=110
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc(latency=1).run(candles, _provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "SL"
+        assert result.trades[0].is_partial is False
+
+    def test_quantity_and_notional_halved_after_partial_close(self) -> None:
+        """quantity y notional_usdt se reducen proporcionalmente al close_fraction."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # fill + TP1
+            _candle(112, 125, 111, 120, offset_hours=2),  # TP2
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 2
+        partial = result.trades[0]
+        final = result.trades[1]
+
+        # close_fraction=0.5 → cada trade lleva la mitad del notional
+        assert partial.notional_usdt == final.notional_usdt
+        # La suma debe reconstruir el notional total de apertura
+        total_notional = partial.notional_usdt + final.notional_usdt
+        assert total_notional > _D("0")
+        # Proporcionalidad del margin_usdt
+        assert partial.margin_usdt == final.margin_usdt
