@@ -17,6 +17,14 @@ class PositionTriggerReason(StrEnum):
     SETUP_INVALIDATED = "SETUP_INVALIDATED"  # acción por invalidación de setup
 
 
+class TrailingMode(StrEnum):
+    """Modo de cálculo de la distancia del trailing stop (F14)."""
+
+    FIXED = "FIXED"  # distancia absoluta fija en unidades de precio
+    PERCENT = "PERCENT"  # fracción del high-water mark (crece con el precio a favor)
+    ATR = "ATR"  # ATR (valor absoluto) por un multiplicador
+
+
 class TakeProfitLevel(BaseModel):
     """Un nivel de take profit parcial para soporte multi-TP.
 
@@ -62,7 +70,13 @@ class PositionConfig(BaseModel):
     """Configuración de salida para una posición abierta.
 
     take_profit y take_profit_levels son mutuamente excluyentes.
-    Al menos uno de stop_loss, take_profit, take_profit_levels o trailing_delta debe estar presente.
+    Al menos un mecanismo de salida (SL, TP single/multi o trailing) debe estar presente.
+
+    Trailing stop configurable (F14) — modos mutuamente excluyentes:
+    - trailing_delta: distancia absoluta fija (modo FIXED).
+    - trailing_percent: fracción del high-water mark, ej. 0.02 = 2% (modo PERCENT).
+    - trailing_atr: valor ATR absoluto; se multiplica por trailing_atr_multiplier (modo ATR).
+      trailing_atr es un snapshot al configurar la posición; no se recalcula por tick.
 
     be_trigger_delta: si se setea, mueve el SL efectivo a entry_price + be_sl_offset
     (LONG) o entry_price - be_sl_offset (SHORT) cuando el precio se aleja
@@ -80,11 +94,25 @@ class PositionConfig(BaseModel):
     take_profit: Decimal | None = Field(default=None, gt=Decimal("0"))
     take_profit_levels: list[TakeProfitLevel] = Field(default_factory=list)
     trailing_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
+    trailing_percent: Decimal | None = Field(default=None, gt=Decimal("0"), lt=Decimal("1"))
+    trailing_atr: Decimal | None = Field(default=None, gt=Decimal("0"))
+    trailing_atr_multiplier: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_sl_offset: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     invalidation_action: InvalidationAction | None = None
 
     model_config = {"frozen": True}
+
+    @property
+    def resolved_trailing_mode(self) -> TrailingMode | None:
+        """Modo de trailing activo, derivado de qué parámetro está seteado (o None)."""
+        if self.trailing_delta is not None:
+            return TrailingMode.FIXED
+        if self.trailing_percent is not None:
+            return TrailingMode.PERCENT
+        if self.trailing_atr is not None:
+            return TrailingMode.ATR
+        return None
 
     @model_validator(mode="after")
     def validate_config(self) -> PositionConfig:
@@ -92,17 +120,31 @@ class PositionConfig(BaseModel):
         if self.take_profit is not None and self.take_profit_levels:
             raise ValueError("take_profit and take_profit_levels are mutually exclusive.")
 
+        # Los tres modos de trailing son mutuamente excluyentes
+        n_trailing = sum(
+            spec is not None
+            for spec in (self.trailing_delta, self.trailing_percent, self.trailing_atr)
+        )
+        if n_trailing > 1:
+            raise ValueError(
+                "trailing_delta, trailing_percent, and trailing_atr are mutually exclusive."
+            )
+
+        # atr_multiplier solo tiene sentido en modo ATR
+        if self.trailing_atr_multiplier is not None and self.trailing_atr is None:
+            raise ValueError("trailing_atr_multiplier requires trailing_atr to be set.")
+
         # Al menos un mecanismo de salida debe estar presente
         has_exit = (
             self.stop_loss is not None
             or self.take_profit is not None
             or bool(self.take_profit_levels)
-            or self.trailing_delta is not None
+            or n_trailing > 0
         )
         if not has_exit:
             raise ValueError(
                 "At least one of stop_loss, take_profit, take_profit_levels,"
-                " or trailing_delta must be set."
+                " or a trailing mode (trailing_delta/trailing_percent/trailing_atr) must be set."
             )
 
         # be_sl_offset solo tiene efecto cuando be_trigger_delta está configurado

@@ -5,6 +5,7 @@ from backend.position_manager.schemas import (
     PositionTriggerReason,
     TakeProfitLevel,
     TickResult,
+    TrailingMode,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "TakeProfitLevel",
     "InvalidationAction",
     "TickResult",
+    "TrailingMode",
 ]
