@@ -20,6 +20,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from backend.position_manager.schemas import TakeProfitLevel
+
 
 def _new_id() -> str:
     return str(uuid.uuid4())
@@ -63,14 +65,20 @@ class CandleRow(BaseModel):
 class TradeSignal(BaseModel):
     """Señal devuelta por el SignalProvider para el próximo candle.
 
-    LONG/SHORT: abrir posición nueva (requiere stop_loss y take_profit).
+    LONG/SHORT: abrir posición nueva (requiere stop_loss y take_profit o take_profit_levels).
     CLOSE:      cerrar posición activa al open del siguiente candle.
     NO_OP:      no hacer nada.
+
+    take_profit y take_profit_levels son mutuamente excluyentes. Para usar cierres parciales
+    (multi-TP), proveer take_profit_levels y omitir take_profit. El engine debe tener
+    partial_close_enabled=True para procesar take_profit_levels; de lo contrario se
+    requiere take_profit.
     """
 
     action: Literal["LONG", "SHORT", "CLOSE", "NO_OP"]
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None
+    take_profit_levels: tuple[TakeProfitLevel, ...] = ()
     leverage: int = Field(default=1, ge=1, le=10)
     margin_usdt: Decimal = Field(default=Decimal("10"), gt=Decimal("0"))
 
@@ -81,8 +89,16 @@ class TradeSignal(BaseModel):
         if self.action in ("LONG", "SHORT"):
             if self.stop_loss is None:
                 raise ValueError("stop_loss es obligatorio para señales LONG/SHORT")
-            if self.take_profit is None:
-                raise ValueError("take_profit es obligatorio para señales LONG/SHORT")
+            has_tp = self.take_profit is not None
+            has_levels = bool(self.take_profit_levels)
+            if not has_tp and not has_levels:
+                raise ValueError(
+                    "take_profit o take_profit_levels es obligatorio para señales LONG/SHORT"
+                )
+            if has_tp and has_levels:
+                raise ValueError(
+                    "take_profit y take_profit_levels son mutuamente excluyentes"
+                )
         return self
 
 
@@ -92,14 +108,22 @@ class TradeSignal(BaseModel):
 
 
 class OpenPosition(BaseModel):
-    """Posición activa en la simulación, a la espera de un evento de cierre."""
+    """Posición activa en la simulación, a la espera de un evento de cierre.
+
+    take_profit y take_profit_levels son mutuamente excluyentes.
+    En modo multi-TP (partial_close_enabled), take_profit es None y take_profit_levels
+    contiene los niveles pendientes. Cada cierre parcial produce una nueva OpenPosition
+    con quantity/margin/notional/fees/funding reducidos proporcionalmente y con el nivel
+    disparado eliminado de take_profit_levels.
+    """
 
     position_id: str = Field(default_factory=_new_id)
     side: Literal["LONG", "SHORT"]
     entry_candle_index: int
     entry_price: Decimal
     stop_loss: Decimal
-    take_profit: Decimal
+    take_profit: Decimal | None = None
+    take_profit_levels: tuple[TakeProfitLevel, ...] = ()
     leverage: int
     margin_usdt: Decimal
     notional_usdt: Decimal
@@ -112,7 +136,12 @@ class OpenPosition(BaseModel):
 
 
 class ClosedTrade(BaseModel):
-    """Trade completado con desglose completo de costos y resultado."""
+    """Trade completado con desglose completo de costos y resultado.
+
+    is_partial=True indica un cierre parcial (TP_PARTIAL): la posición original sigue
+    abierta con la cantidad remanente. Los campos de costo (entry_fee, entry_slippage,
+    funding) reflejan la fracción proporcional atribuida a esta porción cerrada.
+    """
 
     trade_id: str = Field(default_factory=_new_id)
     side: Literal["LONG", "SHORT"]
@@ -120,7 +149,7 @@ class ClosedTrade(BaseModel):
     exit_candle_index: int
     entry_price: Decimal
     exit_price: Decimal
-    exit_reason: Literal["SL", "TP", "CLOSE_SIGNAL", "END_OF_DATA"]
+    exit_reason: Literal["SL", "TP", "TP_PARTIAL", "CLOSE_SIGNAL", "END_OF_DATA"]
     leverage: int
     margin_usdt: Decimal
     notional_usdt: Decimal
@@ -132,6 +161,7 @@ class ClosedTrade(BaseModel):
     funding_cost_usdt: Decimal
     net_pnl_usdt: Decimal
     hold_candles: int
+    is_partial: bool = False
 
     model_config = {"frozen": True}
 

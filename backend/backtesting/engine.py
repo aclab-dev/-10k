@@ -1,4 +1,4 @@
-"""Backtesting Engine candle-by-candle — F12 [90].
+"""Backtesting Engine candle-by-candle — F12 [90] / F14 [105].
 
 Procesa una secuencia de candles OHLCV en orden cronológico, sin lookahead,
 produciendo resultados reproducibles.
@@ -20,16 +20,18 @@ Flujo por candle i:
 
 Al final de los datos: cierra posición abierta al close del último candle.
 
-Nota de diseño (fills parciales): el PartialFillModel se aplica únicamente al
-fill de entrada. Los cierres (SL/TP/CLOSE/END_OF_DATA) siempre liquidan el
-100% de la cantidad que quedó efectivamente abierta — nunca dejan un remanente.
-Modelar fills parciales también en el cierre implicaría "partial close" de una
-posición existente, que está fuera de scope en MVP
-(`position_management.partial_close_enabled_mvp=false`).
-notional_usdt y margin_usdt se escalan por el mismo fill_ratio (no se derivan
-de quantity*fill_price, para no introducir redondeo Decimal adicional respecto
-al comportamiento previo con fill_ratio=1.0). Si fill_ratio=0 (liquidez nula),
-la orden se descarta sin abrir posición — no genera un trade fantasma.
+Nota de diseño (fills parciales en entrada): el PartialFillModel se aplica únicamente al
+fill de entrada. notional_usdt y margin_usdt se escalan por el mismo fill_ratio.
+Si fill_ratio=0, la orden se descarta sin abrir posición.
+
+Cierres parciales (F14 [105], partial_close_enabled=True):
+  Cuando el engine se construye con partial_close_enabled=True, las señales pueden
+  proveer take_profit_levels (lista de TakeProfitLevel con price + close_fraction) en
+  lugar de un único take_profit. Cada nivel disparado produce un ClosedTrade parcial
+  (is_partial=True, exit_reason="TP_PARTIAL") y reduce la posición. Los costos
+  (entry_fee, entry_slippage, accrued_funding) se atribuyen proporcionalmente a cada
+  porción cerrada. Con partial_close_enabled=False (MVP por defecto), el engine
+  requiere take_profit y no procesa take_profit_levels.
 
 Nota: una señal CLOSE emitida en el último candle produce un cierre con
 exit_reason="END_OF_DATA" porque no hay candle siguiente para ejecutarla.
@@ -55,6 +57,7 @@ from backend.backtesting.schemas import (
     TradeSignal,
 )
 from backend.backtesting.slippage_model import Side, SlippageModel
+from backend.position_manager.schemas import TakeProfitLevel
 
 _log = structlog.get_logger(__name__)
 _QUANT = Decimal("0.00000001")
@@ -102,12 +105,14 @@ class BacktestingEngine:
         slippage_model: SlippageModel | None = None,
         latency_model: LatencyModel | None = None,
         partial_fill_model: PartialFillModel | None = None,
+        partial_close_enabled: bool = False,
     ) -> None:
         self._config = config
         self._fee = fee_model or FeeModel()
         self._slip = slippage_model or SlippageModel()
         self._latency = latency_model or LatencyModel(extra_candles=config.latency_candles)
         self._partial_fill = partial_fill_model or PartialFillModel()
+        self._partial_close_enabled = partial_close_enabled
 
     def run(
         self,
@@ -185,10 +190,10 @@ class BacktestingEngine:
             # 3. Check SL/TP intra-candle (si hay posición abierta)
             # ------------------------------------------------------------------
             if open_pos is not None:
-                sl_tp_result = self._check_sl_tp(open_pos, candle, i)
-                if sl_tp_result is not None:
-                    closed_trades.append(sl_tp_result)
-                    open_pos = None
+                sl_tp_trade, updated_pos = self._check_sl_tp(open_pos, candle, i)
+                if sl_tp_trade is not None:
+                    closed_trades.append(sl_tp_trade)
+                    open_pos = updated_pos  # None para cierre total, pos reducida para parcial
 
             # ------------------------------------------------------------------
             # 4. Acumular funding si la posición sigue abierta
@@ -259,9 +264,15 @@ class BacktestingEngine:
             None si el fill_ratio resulta en quantity == 0 (orden no ejecutada:
             liquidez insuficiente). No se abre posición ni se ocupa el slot.
         """
-        if signal.stop_loss is None or signal.take_profit is None:
+        if signal.stop_loss is None:
+            raise ValueError(f"stop_loss es obligatorio para señales {signal.action}")
+
+        using_levels = self._partial_close_enabled and bool(signal.take_profit_levels)
+
+        if not using_levels and signal.take_profit is None:
             raise ValueError(
-                f"stop_loss y take_profit son obligatorios para señales {signal.action}"
+                f"take_profit es obligatorio para señales {signal.action} "
+                "cuando partial_close_enabled=False"
             )
 
         buy_side: Side = "BUY"
@@ -291,7 +302,8 @@ class BacktestingEngine:
             entry_candle_index=candle_index,
             entry_price=fill_price,
             stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
+            take_profit=signal.take_profit if not using_levels else None,
+            take_profit_levels=signal.take_profit_levels if using_levels else (),
             leverage=signal.leverage,
             margin_usdt=margin_usdt,
             notional_usdt=notional,
@@ -305,38 +317,81 @@ class BacktestingEngine:
         pos: OpenPosition,
         candle: CandleRow,
         candle_index: int,
-    ) -> ClosedTrade | None:
+    ) -> tuple[ClosedTrade | None, OpenPosition | None]:
         """Verifica si el candle toca SL o TP.
 
-        Regla conservadora: si ambos se tocan en el mismo candle, gana el SL.
+        Regla conservadora: si SL y TP se tocan en el mismo candle, gana el SL.
         Precio de fill:
           - SL: precio exacto del stop_loss + slippage adverso (MARKET).
-          - TP: precio exacto del take_profit sin slippage adicional (LIMIT-like).
+          - TP: precio exacto del nivel sin slippage adicional (LIMIT-like).
+
+        Retorna (trade, None) para cierre total, (trade, pos_reducida) para cierre
+        parcial (un nivel de multi-TP), o (None, None) si no hay trigger.
+        En modo multi-TP, solo se procesa el primer nivel alcanzado por candle.
         """
         sl_hit = candle.low <= pos.stop_loss if pos.side == "LONG" else candle.high >= pos.stop_loss
-        tp_hit = (
-            candle.high >= pos.take_profit if pos.side == "LONG" else candle.low <= pos.take_profit
-        )
 
+        # SL tiene prioridad sobre cualquier TP
         if sl_hit:
-            return self._close_position(
-                pos,
-                close_price=pos.stop_loss,
-                exit_candle_index=candle_index,
-                exit_reason="SL",
-                close_candle=candle,
-                order_type="MARKET",
+            return (
+                self._close_position(
+                    pos,
+                    close_price=pos.stop_loss,
+                    exit_candle_index=candle_index,
+                    exit_reason="SL",
+                    close_candle=candle,
+                    order_type="MARKET",
+                ),
+                None,
             )
-        if tp_hit:
-            return self._close_position(
-                pos,
-                close_price=pos.take_profit,
-                exit_candle_index=candle_index,
-                exit_reason="TP",
-                close_candle=candle,
-                order_type="LIMIT",
+
+        # Multi-TP (partial close): evaluar el primer nivel pendiente
+        if pos.take_profit_levels:
+            next_level = pos.take_profit_levels[0]
+            level_hit = (
+                candle.high >= next_level.price
+                if pos.side == "LONG"
+                else candle.low <= next_level.price
             )
-        return None
+            if level_hit:
+                is_last = len(pos.take_profit_levels) == 1
+                if is_last:
+                    # Último nivel → cierre total
+                    return (
+                        self._close_position(
+                            pos,
+                            close_price=next_level.price,
+                            exit_candle_index=candle_index,
+                            exit_reason="TP",
+                            close_candle=candle,
+                            order_type="LIMIT",
+                        ),
+                        None,
+                    )
+                # Nivel intermedio → cierre parcial
+                return self._partial_close_tp(pos, next_level, candle, candle_index)
+
+        # Single TP
+        if pos.take_profit is not None:
+            tp_hit = (
+                candle.high >= pos.take_profit
+                if pos.side == "LONG"
+                else candle.low <= pos.take_profit
+            )
+            if tp_hit:
+                return (
+                    self._close_position(
+                        pos,
+                        close_price=pos.take_profit,
+                        exit_candle_index=candle_index,
+                        exit_reason="TP",
+                        close_candle=candle,
+                        order_type="LIMIT",
+                    ),
+                    None,
+                )
+
+        return (None, None)
 
     def _close_position(
         self,
@@ -401,6 +456,94 @@ class BacktestingEngine:
             net_pnl=str(net_pnl),
         )
         return trade
+
+    def _partial_close_tp(
+        self,
+        pos: OpenPosition,
+        level: TakeProfitLevel,
+        candle: CandleRow,
+        candle_index: int,
+    ) -> tuple[ClosedTrade, OpenPosition]:
+        """Cierre parcial para un nivel de TP intermedio (partial_close_enabled=True).
+
+        Atribuye proporcional de entry_fee, entry_slippage y accrued_funding
+        a la porción cerrada. La posición remanente queda con el complemento
+        de cada costo y con el nivel disparado eliminado de take_profit_levels.
+        """
+        close_fraction = level.close_fraction
+        close_qty = (pos.quantity * close_fraction).quantize(_QUANT)
+
+        exit_side: Side = "SELL" if pos.side == "LONG" else "BUY"
+        exit_fill = self._slip.apply(level.price, exit_side, "LIMIT")
+        exit_slippage = abs(exit_fill - level.price) * close_qty
+        exit_fee = self._fee.calculate((exit_fill * close_qty).quantize(_QUANT), "LIMIT")
+
+        if pos.side == "LONG":
+            gross_pnl = ((exit_fill - pos.entry_price) * close_qty).quantize(_QUANT)
+        else:
+            gross_pnl = ((pos.entry_price - exit_fill) * close_qty).quantize(_QUANT)
+
+        partial_entry_fee = (pos.entry_fee_usdt * close_fraction).quantize(_QUANT)
+        partial_entry_slip = (pos.entry_slippage_usdt * close_fraction).quantize(_QUANT)
+        partial_funding = (pos.accrued_funding_usdt * close_fraction).quantize(_QUANT)
+
+        net_pnl = (
+            gross_pnl
+            - partial_entry_fee
+            - exit_fee
+            - partial_entry_slip
+            - exit_slippage.quantize(_QUANT)
+            - partial_funding
+        ).quantize(_QUANT)
+
+        trade = ClosedTrade(
+            side=pos.side,
+            entry_candle_index=pos.entry_candle_index,
+            exit_candle_index=candle_index,
+            entry_price=pos.entry_price,
+            exit_price=exit_fill,
+            exit_reason="TP_PARTIAL",
+            leverage=pos.leverage,
+            margin_usdt=(pos.margin_usdt * close_fraction).quantize(_QUANT),
+            notional_usdt=(pos.notional_usdt * close_fraction).quantize(_QUANT),
+            gross_pnl_usdt=gross_pnl,
+            entry_fee_usdt=partial_entry_fee,
+            exit_fee_usdt=exit_fee,
+            entry_slippage_usdt=partial_entry_slip,
+            exit_slippage_usdt=exit_slippage.quantize(_QUANT),
+            funding_cost_usdt=partial_funding,
+            net_pnl_usdt=net_pnl,
+            hold_candles=candle_index - pos.entry_candle_index,
+            is_partial=True,
+        )
+
+        remaining_fraction = Decimal("1") - close_fraction
+        remaining_pos = pos.model_copy(
+            update={
+                "quantity": (pos.quantity - close_qty).quantize(_QUANT),
+                "margin_usdt": (pos.margin_usdt * remaining_fraction).quantize(_QUANT),
+                "notional_usdt": (pos.notional_usdt * remaining_fraction).quantize(_QUANT),
+                "entry_fee_usdt": (pos.entry_fee_usdt * remaining_fraction).quantize(_QUANT),
+                "entry_slippage_usdt": (pos.entry_slippage_usdt * remaining_fraction).quantize(
+                    _QUANT
+                ),
+                "accrued_funding_usdt": (pos.accrued_funding_usdt * remaining_fraction).quantize(
+                    _QUANT
+                ),
+                "take_profit_levels": pos.take_profit_levels[1:],
+            }
+        )
+
+        _log.debug(
+            "position_partial_closed",
+            side=pos.side,
+            exit_candle=candle_index,
+            exit_price=str(exit_fill),
+            close_fraction=str(close_fraction),
+            remaining_qty=str(remaining_pos.quantity),
+            net_pnl=str(net_pnl),
+        )
+        return trade, remaining_pos
 
     def _compute_funding(self, pos: OpenPosition, candle: CandleRow) -> Decimal:
         """Calcula el pago de funding para este candle.
