@@ -96,9 +96,7 @@ class TradeSignal(BaseModel):
                     "take_profit o take_profit_levels es obligatorio para señales LONG/SHORT"
                 )
             if has_tp and has_levels:
-                raise ValueError(
-                    "take_profit y take_profit_levels son mutuamente excluyentes"
-                )
+                raise ValueError("take_profit y take_profit_levels son mutuamente excluyentes")
             if has_levels and self.take_profit_levels[-1].close_fraction != Decimal("1"):
                 raise ValueError(
                     "el último TakeProfitLevel debe tener close_fraction=1"

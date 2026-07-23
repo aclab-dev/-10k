@@ -744,7 +744,7 @@ class TestPartialClose:
         candles = [
             _candle(100, 101, 99, 100, offset_hours=0),
             _candle(105, 110, 104, 109, offset_hours=1),  # TP1
-            _candle(88, 96, 85, 86, offset_hours=2),       # SL hit
+            _candle(88, 96, 85, 86, offset_hours=2),  # SL hit
         ]
 
         def _provider(idx: int, hist: tuple) -> TradeSignal:
@@ -773,8 +773,8 @@ class TestPartialClose:
         """SHORT con dos niveles de TP descendentes."""
         candles = [
             _candle(100, 101, 99, 100, offset_hours=0),
-            _candle(95, 96, 90, 91, offset_hours=1),   # TP1 (90)
-            _candle(89, 90, 80, 81, offset_hours=2),    # TP2 (82)
+            _candle(95, 96, 90, 91, offset_hours=1),  # TP1 (90)
+            _candle(89, 90, 80, 81, offset_hours=2),  # TP2 (82)
         ]
 
         def _provider(idx: int, hist: tuple) -> TradeSignal:
@@ -892,9 +892,7 @@ class TestPartialClose:
                 return TradeSignal(
                     action="LONG",
                     stop_loss=_D("90"),
-                    take_profit_levels=(
-                        TakeProfitLevel(price=_D("110"), close_fraction=_D("1")),
-                    ),
+                    take_profit_levels=(TakeProfitLevel(price=_D("110"), close_fraction=_D("1")),),
                     leverage=1,
                     margin_usdt=_D("10"),
                 )
@@ -960,7 +958,7 @@ class TestPartialClose:
         candles = [
             _candle(100, 101, 99, 100, offset_hours=0),
             _candle(100, 101, 99, 100, offset_hours=1),  # fill
-            _candle(100, 115, 85, 90, offset_hours=2),   # low=85 <= SL=90 y high=115 >= TP1=110
+            _candle(100, 115, 85, 90, offset_hours=2),  # low=85 <= SL=90 y high=115 >= TP1=110
         ]
 
         def _provider(idx: int, hist: tuple) -> TradeSignal:
@@ -1049,7 +1047,7 @@ class TestPartialClose:
         # quantity = margin(0.000001) * leverage(1) / fill_price(100) = 0.00000001
         # close_qty_level1 = 0.00000001 * 0.1 = 0.000000001 → redondea a 0 → sin trade
         candles = [
-            _candle(100, 101, 99, 100, offset_hours=0),   # apertura
+            _candle(100, 101, 99, 100, offset_hours=0),  # apertura
             _candle(105, 111, 104, 110, offset_hours=1),  # TP1 hit (high=111 >= 110)
             _candle(115, 121, 114, 120, offset_hours=2),  # TP2 hit (high=121 >= 120)
         ]
