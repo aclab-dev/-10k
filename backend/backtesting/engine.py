@@ -194,6 +194,9 @@ class BacktestingEngine:
                 if sl_tp_trade is not None:
                     closed_trades.append(sl_tp_trade)
                     open_pos = updated_pos  # None para cierre total, pos reducida para parcial
+                elif updated_pos is not None:
+                    # Nivel de TP alcanzado con close_qty == 0: nivel consumido sin trade
+                    open_pos = updated_pos
 
             # ------------------------------------------------------------------
             # 4. Acumular funding si la posición sigue abierta
@@ -463,15 +466,21 @@ class BacktestingEngine:
         level: TakeProfitLevel,
         candle: CandleRow,
         candle_index: int,
-    ) -> tuple[ClosedTrade, OpenPosition]:
+    ) -> tuple[ClosedTrade | None, OpenPosition]:
         """Cierre parcial para un nivel de TP intermedio (partial_close_enabled=True).
 
         Atribuye proporcional de entry_fee, entry_slippage y accrued_funding
         a la porción cerrada. La posición remanente queda con el complemento
         de cada costo y con el nivel disparado eliminado de take_profit_levels.
+
+        Si close_qty redondea a 0 (posición minúscula × fracción pequeña), el nivel
+        se consume sin generar trade para mantener simetría con la protección análoga
+        en la apertura (fill_ratio → quantity == 0 descarta la orden sin abrir posición).
         """
         close_fraction = level.close_fraction
         close_qty = (pos.quantity * close_fraction).quantize(_QUANT)
+        if close_qty <= _ZERO:
+            return None, pos.model_copy(update={"take_profit_levels": pos.take_profit_levels[1:]})
 
         exit_side: Side = "SELL" if pos.side == "LONG" else "BUY"
         exit_fill = self._slip.apply(level.price, exit_side, "LIMIT")

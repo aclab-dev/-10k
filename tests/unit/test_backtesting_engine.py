@@ -1018,3 +1018,59 @@ class TestPartialClose:
         assert total_notional > _D("0")
         # Proporcionalidad del margin_usdt
         assert partial.margin_usdt == final.margin_usdt
+
+    def test_last_tp_level_close_fraction_not_one_raises(self) -> None:
+        """TradeSignal rechaza take_profit_levels cuyo último nivel tiene close_fraction != 1.
+
+        El engine siempre hace cierre total en el último nivel (llama a _close_position),
+        ignorando el close_fraction real. Para evitar que un caller espere un 50% de cierre
+        y obtenga el 100%, la validación lo bloquea en la creación de la señal.
+        """
+        with pytest.raises(ValueError, match="close_fraction=1"):
+            TradeSignal(
+                action="LONG",
+                stop_loss=_D("90"),
+                take_profit_levels=(
+                    TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                    TakeProfitLevel(price=_D("120"), close_fraction=_D("0.5")),  # último != 1
+                ),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+
+    def test_zero_close_qty_skips_phantom_trade(self) -> None:
+        """close_qty == 0 por redondeo no genera trade fantasma; el nivel se consume y el
+        siguiente cierre funciona con normalidad.
+
+        Posición con quantity = 0.00000001 (mínimo 8 decimales) y close_fraction=0.1
+        en el primer nivel → close_qty = 0.000000001 → redondea a 0.
+        El engine debe: no emitir TP_PARTIAL, avanzar al nivel 2, cerrar ahí la posición.
+        """
+        # quantity = margin(0.000001) * leverage(1) / fill_price(100) = 0.00000001
+        # close_qty_level1 = 0.00000001 * 0.1 = 0.000000001 → redondea a 0 → sin trade
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),   # apertura
+            _candle(105, 111, 104, 110, offset_hours=1),  # TP1 hit (high=111 >= 110)
+            _candle(115, 121, 114, 120, offset_hours=2),  # TP2 hit (high=121 >= 120)
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.1")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("0.000001"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        # Solo debe existir el cierre total del nivel 2; el nivel 1 no genera trade fantasma
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "TP"
+        assert result.trades[0].is_partial is False

@@ -99,6 +99,10 @@ class TradeSignal(BaseModel):
                 raise ValueError(
                     "take_profit y take_profit_levels son mutuamente excluyentes"
                 )
+            if has_levels and self.take_profit_levels[-1].close_fraction != Decimal("1"):
+                raise ValueError(
+                    "el último TakeProfitLevel debe tener close_fraction=1 para cerrar la posición completa"
+                )
         return self
 
 
@@ -138,6 +142,10 @@ class OpenPosition(BaseModel):
     def _validate_tp_exclusion(self) -> OpenPosition:
         if self.take_profit is not None and self.take_profit_levels:
             raise ValueError("take_profit y take_profit_levels son mutuamente excluyentes")
+        if self.take_profit_levels and self.take_profit_levels[-1].close_fraction != Decimal("1"):
+            raise ValueError(
+                "el último TakeProfitLevel debe tener close_fraction=1 para cerrar la posición completa"
+            )
         return self
 
 
