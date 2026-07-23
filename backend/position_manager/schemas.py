@@ -64,8 +64,9 @@ class PositionConfig(BaseModel):
     take_profit y take_profit_levels son mutuamente excluyentes.
     Al menos uno de stop_loss, take_profit, take_profit_levels o trailing_delta debe estar presente.
 
-    be_trigger_delta: si se setea, mueve el SL efectivo a entry_price cuando el precio
-    se aleja be_trigger_delta unidades a favor.
+    be_trigger_delta: si se setea, mueve el SL efectivo a entry_price + be_sl_offset
+    (LONG) o entry_price - be_sl_offset (SHORT) cuando el precio se aleja
+    be_trigger_delta unidades a favor. be_sl_offset=0 (default) mueve exactamente a entry.
 
     invalidation_action: acción a aplicar al llamar trigger_setup_invalidation().
 
@@ -80,6 +81,7 @@ class PositionConfig(BaseModel):
     take_profit_levels: list[TakeProfitLevel] = Field(default_factory=list)
     trailing_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
+    be_sl_offset: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     invalidation_action: InvalidationAction | None = None
 
     model_config = {"frozen": True}
@@ -102,6 +104,20 @@ class PositionConfig(BaseModel):
                 "At least one of stop_loss, take_profit, take_profit_levels,"
                 " or trailing_delta must be set."
             )
+
+        # be_sl_offset solo tiene efecto cuando be_trigger_delta está configurado
+        if self.be_sl_offset > Decimal("0") and self.be_trigger_delta is None:
+            raise ValueError("be_sl_offset has no effect when be_trigger_delta is None.")
+
+        # Si be_sl_offset >= be_trigger_delta, el SL queda al nivel del trigger o por
+        # encima del mark en el mismo tick que activa el break-even, cerrando la posición.
+        if self.be_trigger_delta is not None and self.be_sl_offset >= self.be_trigger_delta:
+            raise ValueError(
+                "be_sl_offset must be less than be_trigger_delta; otherwise the SL"
+                " lands at or beyond the trigger price and closes the position"
+                " immediately on activation."
+            )
+
         return self
 
 

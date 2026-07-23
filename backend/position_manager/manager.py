@@ -251,6 +251,7 @@ class PositionManager:
                 mark_price=mark_price,
                 be_trigger_delta=config.be_trigger_delta,
                 current_sl=current_sl,
+                be_sl_offset=config.be_sl_offset,
             )
             if new_sl is not None:
                 self._effective_sl[symbol] = new_sl

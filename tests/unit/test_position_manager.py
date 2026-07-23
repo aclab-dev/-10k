@@ -407,6 +407,32 @@ class TestPositionConfigValidator:
         cfg = PositionConfig(symbol="BTCUSDT", trailing_delta=Decimal("1000"))
         assert cfg.trailing_delta == Decimal("1000")
 
+    def test_be_sl_offset_ge_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset must be less than be_trigger_delta"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("500"),
+                be_sl_offset=Decimal("500"),
+            )
+
+    def test_be_sl_offset_gt_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset must be less than be_trigger_delta"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("500"),
+                be_sl_offset=Decimal("600"),
+            )
+
+    def test_be_sl_offset_without_trigger_delta_raises(self) -> None:
+        with pytest.raises(ValueError, match="be_sl_offset has no effect"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_sl_offset=Decimal("50"),
+            )
+
 
 # ---------------------------------------------------------------------------
 # PositionManager — break-even integrado
@@ -519,6 +545,114 @@ class TestPositionManagerBreakEven:
         # Si el precio cae por debajo del entry → SL_HIT
         r = pm.tick("BTCUSDT", entry_price - Decimal("1"))
         assert r.trigger == PositionTriggerReason.SL_HIT
+
+
+# ---------------------------------------------------------------------------
+# maybe_move_to_break_even — be_sl_offset (función pura)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeMoveToBreakEvenOffset:
+    def test_long_offset_moves_sl_above_entry(self) -> None:
+        result = maybe_move_to_break_even(
+            side=OrderSide.BUY,
+            entry_price=Decimal("50000"),
+            mark_price=Decimal("53000"),
+            be_trigger_delta=Decimal("3000"),
+            current_sl=Decimal("48000"),
+            be_sl_offset=Decimal("100"),
+        )
+        assert result == Decimal("50100")
+
+    def test_short_offset_moves_sl_below_entry(self) -> None:
+        result = maybe_move_to_break_even(
+            side=OrderSide.SELL,
+            entry_price=Decimal("50000"),
+            mark_price=Decimal("47000"),
+            be_trigger_delta=Decimal("3000"),
+            current_sl=Decimal("52000"),
+            be_sl_offset=Decimal("100"),
+        )
+        assert result == Decimal("49900")
+
+    def test_long_offset_no_move_when_sl_already_at_target(self) -> None:
+        result = maybe_move_to_break_even(
+            side=OrderSide.BUY,
+            entry_price=Decimal("50000"),
+            mark_price=Decimal("53000"),
+            be_trigger_delta=Decimal("3000"),
+            current_sl=Decimal("50100"),
+            be_sl_offset=Decimal("100"),
+        )
+        assert result is None
+
+    def test_long_offset_zero_default_returns_entry(self) -> None:
+        result = maybe_move_to_break_even(
+            side=OrderSide.BUY,
+            entry_price=Decimal("50000"),
+            mark_price=Decimal("53000"),
+            be_trigger_delta=Decimal("3000"),
+            current_sl=Decimal("48000"),
+        )
+        assert result == Decimal("50000")
+
+
+class TestPositionManagerBreakEvenOffset:
+    def test_long_be_sl_offset_moves_sl_above_entry(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("3000"),
+                be_sl_offset=Decimal("50"),
+            )
+        )
+
+        pm.tick("BTCUSDT", entry_price + Decimal("3000"))
+        assert pm.get_effective_sl("BTCUSDT") == entry_price + Decimal("50")
+
+    def test_short_be_sl_offset_moves_sl_below_entry(self) -> None:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("52000"),
+                be_trigger_delta=Decimal("3000"),
+                be_sl_offset=Decimal("50"),
+            )
+        )
+
+        pm.tick("BTCUSDT", entry_price - Decimal("3000"))
+        assert pm.get_effective_sl("BTCUSDT") == entry_price - Decimal("50")
+
+    def test_be_offset_does_not_fire_twice(self) -> None:
+        """Un segundo tick con precio aún favorable no mueve el SL más lejos."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        entry_price = adapter.get_position("BTCUSDT").entry_price
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                be_trigger_delta=Decimal("3000"),
+                be_sl_offset=Decimal("50"),
+            )
+        )
+
+        pm.tick("BTCUSDT", entry_price + Decimal("3000"))
+        expected_sl = entry_price + Decimal("50")
+        assert pm.get_effective_sl("BTCUSDT") == expected_sl
+
+        pm.tick("BTCUSDT", entry_price + Decimal("4000"))
+        assert pm.get_effective_sl("BTCUSDT") == expected_sl
 
 
 # ---------------------------------------------------------------------------
