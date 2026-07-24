@@ -29,6 +29,25 @@ def _open_long(adapter: PaperAdapter, symbol: str, qty: Decimal, price: Decimal)
     )
 
 
+class _FlakyCloseAdapter(PaperAdapter):
+    """PaperAdapter cuyas primeras N órdenes de cierre (is_reduce_only) fallan.
+
+    Simula un exchange que rechaza la orden de cierre justo cuando dispara el
+    SL — el caso que PositionManager.tick() no absorbe: su finally ya corrió
+    remove_config() antes de que la excepción suba.
+    """
+
+    def __init__(self, initial_balance_usdt: Decimal, fail_closes: int = 1) -> None:
+        super().__init__(initial_balance_usdt=initial_balance_usdt)
+        self._remaining_failures = fail_closes
+
+    def place_order(self, request: OrderRequest):  # type: ignore[override]
+        if request.is_reduce_only and self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            raise RuntimeError("simulated exchange rejection of close order")
+        return super().place_order(request)
+
+
 # ---------------------------------------------------------------------------
 # tick_all
 # ---------------------------------------------------------------------------
@@ -136,6 +155,44 @@ class TestTickAllFailureIsolation:
         results = service.tick_all()
 
         assert results == []
+
+
+class TestTickAllCloseOrderFailure:
+    """Escenario reportado en el review 2 del PR #95: el SL dispara, la orden de
+    cierre falla, PositionManager ya limpió la config en su finally. Sin
+    re-registrar, la posición queda abierta, por debajo del SL, sin config y sin
+    reintentos — silenciosa. Ver PositionTickService docstring."""
+
+    def test_failed_close_reregisters_config_instead_of_orphaning_position(self) -> None:
+        adapter = _FlakyCloseAdapter(initial_balance_usdt=Decimal("1000"), fail_closes=1)
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+        service = PositionTickService(pm, lambda symbol: Decimal("47000"))  # dispara el SL
+
+        results = service.tick_all()
+
+        assert results == []
+        # No quedó huérfana: sigue configurada y la posición sigue abierta.
+        assert "BTCUSDT" in pm.configured_symbols()
+        assert adapter.get_position("BTCUSDT") is not None
+
+    def test_retry_succeeds_on_next_cycle_once_close_order_stops_failing(self) -> None:
+        adapter = _FlakyCloseAdapter(initial_balance_usdt=Decimal("1000"), fail_closes=1)
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+        service = PositionTickService(pm, lambda symbol: Decimal("47000"))
+
+        first = service.tick_all()
+        assert first == []
+
+        second = service.tick_all()
+
+        assert len(second) == 1
+        assert second[0].trigger == PositionTriggerReason.SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+        assert "BTCUSDT" not in pm.configured_symbols()
 
 
 class TestTickAllSerialization:
