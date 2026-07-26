@@ -256,17 +256,22 @@ class PositionManager:
             atr_value = config.trailing_atr
             if trailing_mode == TrailingMode.ATR and config.trailing_atr_dynamic:
                 atr_value = self._update_smoothed_atr(symbol, config, atr)
-            delta = resolve_trailing_delta(
-                trailing_mode,
-                reference_price=hw,
-                fixed_delta=config.trailing_delta,
-                percent=config.trailing_percent,
-                atr_value=atr_value,
-                atr_multiplier=config.trailing_atr_multiplier,
-            )
-            trailing_stop_price = trailing_stop_from_delta(side, hw, delta)
             self._high_water[symbol] = hw
-            self._trailing_stop[symbol] = trailing_stop_price
+            # ATR dynamic with no value yet (no seed, feed not yet available): skip
+            # trailing computation this tick to avoid crashing resolve_trailing_delta.
+            if atr_value is None and trailing_mode == TrailingMode.ATR:
+                _log.warning("position_manager.atr_feed_unavailable", symbol=symbol)
+            else:
+                delta = resolve_trailing_delta(
+                    trailing_mode,
+                    reference_price=hw,
+                    fixed_delta=config.trailing_delta,
+                    percent=config.trailing_percent,
+                    atr_value=atr_value,
+                    atr_multiplier=config.trailing_atr_multiplier,
+                )
+                trailing_stop_price = trailing_stop_from_delta(side, hw, delta)
+                self._trailing_stop[symbol] = trailing_stop_price
 
         # --- Break-even: mover SL efectivo a entry_price si corresponde ---
         if config.be_trigger_delta is not None:
@@ -436,7 +441,12 @@ class PositionManager:
         prev = self._smoothed_atr.get(symbol, config.trailing_atr)
         if atr is None:
             return prev
-        alpha = config.trailing_atr_smoothing_alpha or Decimal("1")
+        alpha = (
+            config.trailing_atr_smoothing_alpha
+            if config.trailing_atr_smoothing_alpha is not None
+            else Decimal("1")
+        )
+        # On the seed tick (prev is None), skip EMA and use raw ATR directly.
         smoothed = alpha * atr + (Decimal("1") - alpha) * prev if prev is not None else atr
         self._smoothed_atr[symbol] = smoothed
         return smoothed

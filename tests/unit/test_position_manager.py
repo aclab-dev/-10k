@@ -1502,6 +1502,22 @@ class TestTrailingAtrDynamic:
                 trailing_atr_smoothing_alpha=Decimal("0.5"),
             )
 
+    def test_no_seed_no_atr_skips_trailing_gracefully(self) -> None:
+        """Sin seed ni atr= en tick, el trailing se omite ese tick (sin crash)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        # Sin seed (trailing_atr=None) y sin atr= en tick → degradación graceful
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        r = pm.tick("BTCUSDT", Decimal("53000"))  # sin atr=
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") is None  # sin protección ese tick
+
+        # Cuando llega el ATR, el trailing se inicializa
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
     def test_dynamic_atr_resets_smoothed_state_on_reconfigure(self) -> None:
         """Al reconfigurar con set_config, el estado suavizado del ATR se resetea."""
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
