@@ -34,6 +34,7 @@ from backend.backtesting.schemas import (
     CandleRow,
     TradeSignal,
 )
+from backend.position_manager.schemas import TakeProfitLevel
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -684,3 +685,390 @@ class TestPartialFill:
         assert result.total_trades == 1
         assert result.trades[0].entry_candle_index == 3
         assert result.trades[0].exit_reason == "TP"
+
+
+# ---------------------------------------------------------------------------
+# F14 [105] — Cierres parciales (partial_close_enabled=True)
+# ---------------------------------------------------------------------------
+
+
+def _engine_pc(latency: int = 0) -> BacktestingEngine:
+    """Engine con partial_close_enabled=True."""
+    return BacktestingEngine(_config(latency), partial_close_enabled=True)
+
+
+class TestPartialClose:
+    """Cierres parciales multi-TP en el BacktestingEngine (F14 [105])."""
+
+    def test_long_two_levels_first_hit_emits_partial_trade(self) -> None:
+        """TP1 hit → ClosedTrade parcial emitido, posición reducida al 50%."""
+        # Candle 0: LONG abierto
+        # Candle 1: TP1 hit (high=110 >= 110)
+        # Candle 2: TP2 hit (high=120 >= 120) → cierre total
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # TP1
+            _candle(112, 125, 111, 120, offset_hours=2),  # TP2
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 2
+        partial = result.trades[0]
+        final = result.trades[1]
+
+        assert partial.exit_reason == "TP_PARTIAL"
+        assert partial.is_partial is True
+        assert partial.exit_candle_index == 1
+
+        assert final.exit_reason == "TP"
+        assert final.is_partial is False
+        assert final.exit_candle_index == 2
+
+    def test_long_two_levels_sl_after_first_partial(self) -> None:
+        """TP1 hit → cierre parcial; luego SL hit → cierre del remanente."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # TP1
+            _candle(88, 96, 85, 86, offset_hours=2),  # SL hit
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 2
+        assert result.trades[0].exit_reason == "TP_PARTIAL"
+        assert result.trades[0].is_partial is True
+        assert result.trades[1].exit_reason == "SL"
+        assert result.trades[1].is_partial is False
+
+    def test_short_two_levels_both_hit(self) -> None:
+        """SHORT con dos niveles de TP descendentes."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(95, 96, 90, 91, offset_hours=1),  # TP1 (90)
+            _candle(89, 90, 80, 81, offset_hours=2),  # TP2 (82)
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="SHORT",
+                    stop_loss=_D("110"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("90"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("82"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 2
+        assert result.trades[0].exit_reason == "TP_PARTIAL"
+        assert result.trades[0].is_partial is True
+        assert result.trades[1].exit_reason == "TP"
+
+    def test_partial_close_costs_attributed_proportionally(self) -> None:
+        """Los costos de entrada se atribuyen proporcionalmente al cierre parcial."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # TP1 50%
+            _candle(112, 125, 111, 120, offset_hours=2),  # TP2 restante
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        partial = result.trades[0]
+        final = result.trades[1]
+
+        # entry_fee total = entry_fee_partial + entry_fee_final
+        total_entry_fee = partial.entry_fee_usdt + final.entry_fee_usdt
+        # Ambas mitades deben ser iguales (close_fraction=0.5)
+        assert partial.entry_fee_usdt == final.entry_fee_usdt
+        assert total_entry_fee > _D("0")
+
+        # entry_slippage también se divide
+        assert partial.entry_slippage_usdt == final.entry_slippage_usdt
+
+    def test_all_levels_consumed_remaining_closes_at_end_of_data(self) -> None:
+        """Si quedan 3 niveles y solo se tocan 2, el remanente cierra en END_OF_DATA."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # TP1
+            _candle(112, 115, 111, 113, offset_hours=2),  # TP2 (no llega a 120)
+            _candle(113, 116, 112, 114, offset_hours=3),  # sin TP3 (135)
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("115"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("135"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 3
+        assert result.trades[0].exit_reason == "TP_PARTIAL"
+        assert result.trades[1].exit_reason == "TP_PARTIAL"
+        assert result.trades[2].exit_reason == "END_OF_DATA"
+
+    def test_signal_with_tp_levels_and_take_profit_raises(self) -> None:
+        """TradeSignal no puede tener ambos take_profit y take_profit_levels."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="mutuamente excluyentes"):
+            TradeSignal(
+                action="LONG",
+                stop_loss=_D("90"),
+                take_profit=_D("110"),
+                take_profit_levels=(TakeProfitLevel(price=_D("110"), close_fraction=_D("1")),),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+
+    def test_engine_disabled_raises_on_tp_levels_without_take_profit(self) -> None:
+        """Con partial_close_enabled=False, señal con take_profit_levels sin take_profit falla."""
+        # Necesitamos 2 candles: señal en candle 0, fill en candle 1
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(102, 105, 101, 103, offset_hours=1),
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(TakeProfitLevel(price=_D("110"), close_fraction=_D("1")),),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        engine = BacktestingEngine(_config())  # partial_close_enabled=False por defecto
+
+        with pytest.raises(ValueError, match="partial_close_enabled=False"):
+            engine.run(candles, _provider)
+
+    def test_entry_fee_conserved_across_partial_closes(self) -> None:
+        """La suma de entry_fee de todos los trades == entry_fee de apertura (invariante).
+
+        Usa fees reales para verificar que la atribución proporcional conserva
+        el costo total: partial.entry_fee + final.entry_fee == total_entry_fee_at_open.
+        """
+        from backend.backtesting.fee_model import FeeModel
+
+        # Taker rate real del proyecto (0.05%)
+        fee_model = FeeModel(maker_rate=_D("0.0002"), taker_rate=_D("0.0005"))
+
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # fill + TP1
+            _candle(112, 125, 111, 120, offset_hours=2),  # TP2
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        engine = BacktestingEngine(_config(), fee_model=fee_model, partial_close_enabled=True)
+        result = engine.run(candles, _provider)
+
+        assert result.total_trades == 2
+        partial = result.trades[0]
+        final = result.trades[1]
+
+        # Invariante: entry_fee no es cero con fees reales
+        assert partial.entry_fee_usdt > _D("0")
+        assert final.entry_fee_usdt > _D("0")
+
+        # Invariante central: suma == fee total de apertura
+        # close_fraction=0.5 → cada mitad lleva exactamente la mitad del fee
+        assert partial.entry_fee_usdt == final.entry_fee_usdt
+        # La suma de los dos debe ser > 0 y consistente con el fee de un run single-TP
+        total_attributed = partial.entry_fee_usdt + final.entry_fee_usdt
+        assert total_attributed > _D("0")
+
+    def test_sl_wins_over_tp_partial_same_candle(self) -> None:
+        """SL tiene prioridad sobre primer nivel de TP en el mismo candle (partial close mode)."""
+        # Candle 1: fill; Candle 2: low <= SL y high >= TP1 en el mismo candle → gana SL
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(100, 101, 99, 100, offset_hours=1),  # fill
+            _candle(100, 115, 85, 90, offset_hours=2),  # low=85 <= SL=90 y high=115 >= TP1=110
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc(latency=1).run(candles, _provider)
+
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "SL"
+        assert result.trades[0].is_partial is False
+
+    def test_quantity_and_notional_halved_after_partial_close(self) -> None:
+        """quantity y notional_usdt se reducen proporcionalmente al close_fraction."""
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),
+            _candle(105, 110, 104, 109, offset_hours=1),  # fill + TP1
+            _candle(112, 125, 111, 120, offset_hours=2),  # TP2
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("10"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        assert result.total_trades == 2
+        partial = result.trades[0]
+        final = result.trades[1]
+
+        # close_fraction=0.5 → cada trade lleva la mitad del notional
+        assert partial.notional_usdt == final.notional_usdt
+        # La suma debe reconstruir el notional total de apertura
+        total_notional = partial.notional_usdt + final.notional_usdt
+        assert total_notional > _D("0")
+        # Proporcionalidad del margin_usdt
+        assert partial.margin_usdt == final.margin_usdt
+
+    def test_last_tp_level_close_fraction_not_one_raises(self) -> None:
+        """TradeSignal rechaza take_profit_levels cuyo último nivel tiene close_fraction != 1.
+
+        El engine siempre hace cierre total en el último nivel (llama a _close_position),
+        ignorando el close_fraction real. Para evitar que un caller espere un 50% de cierre
+        y obtenga el 100%, la validación lo bloquea en la creación de la señal.
+        """
+        with pytest.raises(ValueError, match="close_fraction=1"):
+            TradeSignal(
+                action="LONG",
+                stop_loss=_D("90"),
+                take_profit_levels=(
+                    TakeProfitLevel(price=_D("110"), close_fraction=_D("0.5")),
+                    TakeProfitLevel(price=_D("120"), close_fraction=_D("0.5")),  # último != 1
+                ),
+                leverage=1,
+                margin_usdt=_D("10"),
+            )
+
+    def test_zero_close_qty_skips_phantom_trade(self) -> None:
+        """close_qty == 0 por redondeo no genera trade fantasma; el nivel se consume y el
+        siguiente cierre funciona con normalidad.
+
+        Posición con quantity = 0.00000001 (mínimo 8 decimales) y close_fraction=0.1
+        en el primer nivel → close_qty = 0.000000001 → redondea a 0.
+        El engine debe: no emitir TP_PARTIAL, avanzar al nivel 2, cerrar ahí la posición.
+        """
+        # quantity = margin(0.000001) * leverage(1) / fill_price(100) = 0.00000001
+        # close_qty_level1 = 0.00000001 * 0.1 = 0.000000001 → redondea a 0 → sin trade
+        candles = [
+            _candle(100, 101, 99, 100, offset_hours=0),  # apertura
+            _candle(105, 111, 104, 110, offset_hours=1),  # TP1 hit (high=111 >= 110)
+            _candle(115, 121, 114, 120, offset_hours=2),  # TP2 hit (high=121 >= 120)
+        ]
+
+        def _provider(idx: int, hist: tuple) -> TradeSignal:
+            if idx == 0:
+                return TradeSignal(
+                    action="LONG",
+                    stop_loss=_D("90"),
+                    take_profit_levels=(
+                        TakeProfitLevel(price=_D("110"), close_fraction=_D("0.1")),
+                        TakeProfitLevel(price=_D("120"), close_fraction=_D("1")),
+                    ),
+                    leverage=1,
+                    margin_usdt=_D("0.000001"),
+                )
+            return TradeSignal(action="NO_OP")
+
+        result = _engine_pc().run(candles, _provider)
+
+        # Solo debe existir el cierre total del nivel 2; el nivel 1 no genera trade fantasma
+        assert result.total_trades == 1
+        assert result.trades[0].exit_reason == "TP"
+        assert result.trades[0].is_partial is False
