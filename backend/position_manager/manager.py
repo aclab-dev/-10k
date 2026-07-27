@@ -255,6 +255,9 @@ class PositionManager:
             # tick sobre el high-water (crece con el precio a favor).
             atr_value = config.trailing_atr
             if trailing_mode == TrailingMode.ATR and config.trailing_atr_dynamic:
+                if atr is not None and atr <= 0:
+                    _log.warning("position_manager.atr_invalid_value", symbol=symbol, atr=atr)
+                    atr = None
                 atr_value = self._update_smoothed_atr(symbol, config, atr)
             self._high_water[symbol] = hw
             # ATR dynamic with no value yet (no seed, feed not yet available): skip

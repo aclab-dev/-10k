@@ -1535,3 +1535,24 @@ class TestTrailingAtrDynamic:
         # Primer tick post-reconfigure: usa el nuevo ATR desde cero
         pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
         assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
+    def test_dynamic_atr_zero_or_negative_treated_as_none(self) -> None:
+        """atr=0 o negativo en tick() se rechaza en el boundary y se trata como None."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr=Decimal("500"),
+                trailing_atr_dynamic=True,
+            )
+        )
+
+        # atr=0 no debe actualizar el estado: trailing usa la semilla (500)
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("0"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
+        # atr negativo tampoco actualiza: trailing sigue con seed 500 sobre nuevo hw
+        pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("-100"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
