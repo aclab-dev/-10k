@@ -9,6 +9,7 @@ from decimal import Decimal
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
 from backend.position_manager import PositionConfig, PositionManager, PositionTriggerReason
+from backend.position_manager.schemas import TakeProfitLevel
 from backend.position_manager.tick_service import PositionTickService
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,26 @@ class _FlakyCloseAdapter(PaperAdapter):
         if request.is_reduce_only and self._remaining_failures > 0:
             self._remaining_failures -= 1
             raise RuntimeError("simulated exchange rejection of close order")
+        return super().place_order(request)
+
+
+class _NthReduceOnlyFailingAdapter(PaperAdapter):
+    """PaperAdapter cuya N-ésima orden de cierre (is_reduce_only) falla una vez.
+
+    A diferencia de _FlakyCloseAdapter (falla la primera), esta permite que un
+    nivel parcial de multi-TP se cierre bien y falle recién en el siguiente.
+    """
+
+    def __init__(self, initial_balance_usdt: Decimal, fail_on_call_number: int) -> None:
+        super().__init__(initial_balance_usdt=initial_balance_usdt)
+        self._reduce_only_calls = 0
+        self._fail_on_call_number = fail_on_call_number
+
+    def place_order(self, request: OrderRequest):  # type: ignore[override]
+        if request.is_reduce_only:
+            self._reduce_only_calls += 1
+            if self._reduce_only_calls == self._fail_on_call_number:
+                raise RuntimeError("simulated exchange rejection of close order")
         return super().place_order(request)
 
 
@@ -193,6 +214,67 @@ class TestTickAllCloseOrderFailure:
         assert second[0].trigger == PositionTriggerReason.SL_HIT
         assert adapter.get_position("BTCUSDT") is None
         assert "BTCUSDT" not in pm.configured_symbols()
+
+
+class TestTickAllPartialMultiTpFailure:
+    """Escenario del review 3 del PR #95: re-registrar la config completa ante
+    cualquier falla de pm.tick() revive niveles de multi-TP ya cerrados, porque
+    PositionConfig es inmutable (siempre tiene los take_profit_levels originales)
+    y set_config() resetea _remaining_tp_levels a esa lista completa. El manager
+    ya preserva su estado correctamente en un fallo de nivel parcial (no es el
+    último nivel => su finally no borra la config); re-registrar encima de eso
+    pisa ese estado correcto con el original."""
+
+    @staticmethod
+    def _multi_tp_config() -> PositionConfig:
+        return PositionConfig(
+            symbol="BTCUSDT",
+            stop_loss=Decimal("40000"),
+            take_profit_levels=[
+                TakeProfitLevel(price=Decimal("55000"), close_fraction=Decimal("0.34")),
+                TakeProfitLevel(price=Decimal("60000"), close_fraction=Decimal("0.5")),
+                TakeProfitLevel(price=Decimal("65000"), close_fraction=Decimal("1")),
+            ],
+        )
+
+    def test_failed_partial_close_does_not_resurrect_already_closed_levels(self) -> None:
+        adapter = _NthReduceOnlyFailingAdapter(
+            initial_balance_usdt=Decimal("1000"), fail_on_call_number=2
+        )
+        _open_long(adapter, "BTCUSDT", Decimal("3"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(self._multi_tp_config())
+        prices = iter([Decimal("55000"), Decimal("60000")])
+        service = PositionTickService(pm, lambda symbol: next(prices))
+
+        first = service.tick_all()
+        assert first[0].trigger == PositionTriggerReason.TP_PARTIAL
+        assert first[0].tp_level_index == 0
+
+        second = service.tick_all()
+        assert second == []
+
+        # El nivel 0 no debe revivir: deben quedar exactamente los niveles 1 y 2.
+        remaining = pm.get_remaining_tp_levels("BTCUSDT")
+        assert len(remaining) == 2
+        assert remaining[0].price == Decimal("60000")
+
+    def test_retry_hits_the_correct_level_not_a_resurrected_one(self) -> None:
+        adapter = _NthReduceOnlyFailingAdapter(
+            initial_balance_usdt=Decimal("1000"), fail_on_call_number=2
+        )
+        _open_long(adapter, "BTCUSDT", Decimal("3"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(self._multi_tp_config())
+        prices = iter([Decimal("55000"), Decimal("60000"), Decimal("60000")])
+        service = PositionTickService(pm, lambda symbol: next(prices))
+
+        service.tick_all()  # nivel 0 cierra OK
+        service.tick_all()  # nivel 1 falla al cerrar
+
+        third = service.tick_all()  # reintento: debe ser el nivel 1, no el 0 de nuevo
+        assert third[0].trigger == PositionTriggerReason.TP_PARTIAL
+        assert third[0].tp_level_index == 1
 
 
 class TestTickAllSerialization:
