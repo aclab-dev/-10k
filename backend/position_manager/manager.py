@@ -413,7 +413,11 @@ class PositionManager:
                 result = self._apply_invalidation_action(
                     symbol, mark_price, config.invalidation_action, position
                 )
-                self._auto_invalidation_fired.add(symbol)
+                # Solo marcar si la config sigue viva: en un cierre total,
+                # _apply_invalidation_action ya hizo remove_config() (que descarta esta
+                # marca); agregarla igual dejaría una entrada huérfana sin config asociada.
+                if symbol in self._configs:
+                    self._auto_invalidation_fired.add(symbol)
                 return result
 
         # --- 3. TP: multi-TP o single TP ---

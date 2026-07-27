@@ -111,6 +111,11 @@ class PositionConfig(BaseModel):
     # Precio de invalidación de setup (F14): si se cruza en tick(), dispara
     # invalidation_action automáticamente. BUY: invalidado si mark_price <= este valor.
     # SELL: invalidado si mark_price >= este valor. Requiere invalidation_action.
+    # Nota: si invalidation_action solo mueve new_sl (sin close_fraction) y ese new_sl
+    # ya quedó cruzado por el mark_price del mismo tick, la posición NO cierra en ese
+    # tick — el SL_HIT recién se evalúa en el tick siguiente sobre el SL actualizado.
+    # Mismo comportamiento que el disparo manual (trigger_setup_invalidation); no
+    # garantiza cierre inmediato cuando la acción es solo un ajuste de SL.
     invalidation_price: Decimal | None = Field(default=None, gt=Decimal("0"))
 
     model_config = {"frozen": True}

@@ -40,15 +40,15 @@ class PositionTickService:
       (nunca se llamó a pm.tick), se reintenta solo en el próximo ciclo.
     - pm.tick() falla: la re-registración es condicional a que el símbolo haya
       quedado realmente huérfano (get_config(symbol) is None tras la falla).
-      * Cierre total (SL, TP single, último nivel de multi-TP, trailing):
-        PositionManager ya hizo remove_config() en su finally antes de que la
-        excepción suba (ver manager.py) — la posición queda abierta y sin
-        config. Se re-registra la config previa a la falla, tal como indica el
-        docstring de tick(): "el caller debe capturar y llamar set_config para
-        reintentar". Nota: set_config() resetea el SL/TP efectivo y el
-        high-water del trailing a los valores originales — se pierde cualquier
-        progreso de break-even o ajuste dinámico previo, pero la posición no
-        queda descubierta.
+      * Cierre total (SL, TP single, último nivel de multi-TP, trailing,
+        invalidación con close_fraction=1): PositionManager ya hizo
+        remove_config() en su finally antes de que la excepción suba (ver
+        manager.py) — la posición queda abierta y sin config. Se re-registra
+        la config previa a la falla, tal como indica el docstring de tick():
+        "el caller debe capturar y llamar set_config para reintentar". Nota:
+        set_config() resetea el SL/TP efectivo y el high-water del trailing a
+        los valores originales — se pierde cualquier progreso de break-even o
+        ajuste dinámico previo, pero la posición no queda descubierta.
       * Nivel parcial de multi-TP: el manager NO borra la config en su finally
         (solo lo hace si es el último nivel) — preserva _remaining_tp_levels a
         propósito para que el próximo tick reintente ese nivel puntual. Acá NO
@@ -56,6 +56,12 @@ class PositionTickService:
         lista completa de niveles originales, así que set_config() resetearía
         _remaining_tp_levels a esa lista completa, resucitando niveles ya
         cerrados — el próximo tick los volvería a cerrar (sobre-cierre).
+      * Invalidación con cierre parcial o solo ajuste de SL (F14): análogo al
+        nivel parcial de multi-TP — la config tampoco se borra en su finally,
+        y el guard interno _auto_invalidation_fired solo se marca si la
+        acción se aplicó sin excepción (ver manager.py), así que el próximo
+        tick reintenta la invalidación completa. Tampoco hay que re-registrar
+        acá.
 
     Contrato de get_mark_price: debe imponer su propio timeout. tick_all() llama
     a get_mark_price mientras sostiene el lock; una llamada que cuelga bloquea
