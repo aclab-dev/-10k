@@ -92,6 +92,10 @@ class PositionManager:
     def get_config(self, symbol: str) -> PositionConfig | None:
         return self._configs.get(symbol)
 
+    def configured_symbols(self) -> list[str]:
+        """Símbolos con configuración de salida activa (candidatos a tick periódico)."""
+        return list(self._configs.keys())
+
     def get_trailing_stop(self, symbol: str) -> Decimal | None:
         return self._trailing_stop.get(symbol)
 
