@@ -1782,6 +1782,97 @@ class TestAutomaticInvalidationDetection:
 
         assert r.trigger == PositionTriggerReason.TP_HIT
 
+    def test_partial_close_invalidation_does_not_refire_while_price_stays_past_threshold(
+        self,
+    ) -> None:
+        """Regresión: sin guard, cada tick con mark_price <= invalidation_price volvería
+        a aplicar el cierre parcial (a diferencia de multi-TP, invalidation_action no se
+        consume de a un nivel: es una única acción estática).
+        """
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("45000"),
+                invalidation_price=Decimal("49000"),
+                invalidation_action=InvalidationAction(close_fraction=Decimal("0.5")),
+            )
+        )
+
+        first = pm.tick("BTCUSDT", Decimal("48900"))
+        assert first.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        qty_after_first = adapter.get_position("BTCUSDT").quantity
+
+        # Mismo precio (sigue más allá de invalidation_price) en 3 ticks más: no debe
+        # volver a cerrar parcialmente ni a disparar SETUP_INVALIDATED de nuevo.
+        for _ in range(3):
+            r = pm.tick("BTCUSDT", Decimal("48900"))
+            assert r.trigger == PositionTriggerReason.NONE
+
+        assert adapter.get_position("BTCUSDT").quantity == qty_after_first
+
+    def test_sl_only_invalidation_does_not_refire_while_price_stays_past_threshold(self) -> None:
+        """Regresión: sin guard, cada tick reescribiría el mismo new_sl indefinidamente."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("40000"),
+                invalidation_price=Decimal("49000"),
+                invalidation_action=InvalidationAction(new_sl=Decimal("41000")),
+            )
+        )
+
+        first = pm.tick("BTCUSDT", Decimal("48900"))
+        assert first.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("41000")
+
+        # Precio sigue por debajo de invalidation_price (49000) pero por encima del
+        # nuevo SL (41000): no debe volver a disparar SETUP_INVALIDATED.
+        r = pm.tick("BTCUSDT", Decimal("48900"))
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_effective_sl("BTCUSDT") == Decimal("41000")
+
+    def test_failed_partial_close_is_not_marked_fired_retries_next_tick(self) -> None:
+        """Si _place_close_order falla, la invalidación NO se marca como disparada:
+        el próximo tick reintenta, igual que un nivel parcial de multi-TP.
+        """
+
+        class _FlakyCloseAdapter(PaperAdapter):
+            def __init__(self, initial_balance_usdt: Decimal, fail_closes: int) -> None:
+                super().__init__(initial_balance_usdt=initial_balance_usdt)
+                self._remaining_failures = fail_closes
+
+            def place_order(self, request):  # type: ignore[override,no-untyped-def]
+                if request.is_reduce_only and self._remaining_failures > 0:
+                    self._remaining_failures -= 1
+                    raise RuntimeError("simulated exchange rejection of close order")
+                return super().place_order(request)
+
+        adapter = _FlakyCloseAdapter(initial_balance_usdt=Decimal("1000"), fail_closes=1)
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("45000"),
+                invalidation_price=Decimal("49000"),
+                invalidation_action=InvalidationAction(close_fraction=Decimal("0.5")),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="simulated exchange rejection"):
+            pm.tick("BTCUSDT", Decimal("48900"))
+
+        # No quedó marcada como disparada: el segundo tick reintenta y esta vez cierra.
+        r = pm.tick("BTCUSDT", Decimal("48900"))
+        assert r.trigger == PositionTriggerReason.SETUP_INVALIDATED
+        assert r.closed_fraction == Decimal("0.5")
+
 
 # ---------------------------------------------------------------------------
 # F14 — Callback on_invalidation_event ([106])

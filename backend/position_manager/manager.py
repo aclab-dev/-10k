@@ -82,6 +82,14 @@ class PositionManager:
         self._remaining_tp_levels: dict[str, list[TakeProfitLevel]] = {}
         # ATR suavizado (EMA) para trailing_atr_dynamic
         self._smoothed_atr: dict[str, Decimal] = {}
+        # Símbolos donde la detección automática de invalidation_price ya disparó.
+        # A diferencia de las TP levels (que se consumen de a una), invalidation_action
+        # es una única acción estática: sin este guard, mientras mark_price siga más
+        # allá de invalidation_price, tick() la reaplicaría en cada tick (cierres
+        # parciales repetidos o el mismo new_sl reescrito sin fin). No afecta al
+        # disparo manual (trigger_setup_invalidation): ese sigue siendo re-invocable
+        # a criterio del caller, como antes de este cambio.
+        self._auto_invalidation_fired: set[str] = set()
 
     # ------------------------------------------------------------------
     # Configuración
@@ -96,6 +104,7 @@ class PositionManager:
         self._high_water.pop(config.symbol, None)
         self._trailing_stop.pop(config.symbol, None)
         self._smoothed_atr.pop(config.symbol, None)
+        self._auto_invalidation_fired.discard(config.symbol)
         _log.info(
             "position_manager.config_set",
             symbol=config.symbol,
@@ -140,6 +149,7 @@ class PositionManager:
         self._effective_sl.pop(symbol, None)
         self._effective_tp.pop(symbol, None)
         self._remaining_tp_levels.pop(symbol, None)
+        self._auto_invalidation_fired.discard(symbol)
 
     # ------------------------------------------------------------------
     # Actualización dinámica de SL/TP (F14)
@@ -383,14 +393,28 @@ class PositionManager:
         # --- 2. Invalidación de setup por precio (F14) ---
         # Prioridad: después del SL efectivo (riesgo duro, nunca se subordina) y
         # antes de TP/trailing (invalidar la tesis prima sobre tomar ganancias).
-        if config.invalidation_price is not None and config.invalidation_action is not None:
+        # Guard _auto_invalidation_fired: invalidation_action es una acción estática
+        # (no una lista de niveles como multi-TP); sin esta marca, mientras mark_price
+        # siga más allá de invalidation_price, cada tick la reaplicaría (cierres
+        # parciales repetidos o el mismo new_sl reescrito sin fin).
+        if (
+            config.invalidation_price is not None
+            and config.invalidation_action is not None
+            and symbol not in self._auto_invalidation_fired
+        ):
             invalidated = (side == OrderSide.BUY and mark_price <= config.invalidation_price) or (
                 side == OrderSide.SELL and mark_price >= config.invalidation_price
             )
             if invalidated:
-                return self._apply_invalidation_action(
+                # Marcar como disparado recién después de que la acción se aplique sin
+                # excepción: si _place_close_order falla (cierre parcial, config no se
+                # elimina), la invalidación NO se consume y el próximo tick reintenta,
+                # igual que con los niveles de multi-TP.
+                result = self._apply_invalidation_action(
                     symbol, mark_price, config.invalidation_action, position
                 )
+                self._auto_invalidation_fired.add(symbol)
+                return result
 
         # --- 3. TP: multi-TP o single TP ---
         remaining_levels = self._remaining_tp_levels.get(symbol, [])
