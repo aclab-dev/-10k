@@ -13,7 +13,7 @@ El bot necesita un dashboard de monitoreo interno que exponga en tiempo real:
 - Estado del bot (modo, versión, health de servicios)
 - Posiciones abiertas con PnL en vivo y métricas de trailing/break-even
 - Historial de decisiones del Decision Aggregator (señales, confianza, acción tomada)
-- Feed de ticks ATR en vivo (introducido en F14 — `atr_feed_unavailable`)
+- Feed de ticks ATR en vivo (introducido en F14 — loop de ticks en `PositionManager`)
 - Órdenes activas e historial de ejecuciones
 - Métricas de riesgo y alertas del Risk Engine
 - Resultados de backtests
@@ -88,15 +88,26 @@ El trade-off es aceptable dado que el dashboard es una épica discreta (F15) con
 
 ### Integración con FastAPI
 
-En `backend/app/main.py`, después de registrar los routers de API:
+En `backend/app/main.py`, **todos los routers de API y WebSocket deben registrarse antes del mount del SPA**. El mount es un catch-all: cualquier ruta registrada después queda inaccesible.
 
 ```python
 from fastapi.staticfiles import StaticFiles
 
+# 1. Registrar routers PRIMERO (API REST + WebSocket)
+app.include_router(api_router, prefix="/api")
+app.include_router(ws_router, prefix="/api/ws")  # WebSocket bajo /api/ws
+
+# 2. Mount del SPA al final — captura todo lo que no matchea un router
 app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
 ```
 
-Los endpoints de API quedan bajo `/api/...` para no colisionar con las rutas del SPA.
+Convenio de prefijos:
+
+| Tipo | Prefijo |
+|---|---|
+| REST API | `/api/...` |
+| WebSocket / SSE | `/api/ws/...` |
+| SPA (React) | `/` (catch-all, último) |
 
 ### Docker
 
