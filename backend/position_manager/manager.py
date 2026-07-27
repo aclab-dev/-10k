@@ -31,6 +31,7 @@ from backend.position_manager.schemas import (
     PositionTriggerReason,
     TakeProfitLevel,
     TickResult,
+    TrailingMode,
 )
 from backend.position_manager.trailing import (
     is_trailing_stop_hit,
@@ -62,6 +63,8 @@ class PositionManager:
         self._effective_tp: dict[str, Decimal | None] = {}
         # Niveles de multi-TP pendientes de dispararse (copia mutable de config)
         self._remaining_tp_levels: dict[str, list[TakeProfitLevel]] = {}
+        # ATR suavizado (EMA) para trailing_atr_dynamic
+        self._smoothed_atr: dict[str, Decimal] = {}
 
     # ------------------------------------------------------------------
     # Configuración
@@ -75,6 +78,7 @@ class PositionManager:
         self._remaining_tp_levels[config.symbol] = list(config.take_profit_levels)
         self._high_water.pop(config.symbol, None)
         self._trailing_stop.pop(config.symbol, None)
+        self._smoothed_atr.pop(config.symbol, None)
         _log.info(
             "position_manager.config_set",
             symbol=config.symbol,
@@ -86,6 +90,8 @@ class PositionManager:
             trailing_percent=str(config.trailing_percent),
             trailing_atr=str(config.trailing_atr),
             trailing_atr_multiplier=str(config.trailing_atr_multiplier),
+            trailing_atr_dynamic=config.trailing_atr_dynamic,
+            trailing_atr_smoothing_alpha=str(config.trailing_atr_smoothing_alpha),
             be_trigger_delta=str(config.be_trigger_delta),
         )
 
@@ -113,6 +119,7 @@ class PositionManager:
         self._configs.pop(symbol, None)
         self._high_water.pop(symbol, None)
         self._trailing_stop.pop(symbol, None)
+        self._smoothed_atr.pop(symbol, None)
         self._effective_sl.pop(symbol, None)
         self._effective_tp.pop(symbol, None)
         self._remaining_tp_levels.pop(symbol, None)
@@ -209,7 +216,7 @@ class PositionManager:
     # Tick principal
     # ------------------------------------------------------------------
 
-    def tick(self, symbol: str, mark_price: Decimal) -> TickResult:
+    def tick(self, symbol: str, mark_price: Decimal, *, atr: Decimal | None = None) -> TickResult:
         """Evalúa triggers para `symbol` al precio `mark_price`.
 
         Orden de evaluación: SL efectivo → TP (single o multi) → trailing stop.
@@ -250,17 +257,28 @@ class PositionManager:
             hw = update_high_water(side, mark_price, self._high_water.get(symbol))
             # reference_price = high-water: para PERCENT la distancia se recalcula por
             # tick sobre el high-water (crece con el precio a favor).
-            delta = resolve_trailing_delta(
-                trailing_mode,
-                reference_price=hw,
-                fixed_delta=config.trailing_delta,
-                percent=config.trailing_percent,
-                atr_value=config.trailing_atr,
-                atr_multiplier=config.trailing_atr_multiplier,
-            )
-            trailing_stop_price = trailing_stop_from_delta(side, hw, delta)
+            atr_value = config.trailing_atr
+            if trailing_mode == TrailingMode.ATR and config.trailing_atr_dynamic:
+                if atr is not None and atr <= 0:
+                    _log.warning("position_manager.atr_invalid_value", symbol=symbol, atr=atr)
+                    atr = None
+                atr_value = self._update_smoothed_atr(symbol, config, atr)
             self._high_water[symbol] = hw
-            self._trailing_stop[symbol] = trailing_stop_price
+            # ATR dynamic with no value yet (no seed, feed not yet available): skip
+            # trailing computation this tick to avoid crashing resolve_trailing_delta.
+            if atr_value is None and trailing_mode == TrailingMode.ATR:
+                _log.warning("position_manager.atr_feed_unavailable", symbol=symbol)
+            else:
+                delta = resolve_trailing_delta(
+                    trailing_mode,
+                    reference_price=hw,
+                    fixed_delta=config.trailing_delta,
+                    percent=config.trailing_percent,
+                    atr_value=atr_value,
+                    atr_multiplier=config.trailing_atr_multiplier,
+                )
+                trailing_stop_price = trailing_stop_from_delta(side, hw, delta)
+                self._trailing_stop[symbol] = trailing_stop_price
 
         # --- Break-even: mover SL efectivo a entry_price si corresponde ---
         if config.be_trigger_delta is not None:
@@ -415,6 +433,30 @@ class PositionManager:
     # ------------------------------------------------------------------
     # Helpers internos
     # ------------------------------------------------------------------
+
+    def _update_smoothed_atr(
+        self,
+        symbol: str,
+        config: PositionConfig,
+        atr: Decimal | None,
+    ) -> Decimal | None:
+        """Applies EMA smoothing to the live ATR and returns the value for delta resolution.
+
+        When atr=None (feed momentarily unavailable), returns the last smoothed value or
+        the seed from config without updating state.
+        """
+        prev = self._smoothed_atr.get(symbol, config.trailing_atr)
+        if atr is None:
+            return prev
+        alpha = (
+            config.trailing_atr_smoothing_alpha
+            if config.trailing_atr_smoothing_alpha is not None
+            else Decimal("1")
+        )
+        # On the seed tick (prev is None), skip EMA and use raw ATR directly.
+        smoothed = alpha * atr + (Decimal("1") - alpha) * prev if prev is not None else atr
+        self._smoothed_atr[symbol] = smoothed
+        return smoothed
 
     def _place_close_order(
         self,

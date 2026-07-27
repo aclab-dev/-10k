@@ -76,7 +76,10 @@ class PositionConfig(BaseModel):
     - trailing_delta: distancia absoluta fija (modo FIXED).
     - trailing_percent: fracción del high-water mark, ej. 0.02 = 2% (modo PERCENT).
     - trailing_atr: valor ATR absoluto; se multiplica por trailing_atr_multiplier (modo ATR).
-      trailing_atr es un snapshot al configurar la posición; no se recalcula por tick.
+      Modo estático (default): trailing_atr fija la distancia al configurar la posición.
+      Modo dinámico (trailing_atr_dynamic=True): el ATR se actualiza en cada tick desde
+      el parámetro `atr` de tick(). trailing_atr es opcional como semilla inicial de la EMA.
+      trailing_atr_smoothing_alpha controla el suavizado EMA (0,1]; None = sin suavizado.
 
     be_trigger_delta: si se setea, mueve el SL efectivo a entry_price + be_sl_offset
     (LONG) o entry_price - be_sl_offset (SHORT) cuando el precio se aleja
@@ -97,6 +100,10 @@ class PositionConfig(BaseModel):
     trailing_percent: Decimal | None = Field(default=None, gt=Decimal("0"), lt=Decimal("1"))
     trailing_atr: Decimal | None = Field(default=None, gt=Decimal("0"))
     trailing_atr_multiplier: Decimal | None = Field(default=None, gt=Decimal("0"))
+    trailing_atr_dynamic: bool = False
+    trailing_atr_smoothing_alpha: Decimal | None = Field(
+        default=None, gt=Decimal("0"), le=Decimal("1")
+    )
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_sl_offset: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     invalidation_action: InvalidationAction | None = None
@@ -110,7 +117,7 @@ class PositionConfig(BaseModel):
             return TrailingMode.FIXED
         if self.trailing_percent is not None:
             return TrailingMode.PERCENT
-        if self.trailing_atr is not None:
+        if self.trailing_atr is not None or self.trailing_atr_dynamic:
             return TrailingMode.ATR
         return None
 
@@ -120,10 +127,16 @@ class PositionConfig(BaseModel):
         if self.take_profit is not None and self.take_profit_levels:
             raise ValueError("take_profit and take_profit_levels are mutually exclusive.")
 
+        # ATR mode activo con snapshot (trailing_atr) o modo dinámico (trailing_atr_dynamic)
+        has_atr_mode = self.trailing_atr is not None or self.trailing_atr_dynamic
+
         # Los tres modos de trailing son mutuamente excluyentes
         n_trailing = sum(
-            spec is not None
-            for spec in (self.trailing_delta, self.trailing_percent, self.trailing_atr)
+            [
+                self.trailing_delta is not None,
+                self.trailing_percent is not None,
+                has_atr_mode,
+            ]
         )
         if n_trailing > 1:
             raise ValueError(
@@ -131,8 +144,12 @@ class PositionConfig(BaseModel):
             )
 
         # atr_multiplier solo tiene sentido en modo ATR
-        if self.trailing_atr_multiplier is not None and self.trailing_atr is None:
+        if self.trailing_atr_multiplier is not None and not has_atr_mode:
             raise ValueError("trailing_atr_multiplier requires trailing_atr to be set.")
+
+        # trailing_atr_smoothing_alpha solo tiene sentido en modo ATR
+        if self.trailing_atr_smoothing_alpha is not None and not has_atr_mode:
+            raise ValueError("trailing_atr_smoothing_alpha requires ATR mode.")
 
         # Al menos un mecanismo de salida debe estar presente
         has_exit = (

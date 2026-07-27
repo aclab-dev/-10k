@@ -1384,3 +1384,214 @@ class TestSetupInvalidation:
         # Precio cae por debajo del nuevo SL → SL_HIT
         r = pm.tick("BTCUSDT", Decimal("49499"))
         assert r.trigger == PositionTriggerReason.SL_HIT
+
+
+# ---------------------------------------------------------------------------
+# F14 — Trailing ATR dinámico (feed en vivo por tick)
+# ---------------------------------------------------------------------------
+
+
+class TestTrailingAtrDynamic:
+    def test_long_atr_widens_stop_as_volatility_grows(self) -> None:
+        """Serie sintética LONG: ATR creciente ensancha la distancia del trailing stop."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr_dynamic=True,
+                trailing_atr_multiplier=Decimal("2"),
+            )
+        )
+
+        # tick 1: price=53000, atr=500 → delta=1000 → stop=52000
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+        # tick 2: price=55000, atr=800 → delta=1600 → stop=53400
+        pm.tick("BTCUSDT", Decimal("55000"), atr=Decimal("800"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53400")
+
+        # tick 3: price cae al stop → TRAILING_SL_HIT
+        r = pm.tick("BTCUSDT", Decimal("53400"), atr=Decimal("800"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_long_atr_narrows_stop_as_volatility_decreases(self) -> None:
+        """Serie sintética LONG: ATR decreciente estrecha la distancia del stop."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        # ATR grande: stop lejos (53000 - 2000 = 51000)
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("2000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("51000")
+
+        # ATR más chico: stop más cerca (54000 - 500 = 53500)
+        pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
+
+    def test_short_atr_dynamic(self) -> None:
+        """Serie sintética SHORT: ATR dinámico ajusta el stop en la dirección correcta."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_short(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr_dynamic=True,
+                trailing_atr_multiplier=Decimal("2"),
+            )
+        )
+
+        # tick 1: price=47000, atr=500 → delta=1000 → stop=48000
+        pm.tick("BTCUSDT", Decimal("47000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("48000")
+
+        # tick 2: price=45000, atr=800 → delta=1600 → stop=46600
+        pm.tick("BTCUSDT", Decimal("45000"), atr=Decimal("800"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("46600")
+
+        # tick 3: price sube al stop → cierre
+        r = pm.tick("BTCUSDT", Decimal("46600"), atr=Decimal("800"))
+        assert r.trigger == PositionTriggerReason.TRAILING_SL_HIT
+        assert adapter.get_position("BTCUSDT") is None
+
+    def test_smoothing_dampens_atr_spike(self) -> None:
+        """EMA smoothing: un pico puntual de ATR no desplaza el stop de forma abrupta.
+
+        Sin suavizado (alpha=1): spike de 500→5000 mueve el stop 4500 puntos extra.
+        Con alpha=0.1: ATR suavizado ≈ 950 → impacto reducido ~10x.
+        """
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr_dynamic=True,
+                trailing_atr_smoothing_alpha=Decimal("0.1"),
+            )
+        )
+
+        # ATR estable en 500 durante 3 ticks → stop = high_water - 500
+        pm.tick("BTCUSDT", Decimal("51000"), atr=Decimal("500"))
+        pm.tick("BTCUSDT", Decimal("52000"), atr=Decimal("500"))
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
+        stop_before_spike = pm.get_trailing_stop("BTCUSDT")  # 53000 - 500 = 52500
+
+        # Spike: ATR salta a 5000 (10x). EMA suavizado: 0.1*5000 + 0.9*500 = 950.
+        pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("5000"))
+        stop_after_spike = pm.get_trailing_stop("BTCUSDT")  # 54000 - 950 = 53050
+
+        # Sin smoothing sería 54000 - 5000 = 49000; con smoothing queda por encima de 52000.
+        assert stop_after_spike > Decimal("52000")
+        assert stop_after_spike is not None
+        assert stop_before_spike is not None
+
+    def test_fallback_to_seed_when_no_atr_provided(self) -> None:
+        """Cuando tick() no recibe atr=, usa el último valor suavizado (o la semilla config)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr=Decimal("1000"),  # semilla
+                trailing_atr_dynamic=True,
+            )
+        )
+
+        # Sin ATR en tick: usa semilla = 1000 → stop = 53000 - 1000 = 52000
+        pm.tick("BTCUSDT", Decimal("53000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+        # Con ATR=500: actualiza estado suavizado → stop = 54000 - 500 = 53500
+        pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
+
+        # Sin ATR en tick: mantiene último suavizado = 500 → stop = 55000 - 500 = 54500
+        pm.tick("BTCUSDT", Decimal("55000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("54500")
+
+    def test_snapshot_atr_backward_compat(self) -> None:
+        """trailing_atr sin trailing_atr_dynamic usa snapshot: ignora atr= en tick()."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr=Decimal("1000")))
+
+        # atr=9999 en tick se ignora → stop = 53000 - 1000 = 52000 (snapshot)
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("9999"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52000")
+
+    def test_dynamic_atr_only_no_snapshot_required(self) -> None:
+        """trailing_atr_dynamic=True activa modo ATR sin necesitar trailing_atr snapshot."""
+        cfg = PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True)
+        assert cfg.resolved_trailing_mode == TrailingMode.ATR
+
+    def test_smoothing_alpha_requires_atr_mode(self) -> None:
+        """trailing_atr_smoothing_alpha fuera de modo ATR lanza ValueError."""
+        with pytest.raises(ValueError, match="trailing_atr_smoothing_alpha requires ATR mode"):
+            PositionConfig(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("48000"),
+                trailing_atr_smoothing_alpha=Decimal("0.5"),
+            )
+
+    def test_no_seed_no_atr_skips_trailing_gracefully(self) -> None:
+        """Sin seed ni atr= en tick, el trailing se omite ese tick (sin crash)."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        # Sin seed (trailing_atr=None) y sin atr= en tick → degradación graceful
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        r = pm.tick("BTCUSDT", Decimal("53000"))  # sin atr=
+        assert r.trigger == PositionTriggerReason.NONE
+        assert pm.get_trailing_stop("BTCUSDT") is None  # sin protección ese tick
+
+        # Cuando llega el ATR, el trailing se inicializa
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
+    def test_dynamic_atr_resets_smoothed_state_on_reconfigure(self) -> None:
+        """Al reconfigurar con set_config, el estado suavizado del ATR se resetea."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("2000"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("51000")
+
+        # Reconfigurar: resetea high-water, trailing-stop y smoothed ATR
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+        assert pm.get_trailing_stop("BTCUSDT") is None
+
+        # Primer tick post-reconfigure: usa el nuevo ATR desde cero
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("500"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
+    def test_dynamic_atr_zero_or_negative_treated_as_none(self) -> None:
+        """atr=0 o negativo en tick() se rechaza en el boundary y se trata como None."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(
+            PositionConfig(
+                symbol="BTCUSDT",
+                trailing_atr=Decimal("500"),
+                trailing_atr_dynamic=True,
+            )
+        )
+
+        # atr=0 no debe actualizar el estado: trailing usa la semilla (500)
+        pm.tick("BTCUSDT", Decimal("53000"), atr=Decimal("0"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("52500")
+
+        # atr negativo tampoco actualiza: trailing sigue con seed 500 sobre nuevo hw
+        pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("-100"))
+        assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
