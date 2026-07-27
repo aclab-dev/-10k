@@ -2,6 +2,7 @@ from backend.position_manager.config_mapper import build_position_config
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.schemas import (
     InvalidationAction,
+    InvalidationEvent,
     PositionConfig,
     PositionTriggerReason,
     TakeProfitLevel,
@@ -16,6 +17,7 @@ __all__ = [
     "PositionTriggerReason",
     "TakeProfitLevel",
     "InvalidationAction",
+    "InvalidationEvent",
     "TickResult",
     "TrailingMode",
     "PositionTickService",
