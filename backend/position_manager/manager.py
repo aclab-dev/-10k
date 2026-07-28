@@ -5,13 +5,18 @@ Responsabilidades:
 - En cada tick(symbol, mark_price):
     1. Actualiza el high-water del trailing stop.
     2. Evalúa break-even y mueve el SL efectivo si corresponde.
-    3. Evalúa (por prioridad): SL efectivo → TP (single o multi) → trailing stop.
+    3. Evalúa (por prioridad): SL efectivo → invalidación de setup → TP (single o
+       multi) → trailing stop.
     4. Si hay trigger → coloca MARKET reduce-only y limpia la config.
 
 Gestión SL/TP avanzada (F14):
 - update_sl / update_tp: actualización dinámica sin resetear trailing ni BE.
 - take_profit_levels: multi-TP con cierre parcial en cada nivel.
-- trigger_setup_invalidation: aplica la InvalidationAction configurada.
+- trigger_setup_invalidation: aplica la InvalidationAction configurada manualmente.
+- invalidation_price: detección automática en tick() (aplica la misma InvalidationAction
+  al cruzarse el precio, sin esperar un disparo manual externo).
+- on_invalidation_event: callback opcional para persistir la invalidación (manual o
+  automática) en position_events sin acoplar este módulo a storage/SQLAlchemy.
 
 Estado en memoria (sin persistencia). El caller es responsable de los ticks periódicos.
 """
@@ -19,14 +24,17 @@ Estado en memoria (sin persistencia). El caller es responsable de los ticks peri
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
 
 import structlog
 
 from backend.exchange_adapters.base import ExchangeAdapter
-from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
+from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType, PositionState
 from backend.position_manager.break_even import maybe_move_to_break_even
 from backend.position_manager.schemas import (
+    InvalidationAction,
+    InvalidationEvent,
     PositionConfig,
     PositionTriggerReason,
     TakeProfitLevel,
@@ -50,8 +58,17 @@ class PositionManager:
     tick() concurrentemente para el mismo símbolo sin sincronización externa.
     """
 
-    def __init__(self, adapter: ExchangeAdapter) -> None:
+    def __init__(
+        self,
+        adapter: ExchangeAdapter,
+        on_invalidation_event: Callable[[InvalidationEvent], None] | None = None,
+    ) -> None:
         self._adapter = adapter
+        # Callback opcional invocado tras aplicar una InvalidationAction (manual o
+        # automática). Desacopla PositionManager de storage: el caller resuelve
+        # symbol -> position_id y persiste en position_events. Falla aislada: una
+        # excepción del callback se loguea pero no revierte la orden ya colocada.
+        self._on_invalidation_event = on_invalidation_event
         self._configs: dict[str, PositionConfig] = {}
         # High-water mark para el trailing stop
         self._high_water: dict[str, Decimal] = {}
@@ -65,6 +82,14 @@ class PositionManager:
         self._remaining_tp_levels: dict[str, list[TakeProfitLevel]] = {}
         # ATR suavizado (EMA) para trailing_atr_dynamic
         self._smoothed_atr: dict[str, Decimal] = {}
+        # Símbolos donde la detección automática de invalidation_price ya disparó.
+        # A diferencia de las TP levels (que se consumen de a una), invalidation_action
+        # es una única acción estática: sin este guard, mientras mark_price siga más
+        # allá de invalidation_price, tick() la reaplicaría en cada tick (cierres
+        # parciales repetidos o el mismo new_sl reescrito sin fin). No afecta al
+        # disparo manual (trigger_setup_invalidation): ese sigue siendo re-invocable
+        # a criterio del caller, como antes de este cambio.
+        self._auto_invalidation_fired: set[str] = set()
 
     # ------------------------------------------------------------------
     # Configuración
@@ -79,6 +104,7 @@ class PositionManager:
         self._high_water.pop(config.symbol, None)
         self._trailing_stop.pop(config.symbol, None)
         self._smoothed_atr.pop(config.symbol, None)
+        self._auto_invalidation_fired.discard(config.symbol)
         _log.info(
             "position_manager.config_set",
             symbol=config.symbol,
@@ -123,6 +149,7 @@ class PositionManager:
         self._effective_sl.pop(symbol, None)
         self._effective_tp.pop(symbol, None)
         self._remaining_tp_levels.pop(symbol, None)
+        self._auto_invalidation_fired.discard(symbol)
 
     # ------------------------------------------------------------------
     # Actualización dinámica de SL/TP (F14)
@@ -157,7 +184,7 @@ class PositionManager:
     # ------------------------------------------------------------------
 
     def trigger_setup_invalidation(self, symbol: str, mark_price: Decimal) -> TickResult | None:
-        """Aplica la InvalidationAction configurada para el símbolo.
+        """Aplica la InvalidationAction configurada para el símbolo (disparo manual).
 
         Retorna TickResult con trigger=SETUP_INVALIDATED si se tomó alguna acción,
         o None si no hay config, no hay action, o no hay posición abierta.
@@ -170,7 +197,24 @@ class PositionManager:
         if position is None:
             return None
 
-        action = config.invalidation_action
+        return self._apply_invalidation_action(
+            symbol, mark_price, config.invalidation_action, position
+        )
+
+    def _apply_invalidation_action(
+        self,
+        symbol: str,
+        mark_price: Decimal,
+        action: InvalidationAction,
+        position: PositionState,
+    ) -> TickResult:
+        """Aplica una InvalidationAction (mover SL y/o cerrar parcial/total) y notifica
+        on_invalidation_event. Usado tanto por trigger_setup_invalidation (manual) como
+        por la detección automática de invalidation_price en tick().
+
+        El caller es responsable de confirmar que hay una posición abierta.
+        """
+        old_sl = self._effective_sl.get(symbol)
         close_order_id: str | None = None
         closed_fraction: Decimal | None = None
 
@@ -188,12 +232,14 @@ class PositionManager:
 
         # Aplicar nuevo SL después de confirmar la orden (o si no hay orden).
         # Si el config fue eliminado por full-close, la actualización de SL es innecesaria.
+        new_sl: Decimal | None = None
         if action.new_sl is not None and symbol in self._configs:
-            self._effective_sl[symbol] = action.new_sl
+            new_sl = action.new_sl
+            self._effective_sl[symbol] = new_sl
             _log.info(
                 "position_manager.invalidation_sl_moved",
                 symbol=symbol,
-                new_sl=str(action.new_sl),
+                new_sl=str(new_sl),
             )
 
         _log.info(
@@ -201,8 +247,26 @@ class PositionManager:
             symbol=symbol,
             close_order_id=close_order_id,
             closed_fraction=str(closed_fraction) if closed_fraction is not None else None,
-            new_sl=str(action.new_sl) if action.new_sl is not None else None,
+            new_sl=str(new_sl) if new_sl is not None else None,
         )
+
+        if self._on_invalidation_event is not None:
+            event = InvalidationEvent(
+                symbol=symbol,
+                mark_price=mark_price,
+                old_sl=old_sl,
+                new_sl=new_sl,
+                closed_fraction=closed_fraction,
+                close_order_id=close_order_id,
+            )
+            try:
+                self._on_invalidation_event(event)
+            except Exception:
+                _log.error(
+                    "position_manager.invalidation_event_callback_failed",
+                    symbol=symbol,
+                    exc_info=True,
+                )
 
         return TickResult(
             symbol=symbol,
@@ -219,8 +283,8 @@ class PositionManager:
     def tick(self, symbol: str, mark_price: Decimal, *, atr: Decimal | None = None) -> TickResult:
         """Evalúa triggers para `symbol` al precio `mark_price`.
 
-        Orden de evaluación: SL efectivo → TP (single o multi) → trailing stop.
-        El primero que se activa gana.
+        Orden de evaluación: SL efectivo → invalidación de setup → TP (single o
+        multi) → trailing stop. El primero que se activa gana.
 
         Para multi-TP: en cada nivel disparado se hace un cierre parcial y se
         continúa el monitoreo (config no se elimina hasta que no queden niveles o
@@ -326,7 +390,37 @@ class PositionManager:
                     close_order_id=order_id,
                 )
 
-        # --- 2. TP: multi-TP o single TP ---
+        # --- 2. Invalidación de setup por precio (F14) ---
+        # Prioridad: después del SL efectivo (riesgo duro, nunca se subordina) y
+        # antes de TP/trailing (invalidar la tesis prima sobre tomar ganancias).
+        # Guard _auto_invalidation_fired: invalidation_action es una acción estática
+        # (no una lista de niveles como multi-TP); sin esta marca, mientras mark_price
+        # siga más allá de invalidation_price, cada tick la reaplicaría (cierres
+        # parciales repetidos o el mismo new_sl reescrito sin fin).
+        if (
+            config.invalidation_price is not None
+            and config.invalidation_action is not None
+            and symbol not in self._auto_invalidation_fired
+        ):
+            invalidated = (side == OrderSide.BUY and mark_price <= config.invalidation_price) or (
+                side == OrderSide.SELL and mark_price >= config.invalidation_price
+            )
+            if invalidated:
+                # Marcar como disparado recién después de que la acción se aplique sin
+                # excepción: si _place_close_order falla (cierre parcial, config no se
+                # elimina), la invalidación NO se consume y el próximo tick reintenta,
+                # igual que con los niveles de multi-TP.
+                result = self._apply_invalidation_action(
+                    symbol, mark_price, config.invalidation_action, position
+                )
+                # Solo marcar si la config sigue viva: en un cierre total,
+                # _apply_invalidation_action ya hizo remove_config() (que descarta esta
+                # marca); agregarla igual dejaría una entrada huérfana sin config asociada.
+                if symbol in self._configs:
+                    self._auto_invalidation_fired.add(symbol)
+                return result
+
+        # --- 3. TP: multi-TP o single TP ---
         remaining_levels = self._remaining_tp_levels.get(symbol, [])
         if remaining_levels:
             next_level = remaining_levels[0]
@@ -402,7 +496,7 @@ class PositionManager:
                         close_order_id=order_id,
                     )
 
-        # --- 3. Trailing stop ---
+        # --- 4. Trailing stop ---
         if trailing_stop_price is not None and is_trailing_stop_hit(
             side, mark_price, trailing_stop_price
         ):

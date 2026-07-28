@@ -85,7 +85,8 @@ class PositionConfig(BaseModel):
     (LONG) o entry_price - be_sl_offset (SHORT) cuando el precio se aleja
     be_trigger_delta unidades a favor. be_sl_offset=0 (default) mueve exactamente a entry.
 
-    invalidation_action: acción a aplicar al llamar trigger_setup_invalidation().
+    invalidation_action: acción a aplicar al llamar trigger_setup_invalidation() o al
+    cruzarse invalidation_price automáticamente en tick().
 
     Nota de diseño: no se valida que stop_loss/take_profit sean coherentes con el lado
     de la posición porque entry_price no se conoce en el momento de construcción.
@@ -107,6 +108,15 @@ class PositionConfig(BaseModel):
     be_trigger_delta: Decimal | None = Field(default=None, gt=Decimal("0"))
     be_sl_offset: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     invalidation_action: InvalidationAction | None = None
+    # Precio de invalidación de setup (F14): si se cruza en tick(), dispara
+    # invalidation_action automáticamente. BUY: invalidado si mark_price <= este valor.
+    # SELL: invalidado si mark_price >= este valor. Requiere invalidation_action.
+    # Nota: si invalidation_action solo mueve new_sl (sin close_fraction) y ese new_sl
+    # ya quedó cruzado por el mark_price del mismo tick, la posición NO cierra en ese
+    # tick — el SL_HIT recién se evalúa en el tick siguiente sobre el SL actualizado.
+    # Mismo comportamiento que el disparo manual (trigger_setup_invalidation); no
+    # garantiza cierre inmediato cuando la acción es solo un ajuste de SL.
+    invalidation_price: Decimal | None = Field(default=None, gt=Decimal("0"))
 
     model_config = {"frozen": True}
 
@@ -177,7 +187,31 @@ class PositionConfig(BaseModel):
                 " immediately on activation."
             )
 
+        # invalidation_price sin invalidation_action no dispararía ninguna acción al
+        # cruzarse: no tiene efecto y probablemente sea un error del caller.
+        if self.invalidation_price is not None and self.invalidation_action is None:
+            raise ValueError("invalidation_price requires invalidation_action to be set.")
+
         return self
+
+
+class InvalidationEvent(BaseModel):
+    """Payload emitido a PositionManager.on_invalidation_event tras aplicar una
+    InvalidationAction (manual vía trigger_setup_invalidation() o automática por
+    cruce de invalidation_price en tick()).
+
+    Pensado para que el caller persista una fila en position_events
+    (event_type="INVALIDATION") sin acoplar PositionManager a storage/SQLAlchemy.
+    """
+
+    symbol: str
+    mark_price: Decimal
+    old_sl: Decimal | None
+    new_sl: Decimal | None
+    closed_fraction: Decimal | None
+    close_order_id: str | None
+
+    model_config = {"frozen": True}
 
 
 class TickResult(BaseModel):
