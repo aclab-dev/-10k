@@ -144,11 +144,12 @@ class TestEvaluateCoherenceGaps:
         assert status == CoherenceStatus.OK
         assert issues == []
 
-    def test_gap_in_5m_is_invalid(self) -> None:
+    def test_5m_native_granularity_never_flagged_as_gap(self) -> None:
+        """tf_5m siempre representa 1 vela nativa (real y mock) — no aplica chequeo de gap."""
         snap = _snapshot(candles=_candles(tf_5m=_candle(n_candles=1)))
         status, issues = evaluate_coherence(snap)
-        assert status == CoherenceStatus.INVALID
-        assert any("5m" in i for i in issues)
+        assert status == CoherenceStatus.OK
+        assert issues == []
 
     def test_gap_in_15m_is_invalid(self) -> None:
         snap = _snapshot(candles=_candles(tf_15m=_candle(n_candles=2)))
@@ -180,7 +181,7 @@ class TestEvaluateCoherenceGaps:
         assert len([i for i in issues if "gap" in i]) >= 2
 
     def test_exactly_min_candles_is_ok(self) -> None:
-        snap = _snapshot(candles=_candles(tf_5m=_candle(n_candles=3)))
+        snap = _snapshot(candles=_candles(tf_15m=_candle(n_candles=3)))
         status, _ = evaluate_coherence(snap)
         assert status == CoherenceStatus.OK
 
@@ -209,7 +210,8 @@ class TestEvaluateCoherencePrices:
     def test_gap_takes_priority_over_price_warning(self) -> None:
         snap = _snapshot(
             candles=_candles(
-                tf_5m=_candle(open="48000", high="48500", low="47500", close="48000", n_candles=1)
+                tf_5m=_candle(open="48000", high="48500", low="47500", close="48000"),
+                tf_15m=_candle(n_candles=1),
             )
         )
         status, issues = evaluate_coherence(snap)
@@ -239,7 +241,7 @@ class TestValidateSnapshot:
             validate_snapshot(snap, now=_BASE_NOW)
 
     def test_raises_for_invalid_coherence(self) -> None:
-        snap = _snapshot(candles=_candles(tf_5m=_candle(n_candles=1)))
+        snap = _snapshot(candles=_candles(tf_15m=_candle(n_candles=1)))
         with pytest.raises(SnapshotRejectedError, match="incoherentes"):
             validate_snapshot(snap, now=_BASE_NOW)
 
@@ -262,7 +264,7 @@ class TestValidateSnapshot:
         assert exc_info.value.snapshot_id == snap.snapshot_id
 
     def test_error_carries_reason(self) -> None:
-        snap = _snapshot(candles=_candles(tf_5m=_candle(n_candles=1)))
+        snap = _snapshot(candles=_candles(tf_15m=_candle(n_candles=1)))
         with pytest.raises(SnapshotRejectedError) as exc_info:
             validate_snapshot(snap, now=_BASE_NOW)
         assert "incoherentes" in exc_info.value.reason
@@ -271,7 +273,7 @@ class TestValidateSnapshot:
     def test_expired_and_invalid_reports_both_reasons(self) -> None:
         snap = _snapshot(
             timestamp_utc=_BASE_NOW - timedelta(seconds=35),
-            candles=_candles(tf_5m=_candle(n_candles=1)),
+            candles=_candles(tf_15m=_candle(n_candles=1)),
         )
         with pytest.raises(SnapshotRejectedError) as exc_info:
             validate_snapshot(snap, now=_BASE_NOW)
