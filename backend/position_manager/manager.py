@@ -23,6 +23,7 @@ Estado en memoria (sin persistencia). El caller es responsable de los ticks peri
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
@@ -58,6 +59,8 @@ class PositionManager:
     tick() concurrentemente para el mismo símbolo sin sincronización externa.
     """
 
+    _ATR_WARN_THROTTLE_SECS: float = 60.0
+
     def __init__(
         self,
         adapter: ExchangeAdapter,
@@ -90,6 +93,9 @@ class PositionManager:
         # disparo manual (trigger_setup_invalidation): ese sigue siendo re-invocable
         # a criterio del caller, como antes de este cambio.
         self._auto_invalidation_fired: set[str] = set()
+        # Throttle: timestamp de la última vez que se logueó atr_feed_unavailable por símbolo.
+        # Evita spam en logs cuando el feed cae durante muchos ticks consecutivos.
+        self._atr_unavail_warned_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Configuración
@@ -105,6 +111,7 @@ class PositionManager:
         self._trailing_stop.pop(config.symbol, None)
         self._smoothed_atr.pop(config.symbol, None)
         self._auto_invalidation_fired.discard(config.symbol)
+        self._atr_unavail_warned_at.pop(config.symbol, None)
         _log.info(
             "position_manager.config_set",
             symbol=config.symbol,
@@ -150,6 +157,7 @@ class PositionManager:
         self._effective_tp.pop(symbol, None)
         self._remaining_tp_levels.pop(symbol, None)
         self._auto_invalidation_fired.discard(symbol)
+        self._atr_unavail_warned_at.pop(symbol, None)
 
     # ------------------------------------------------------------------
     # Actualización dinámica de SL/TP (F14)
@@ -331,7 +339,14 @@ class PositionManager:
             # ATR dynamic with no value yet (no seed, feed not yet available): skip
             # trailing computation this tick to avoid crashing resolve_trailing_delta.
             if atr_value is None and trailing_mode == TrailingMode.ATR:
-                _log.warning("position_manager.atr_feed_unavailable", symbol=symbol)
+                now = time.monotonic()
+                last = self._atr_unavail_warned_at.get(symbol, float("-inf"))
+                if now - last >= self._ATR_WARN_THROTTLE_SECS:
+                    _log.warning("position_manager.atr_feed_unavailable", symbol=symbol)
+                    self._atr_unavail_warned_at[symbol] = now
+                # El throttle no se resetea cuando el feed se recupera momentáneamente:
+                # si el feed oscila (disponible/no disponible) dentro de la ventana de 60s,
+                # el warning no se repite. Intencional para evitar spam en flapping.
             else:
                 delta = resolve_trailing_delta(
                     trailing_mode,
