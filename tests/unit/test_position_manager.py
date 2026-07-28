@@ -1614,6 +1614,50 @@ class TestTrailingAtrDynamic:
         pm.tick("BTCUSDT", Decimal("54000"), atr=Decimal("-100"))
         assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
 
+    def test_atr_feed_unavailable_warning_is_throttled(self) -> None:
+        """Ticks sin ATR dentro de la ventana de throttle solo actualizan el timestamp una vez."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        mono_times = iter([0.0, 1.0, 2.0, 61.0, 62.0])
+
+        with patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times):
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → primer warning, timestamp=0
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=1 → dentro de ventana, timestamp no cambia
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=2 → dentro de ventana, timestamp no cambia
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=61 → fuera de ventana → warning, timestamp=61
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(61.0)
+
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=62 → dentro de ventana, timestamp no cambia
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(61.0)
+
+    def test_atr_feed_unavailable_throttle_resets_on_reconfigure(self) -> None:
+        """Reconfigurar con set_config borra el throttle, permitiendo el siguiente warning."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        mono_times = iter([0.0, 5.0])
+
+        with patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times):
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → warning, timestamp=0
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+
+            pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+            assert "BTCUSDT" not in pm._atr_unavail_warned_at  # throttle reseteado
+
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=5 → throttle limpio → warning, timestamp=5
+            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(5.0)
+
 
 # ---------------------------------------------------------------------------
 # F14 — Detección automática de invalidación de setup por precio ([106])
