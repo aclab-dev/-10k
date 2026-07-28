@@ -1615,7 +1615,7 @@ class TestTrailingAtrDynamic:
         assert pm.get_trailing_stop("BTCUSDT") == Decimal("53500")
 
     def test_atr_feed_unavailable_warning_is_throttled(self) -> None:
-        """Ticks sin ATR dentro de la ventana de throttle solo actualizan el timestamp una vez."""
+        """El warning se emite una vez por ventana de 60s, no en cada tick sin ATR."""
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
         _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
         pm = PositionManager(adapter)
@@ -1623,24 +1623,25 @@ class TestTrailingAtrDynamic:
 
         mono_times = iter([0.0, 1.0, 2.0, 61.0, 62.0])
 
-        with patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times):
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → primer warning, timestamp=0
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+        with (
+            patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times),
+            patch("backend.position_manager.manager._log") as mock_log,
+        ):
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=0  → primer warning
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=1  → throttled
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=2  → throttled
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=61 → fuera de ventana → warning
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=62 → throttled
 
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=1 → dentro de ventana, timestamp no cambia
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
-
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=2 → dentro de ventana, timestamp no cambia
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
-
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=61 → fuera de ventana → warning, timestamp=61
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(61.0)
-
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=62 → dentro de ventana, timestamp no cambia
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(61.0)
+        warning_calls = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "position_manager.atr_feed_unavailable"
+        ]
+        assert len(warning_calls) == 2
 
     def test_atr_feed_unavailable_throttle_resets_on_reconfigure(self) -> None:
-        """Reconfigurar con set_config borra el throttle, permitiendo el siguiente warning."""
+        """set_config borra el throttle: el siguiente tick sin ATR vuelve a logear."""
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
         _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
         pm = PositionManager(adapter)
@@ -1648,15 +1649,51 @@ class TestTrailingAtrDynamic:
 
         mono_times = iter([0.0, 5.0])
 
-        with patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times):
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → warning, timestamp=0
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(0.0)
+        with (
+            patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times),
+            patch("backend.position_manager.manager._log") as mock_log,
+        ):
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → warning
 
             pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
-            assert "BTCUSDT" not in pm._atr_unavail_warned_at  # throttle reseteado
+            assert "BTCUSDT" not in pm._atr_unavail_warned_at
 
-            pm.tick("BTCUSDT", Decimal("51000"))  # t=5 → throttle limpio → warning, timestamp=5
-            assert pm._atr_unavail_warned_at.get("BTCUSDT") == pytest.approx(5.0)
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=5 → throttle limpio → warning
+
+        warning_calls = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "position_manager.atr_feed_unavailable"
+        ]
+        assert len(warning_calls) == 2
+
+    def test_atr_feed_unavailable_throttle_resets_on_remove_config(self) -> None:
+        """remove_config borra el throttle: re-agregar el símbolo vuelve a logear."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+
+        mono_times = iter([0.0, 5.0])
+
+        with (
+            patch("backend.position_manager.manager.time.monotonic", side_effect=mono_times),
+            patch("backend.position_manager.manager._log") as mock_log,
+        ):
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=0 → warning
+
+            pm.remove_config("BTCUSDT")
+            assert "BTCUSDT" not in pm._atr_unavail_warned_at
+
+            pm.set_config(PositionConfig(symbol="BTCUSDT", trailing_atr_dynamic=True))
+            pm.tick("BTCUSDT", Decimal("51000"))  # t=5 → throttle limpio → warning
+
+        warning_calls = [
+            c
+            for c in mock_log.warning.call_args_list
+            if c.args[0] == "position_manager.atr_feed_unavailable"
+        ]
+        assert len(warning_calls) == 2
 
 
 # ---------------------------------------------------------------------------

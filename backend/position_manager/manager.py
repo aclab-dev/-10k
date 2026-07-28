@@ -344,6 +344,9 @@ class PositionManager:
                 if now - last >= self._ATR_WARN_THROTTLE_SECS:
                     _log.warning("position_manager.atr_feed_unavailable", symbol=symbol)
                     self._atr_unavail_warned_at[symbol] = now
+                # El throttle no se resetea cuando el feed se recupera momentáneamente:
+                # si el feed oscila (disponible/no disponible) dentro de la ventana de 60s,
+                # el warning no se repite. Intencional para evitar spam en flapping.
             else:
                 delta = resolve_trailing_delta(
                     trailing_mode,
