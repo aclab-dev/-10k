@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import signal
+from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from backend.core.config import Environment
+from backend.exchange_adapters.paper_adapter import PaperAdapter
+from backend.market_data.cycle_service import MarketDataCycleService
+from backend.market_data.fetcher import MockDataFetcher
+from backend.storage.database import Base
+from backend.storage.models import BotRun
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
 from backend.trading_core.orchestrator import Orchestrator
@@ -17,10 +27,20 @@ def heartbeat_file(tmp_path: Path) -> Path:
     return tmp_path / "worker_alive"
 
 
+@pytest.fixture
+def sqlite_session() -> Generator[Session, None, None]:
+    """Sesion in-memory (SQLite) como test double liviano — ver PgJSON en database.py."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(engine)()
+    yield session
+    session.close()
+
+
 def test_default_construction_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Orchestrator() sin args debe leer la env var y armar la CycleRunner."""
     monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "25")
-    orch = Orchestrator()
+    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
     assert orch.state_machine.state == BotState.ACTIVE
     # Lo que verdaderamente queremos verificar: que el env se haya parseado.
     assert orch.cycle_runner.interval_seconds == 25
@@ -33,8 +53,38 @@ def test_default_construction_uses_default_interval_without_env(
     from backend.trading_core.cycle_runner import DEFAULT_INTERVAL_SECONDS
 
     monkeypatch.delenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", raising=False)
-    orch = Orchestrator()
+    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
     assert orch.cycle_runner.interval_seconds == DEFAULT_INTERVAL_SECONDS
+
+
+def test_default_construction_wires_paper_market_data_pipeline(sqlite_session: Session) -> None:
+    """Sin market_data_service inyectado, arma el pipeline real PAPER (CR)."""
+    orch = Orchestrator(session=sqlite_session)
+
+    mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
+    assert isinstance(mds, MarketDataCycleService)
+    assert isinstance(mds._adapter, PaperAdapter)  # type: ignore[attr-defined]
+    assert isinstance(mds._fetcher, MockDataFetcher)  # type: ignore[attr-defined]
+    assert mds._symbols == ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]  # type: ignore[attr-defined]
+
+    bot_runs = sqlite_session.query(BotRun).all()
+    assert len(bot_runs) == 1
+    assert bot_runs[0].environment == "PAPER"
+    assert bot_runs[0].status == "RUNNING"
+
+
+def test_default_construction_raises_for_non_paper_environment(
+    monkeypatch: pytest.MonkeyPatch, sqlite_session: Session
+) -> None:
+    """TESTNET/LIVE no estan wireados aun (F16/F17) — debe fallar rapido, no silencioso."""
+    from backend.trading_core import orchestrator as orchestrator_module
+
+    fake_cfg = Mock()
+    fake_cfg.execution.environment = Environment.TESTNET
+    monkeypatch.setattr(orchestrator_module, "get_config", lambda: fake_cfg)
+
+    with pytest.raises(NotImplementedError, match="TESTNET"):
+        Orchestrator(session=sqlite_session)
 
 
 def test_construction_with_injected_deps(heartbeat_file: Path) -> None:

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from backend.market_data.cycle_service import MarketDataCycleService
 from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import (
@@ -104,6 +105,52 @@ def test_tick_without_position_tick_service_still_heartbeats(heartbeat_file: Pat
     runner._tick()  # type: ignore[attr-defined]
 
     assert heartbeat_file.exists()
+
+
+def test_tick_calls_market_data_service_when_provided(heartbeat_file: Path) -> None:
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    market_data_service = Mock(spec=MarketDataCycleService)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        market_data_service=market_data_service,
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    market_data_service.tick_all.assert_called_once()
+
+
+def test_tick_without_market_data_service_still_heartbeats(heartbeat_file: Path) -> None:
+    """Compat: market_data_service es opcional y default None."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert heartbeat_file.exists()
+
+
+def test_tick_calls_market_data_before_position_tick_service(heartbeat_file: Path) -> None:
+    """Market data debe tickear antes que posiciones (datos frescos para el resto del ciclo)."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    call_order: list[str] = []
+    market_data_service = Mock(spec=MarketDataCycleService)
+    market_data_service.tick_all.side_effect = lambda: call_order.append("market_data")
+    tick_service = Mock(spec=PositionTickService)
+    tick_service.tick_all.side_effect = lambda: call_order.append("position")
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        market_data_service=market_data_service,
+        position_tick_service=tick_service,
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert call_order == ["market_data", "position"]
 
 
 def test_request_shutdown_is_idempotent(heartbeat_file: Path) -> None:
