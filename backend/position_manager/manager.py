@@ -59,6 +59,8 @@ class PositionManager:
     tick() concurrentemente para el mismo símbolo sin sincronización externa.
     """
 
+    _ATR_WARN_THROTTLE_SECS: float = 60.0
+
     def __init__(
         self,
         adapter: ExchangeAdapter,
@@ -94,8 +96,6 @@ class PositionManager:
         # Throttle: timestamp de la última vez que se logueó atr_feed_unavailable por símbolo.
         # Evita spam en logs cuando el feed cae durante muchos ticks consecutivos.
         self._atr_unavail_warned_at: dict[str, float] = {}
-
-    _ATR_WARN_THROTTLE_SECS: float = 60.0
 
     # ------------------------------------------------------------------
     # Configuración
