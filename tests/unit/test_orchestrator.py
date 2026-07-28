@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import signal
 from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -66,11 +67,36 @@ def test_default_construction_wires_paper_market_data_pipeline(sqlite_session: S
     assert isinstance(mds._adapter, PaperAdapter)  # type: ignore[attr-defined]
     assert isinstance(mds._fetcher, MockDataFetcher)  # type: ignore[attr-defined]
     assert mds._symbols == ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]  # type: ignore[attr-defined]
+    # El balance inicial del PaperAdapter viene de config.yaml (challenge.initial_balance_usdt),
+    # no de un default hardcodeado.
+    assert mds._adapter.get_account_state().balance_usdt == Decimal("100")  # type: ignore[attr-defined]
 
     bot_runs = sqlite_session.query(BotRun).all()
     assert len(bot_runs) == 1
     assert bot_runs[0].environment == "PAPER"
     assert bot_runs[0].status == "RUNNING"
+
+
+def test_run_closes_bot_run_on_graceful_shutdown(sqlite_session: Session) -> None:
+    """run() debe cerrar (STOPPED) el BotRun propio al terminar, no dejarlo RUNNING colgado."""
+    orch = Orchestrator(session=sqlite_session)
+    orch.cycle_runner.request_shutdown()  # el loop no debe ejecutar ningun tick
+
+    orch.run()
+
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+    assert bot_run.ended_at is not None
+
+
+def test_run_does_not_touch_bot_run_when_cycle_runner_injected(heartbeat_file: Path) -> None:
+    """Si cycle_runner viene inyectado, este Orchestrator no creo ningun BotRun propio."""
+    sm = BotStateMachine()
+    runner = CycleRunner(sm, interval_seconds=60, heartbeat_file=heartbeat_file)
+    runner.request_shutdown()
+    orch = Orchestrator(state_machine=sm, cycle_runner=runner)
+
+    orch.run()  # no debe lanzar ni intentar cerrar un BotRun inexistente
 
 
 def test_default_construction_raises_for_non_paper_environment(

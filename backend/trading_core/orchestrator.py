@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import signal
+from decimal import Decimal
 from types import FrameType
 
 import structlog
@@ -22,6 +23,7 @@ from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
 from backend.storage.database import get_session_factory
 from backend.storage.models import BotRun
+from backend.storage.repositories.bot import BotRunRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner, parse_interval_from_env
 
@@ -44,6 +46,11 @@ class Orchestrator:
         session: Session | None = None,
     ) -> None:
         self._state_machine = state_machine or BotStateMachine(initial=BotState.ACTIVE)
+        # Solo se pueblan si este Orchestrator arma su propio BotRun (ver
+        # _build_market_data_service). Si cycle_runner/market_data_service vienen
+        # inyectados, el caller es dueño de ese ciclo de vida, no nosotros.
+        self._bot_run: BotRun | None = None
+        self._db_session: Session | None = None
         if cycle_runner is None:
             interval = parse_interval_from_env(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS"))
             mds = market_data_service or self._build_market_data_service(session)
@@ -54,13 +61,16 @@ class Orchestrator:
             self._cycle_runner = cycle_runner
         self._signals_installed = False
 
-    @staticmethod
-    def _build_market_data_service(session: Session | None) -> MarketDataCycleService:
+    def _build_market_data_service(self, session: Session | None) -> MarketDataCycleService:
         """Arma el pipeline real de market data segun el environment configurado.
 
         Solo PAPER esta soportado: BingX real (TESTNET/LIVE) es F16/F17 y sigue
         bloqueado, asi que correr en otro environment falla rapido en vez de
         operar silenciosamente con PaperAdapter fuera de PAPER.
+
+        Guarda bot_run/session en self para que run() pueda cerrar el BotRun
+        (status STOPPED) al hacer shutdown graceful, evitando dejarlo colgado
+        en RUNNING y rompiendo la semantica de BotRunRepository.get_active().
         """
         cfg = get_config()
         environment = cfg.execution.environment
@@ -70,7 +80,8 @@ class Orchestrator:
                 "(BingX real es F16/F17, sigue bloqueado). Solo PAPER esta wireado."
             )
 
-        adapter = PaperAdapter()
+        initial_balance = Decimal(str(cfg.challenge.initial_balance_usdt))
+        adapter = PaperAdapter(initial_balance_usdt=initial_balance)
         fetcher = MockDataFetcher()
         db_session = session or get_session_factory()()
 
@@ -82,6 +93,8 @@ class Orchestrator:
         )
         db_session.add(bot_run)
         db_session.commit()
+        self._bot_run = bot_run
+        self._db_session = db_session
 
         engine = MarketDataEngine(db_session, bot_run.id)
         return MarketDataCycleService(
@@ -124,4 +137,18 @@ class Orchestrator:
             initial_state=self._state_machine.state.value,
         )
         self._cycle_runner.run()
+        self._close_bot_run()
         log.info("orchestrator.stopped", final_state=self._state_machine.state.value)
+
+    def _close_bot_run(self) -> None:
+        """Cierra (status STOPPED) el BotRun armado por este Orchestrator, si lo creo el mismo.
+
+        No hace nada si bot_run/session fueron inyectados externamente (el
+        caller es dueño de ese ciclo de vida) o si nunca se armo el pipeline
+        real de market data.
+        """
+        if self._bot_run is None or self._db_session is None:
+            return
+        BotRunRepository(self._db_session).close(self._bot_run)
+        self._db_session.commit()
+        self._db_session.close()
