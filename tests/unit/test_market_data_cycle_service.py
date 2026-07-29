@@ -124,6 +124,40 @@ def test_tick_all_fetches_and_persists_every_symbol() -> None:
     session.commit.assert_called_once()
 
 
+def test_tick_all_calls_on_snapshot_hook_for_each_successfully_processed_symbol() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher(failing={"ETHUSDT"})
+    engine = Mock(spec=MarketDataEngine)
+    engine.process_snapshot.side_effect = [
+        SnapshotRejectedError(snapshot_id="s1", reason="stale"),
+        Mock(),
+    ]
+    session = Mock()
+    on_snapshot = Mock()
+    service = MarketDataCycleService(
+        adapter, fetcher, engine, session, SYMBOLS, on_snapshot=on_snapshot
+    )
+
+    service.tick_all()
+
+    # ETHUSDT: fetch falla, nunca llega a process_snapshot. BTCUSDT: rejected por
+    # el engine. BNBUSDT: unico que pasa fetch + process_snapshot exitosamente.
+    assert on_snapshot.call_count == 1
+
+
+def test_tick_all_without_on_snapshot_hook_still_works() -> None:
+    """Compat: on_snapshot es opcional y default None."""
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, SYMBOLS)
+
+    service.tick_all()  # no debe lanzar
+
+    assert engine.process_snapshot.call_count == len(SYMBOLS)
+
+
 def test_tick_all_computes_account_state_across_symbols() -> None:
     adapter = _FakeAdapter(
         balance_usdt=Decimal("500"),

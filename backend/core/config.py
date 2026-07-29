@@ -217,6 +217,10 @@ class ExecutionConfig(BaseModel):
     live_requires_env_confirmation: bool
     live_confirmation_env_var: str
     live_confirmation_required_value: str
+    # Timeout obligatorio en llamadas bloqueantes de execution (adapter.place_order).
+    # PaperAdapter es in-memory y no puede colgarse hoy, pero el enforcement queda
+    # activo desde ya para cuando BingXAdapter (F16/F17) reutilice el mismo call site.
+    place_order_timeout_seconds: float = 5.0
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ coherencia y persiste). Pensado para ser inyectado en `CycleRunner`, igual que
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import structlog
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import DataFetcher
+from backend.market_data.schemas import MarketSnapshot
 
 log = structlog.get_logger(__name__)
 
@@ -29,6 +31,10 @@ class MarketDataCycleService:
     en ese ciclo. Mismo criterio que `PositionTickService.tick_all()` (F14):
     un solo símbolo con problemas no debe tumbar el heartbeat del loop
     operativo ni dejar sin datos frescos a los demás símbolos.
+
+    `on_snapshot`, si se inyecta, se invoca con cada MarketSnapshot ya validado
+    y persistido (p.ej. `MarketAnalysisService.on_snapshot`, F5/F6). Debe aislar
+    sus propias fallas — no se envuelve acá en try/except adicional.
     """
 
     def __init__(
@@ -38,12 +44,14 @@ class MarketDataCycleService:
         engine: MarketDataEngine,
         session: Session,
         symbols: list[str],
+        on_snapshot: Callable[[MarketSnapshot], None] | None = None,
     ) -> None:
         self._adapter = adapter
         self._fetcher = fetcher
         self._engine = engine
         self._session = session
         self._symbols = symbols
+        self._on_snapshot = on_snapshot
 
     def tick_all(self) -> None:
         """Obtiene, valida y persiste un MarketSnapshot por símbolo. Commitea al final."""
@@ -88,6 +96,8 @@ class MarketDataCycleService:
             except Exception:
                 log.error("market_data_cycle_service.process_failed", symbol=symbol, exc_info=True)
                 continue
+            if self._on_snapshot is not None:
+                self._on_snapshot(result)
 
 
 __all__ = ["MarketDataCycleService"]
