@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.core.config import Environment
 from backend.exchange_adapters.paper_adapter import PaperAdapter
+from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.fetcher import MockDataFetcher
+from backend.position_manager.manager import PositionManager
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
@@ -41,7 +43,10 @@ def sqlite_session() -> Generator[Session, None, None]:
 def test_default_construction_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Orchestrator() sin args debe leer la env var y armar la CycleRunner."""
     monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "25")
-    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
     assert orch.state_machine.state == BotState.ACTIVE
     # Lo que verdaderamente queremos verificar: que el env se haya parseado.
     assert orch.cycle_runner.interval_seconds == 25
@@ -54,7 +59,10 @@ def test_default_construction_uses_default_interval_without_env(
     from backend.trading_core.cycle_runner import DEFAULT_INTERVAL_SECONDS
 
     monkeypatch.delenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", raising=False)
-    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
     assert orch.cycle_runner.interval_seconds == DEFAULT_INTERVAL_SECONDS
 
 
@@ -75,6 +83,21 @@ def test_default_construction_wires_paper_market_data_pipeline(sqlite_session: S
     assert len(bot_runs) == 1
     assert bot_runs[0].environment == "PAPER"
     assert bot_runs[0].status == "RUNNING"
+
+
+def test_default_construction_wires_paper_execution_pipeline(sqlite_session: Session) -> None:
+    """Sin execution_engine inyectado, arma ExecutionEngine + PositionManager reales (CR)."""
+    orch = Orchestrator(session=sqlite_session)
+
+    exec_engine = orch.cycle_runner.execution_engine
+    assert isinstance(exec_engine, ExecutionEngine)
+    assert orch.execution_engine is exec_engine
+    assert isinstance(orch.position_manager, PositionManager)
+    assert exec_engine._position_manager is orch.position_manager  # type: ignore[attr-defined]
+
+    # Mismo PaperAdapter que market data — no dos instancias con estado divergente.
+    mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
+    assert exec_engine._adapter is mds._adapter  # type: ignore[attr-defined]
 
 
 def test_run_closes_bot_run_on_graceful_shutdown(sqlite_session: Session) -> None:

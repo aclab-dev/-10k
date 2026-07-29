@@ -4,13 +4,16 @@ Cada iteracion del ciclo:
   1) consulta el state machine para saber si debe seguir corriendo
   2) registra heartbeat (archivo + log estructurado)
   3) obtiene y persiste MarketSnapshots reales via market_data_service, si
-     esta inyectado (CR)
+     esta inyectado (CR) — incluye Quant Signals + Regime + Volatility (F5/F6)
   4) tickea el PositionManager via position_tick_service, si esta inyectado (F14)
   5) duerme el intervalo configurado, respondiendo rapido a shutdown
 
-El resto de la logica del ciclo (Quant -> Risk -> Execution) se agrega en
-fases posteriores; este skeleton solo asegura que el proceso este vivo y
-respete el state machine.
+`execution_engine`, si esta inyectado, queda disponible para ejecutar un
+ApprovedTradePlan (ModelDecision + RiskValidationResult) via
+`execute_approved_plan()` — pero _tick() todavia no lo dispara
+automaticamente: no existe (aun) una fuente de decisiones en vivo (Decision
+Aggregator/Risk Engine/GPT siguen sin wirear al ciclo real). Ese wireo
+automatico queda para una fase posterior.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from pathlib import Path
 
 import structlog
 
+from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotStateMachine
@@ -44,6 +48,7 @@ class CycleRunner:
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
         position_tick_service: PositionTickService | None = None,
         market_data_service: MarketDataCycleService | None = None,
+        execution_engine: ExecutionEngine | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(f"interval_seconds must be > 0, got {interval_seconds}")
@@ -52,6 +57,7 @@ class CycleRunner:
         self._heartbeat_file = heartbeat_file
         self._position_tick_service = position_tick_service
         self._market_data_service = market_data_service
+        self._execution_engine = execution_engine
         self._shutdown_event = threading.Event()
         log.info(
             "cycle_runner.init",
@@ -76,6 +82,10 @@ class CycleRunner:
     @property
     def heartbeat_file(self) -> Path:
         return self._heartbeat_file
+
+    @property
+    def execution_engine(self) -> ExecutionEngine | None:
+        return self._execution_engine
 
     def run(self) -> None:
         """Loop principal. Bloquea hasta que se pida shutdown."""

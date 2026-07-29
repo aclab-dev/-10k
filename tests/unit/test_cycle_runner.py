@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
@@ -151,6 +152,27 @@ def test_tick_calls_market_data_before_position_tick_service(heartbeat_file: Pat
     runner._tick()  # type: ignore[attr-defined]
 
     assert call_order == ["market_data", "position"]
+
+
+def test_execution_engine_is_stored_and_exposed_but_not_auto_invoked(
+    heartbeat_file: Path,
+) -> None:
+    """execution_engine queda disponible via property, pero _tick() no lo dispara aun (CR).
+
+    No hay (todavia) fuente de decisiones en vivo (Aggregator/Risk/GPT sin
+    wirear al ciclo real) — el wireo automatico queda para una fase posterior.
+    """
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    execution_engine = Mock(spec=ExecutionEngine)
+    runner = CycleRunner(
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, execution_engine=execution_engine
+    )
+
+    assert runner.execution_engine is execution_engine
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_not_called()
 
 
 def test_request_shutdown_is_idempotent(heartbeat_file: Path) -> None:
