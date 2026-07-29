@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import signal
+from collections.abc import Generator
+from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
+from backend.core.config import Environment
+from backend.exchange_adapters.paper_adapter import PaperAdapter
+from backend.market_data.cycle_service import MarketDataCycleService
+from backend.market_data.fetcher import MockDataFetcher
+from backend.storage.database import Base
+from backend.storage.models import BotRun
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
 from backend.trading_core.orchestrator import Orchestrator
@@ -17,10 +28,20 @@ def heartbeat_file(tmp_path: Path) -> Path:
     return tmp_path / "worker_alive"
 
 
+@pytest.fixture
+def sqlite_session() -> Generator[Session, None, None]:
+    """Sesion in-memory (SQLite) como test double liviano — ver PgJSON en database.py."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(engine)()
+    yield session
+    session.close()
+
+
 def test_default_construction_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Orchestrator() sin args debe leer la env var y armar la CycleRunner."""
     monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "25")
-    orch = Orchestrator()
+    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
     assert orch.state_machine.state == BotState.ACTIVE
     # Lo que verdaderamente queremos verificar: que el env se haya parseado.
     assert orch.cycle_runner.interval_seconds == 25
@@ -33,8 +54,86 @@ def test_default_construction_uses_default_interval_without_env(
     from backend.trading_core.cycle_runner import DEFAULT_INTERVAL_SECONDS
 
     monkeypatch.delenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", raising=False)
-    orch = Orchestrator()
+    orch = Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
     assert orch.cycle_runner.interval_seconds == DEFAULT_INTERVAL_SECONDS
+
+
+def test_default_construction_wires_paper_market_data_pipeline(sqlite_session: Session) -> None:
+    """Sin market_data_service inyectado, arma el pipeline real PAPER (CR)."""
+    orch = Orchestrator(session=sqlite_session)
+
+    mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
+    assert isinstance(mds, MarketDataCycleService)
+    assert isinstance(mds._adapter, PaperAdapter)  # type: ignore[attr-defined]
+    assert isinstance(mds._fetcher, MockDataFetcher)  # type: ignore[attr-defined]
+    assert mds._symbols == ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]  # type: ignore[attr-defined]
+    # El balance inicial del PaperAdapter viene de config.yaml (challenge.initial_balance_usdt),
+    # no de un default hardcodeado.
+    assert mds._adapter.get_account_state().balance_usdt == Decimal("100")  # type: ignore[attr-defined]
+
+    bot_runs = sqlite_session.query(BotRun).all()
+    assert len(bot_runs) == 1
+    assert bot_runs[0].environment == "PAPER"
+    assert bot_runs[0].status == "RUNNING"
+
+
+def test_run_closes_bot_run_on_graceful_shutdown(sqlite_session: Session) -> None:
+    """run() debe cerrar (STOPPED) el BotRun propio al terminar, no dejarlo RUNNING colgado."""
+    orch = Orchestrator(session=sqlite_session)
+    orch.cycle_runner.request_shutdown()  # el loop no debe ejecutar ningun tick
+
+    orch.run()
+
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+    assert bot_run.ended_at is not None
+
+
+def test_run_does_not_touch_bot_run_when_cycle_runner_injected(heartbeat_file: Path) -> None:
+    """Si cycle_runner viene inyectado, este Orchestrator no creo ningun BotRun propio."""
+    sm = BotStateMachine()
+    runner = CycleRunner(sm, interval_seconds=60, heartbeat_file=heartbeat_file)
+    runner.request_shutdown()
+    orch = Orchestrator(state_machine=sm, cycle_runner=runner)
+
+    orch.run()  # no debe lanzar ni intentar cerrar un BotRun inexistente
+
+
+def test_run_closes_bot_run_even_when_cycle_runner_raises(sqlite_session: Session) -> None:
+    """El cierre debe ocurrir aunque CycleRunner.run() levante (finally, no solo shutdown OK)."""
+    orch = Orchestrator(session=sqlite_session)
+    orch._cycle_runner = Mock(run=Mock(side_effect=RuntimeError("boom")))  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        orch.run()
+
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+
+
+def test_close_is_public_and_idempotent(sqlite_session: Session) -> None:
+    """close() es invocable sin pasar por run() (scripts/tooling), y no falla si se repite."""
+    orch = Orchestrator(session=sqlite_session)
+
+    orch.close()
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+
+    orch.close()  # no debe lanzar ni re-tocar un BotRun ya cerrado
+
+
+def test_default_construction_raises_for_non_paper_environment(
+    monkeypatch: pytest.MonkeyPatch, sqlite_session: Session
+) -> None:
+    """TESTNET/LIVE no estan wireados aun (F16/F17) — debe fallar rapido, no silencioso."""
+    from backend.trading_core import orchestrator as orchestrator_module
+
+    fake_cfg = Mock()
+    fake_cfg.execution.environment = Environment.TESTNET
+    monkeypatch.setattr(orchestrator_module, "get_config", lambda: fake_cfg)
+
+    with pytest.raises(NotImplementedError, match="TESTNET"):
+        Orchestrator(session=sqlite_session)
 
 
 def test_construction_with_injected_deps(heartbeat_file: Path) -> None:

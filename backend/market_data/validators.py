@@ -61,10 +61,15 @@ def evaluate_freshness(
 
 
 def _check_gaps(candles: Candles) -> list[str]:
-    """Detecta gaps por n_candles insuficiente en algún timeframe."""
+    """Detecta gaps por n_candles insuficiente en timeframes agregados (15m/1h/4h).
+
+    tf_5m queda fuera de este chequeo: es la granularidad nativa y siempre
+    representa exactamente 1 vela de 5m (ver `_TIMEFRAMES` en bingx_fetcher.py
+    y `_build_candles` en fetcher.py) tanto en el fetcher real como en el mock
+    — no existe un "gap" detectable ahi via n_candles.
+    """
     issues: list[str] = []
     for tf_name, candle in (
-        ("5m", candles.tf_5m),
         ("15m", candles.tf_15m),
         ("1h", candles.tf_1h),
         ("4h", candles.tf_4h),

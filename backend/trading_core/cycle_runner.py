@@ -3,12 +3,14 @@
 Cada iteracion del ciclo:
   1) consulta el state machine para saber si debe seguir corriendo
   2) registra heartbeat (archivo + log estructurado)
-  3) tickea el PositionManager via position_tick_service, si esta inyectado (F14)
-  4) duerme el intervalo configurado, respondiendo rapido a shutdown
+  3) obtiene y persiste MarketSnapshots reales via market_data_service, si
+     esta inyectado (CR)
+  4) tickea el PositionManager via position_tick_service, si esta inyectado (F14)
+  5) duerme el intervalo configurado, respondiendo rapido a shutdown
 
-El resto de la logica del ciclo (Market Data -> Quant -> Risk -> Execution)
-se agrega en fases posteriores; este skeleton solo asegura que el
-proceso este vivo y respete el state machine.
+El resto de la logica del ciclo (Quant -> Risk -> Execution) se agrega en
+fases posteriores; este skeleton solo asegura que el proceso este vivo y
+respete el state machine.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pathlib import Path
 
 import structlog
 
+from backend.market_data.cycle_service import MarketDataCycleService
 from backend.position_manager.tick_service import PositionTickService
 from backend.trading_core.bot_state_machine import BotStateMachine
 
@@ -40,6 +43,7 @@ class CycleRunner:
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
         position_tick_service: PositionTickService | None = None,
+        market_data_service: MarketDataCycleService | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(f"interval_seconds must be > 0, got {interval_seconds}")
@@ -47,6 +51,7 @@ class CycleRunner:
         self._interval_seconds = interval_seconds
         self._heartbeat_file = heartbeat_file
         self._position_tick_service = position_tick_service
+        self._market_data_service = market_data_service
         self._shutdown_event = threading.Event()
         log.info(
             "cycle_runner.init",
@@ -90,16 +95,20 @@ class CycleRunner:
         log.info("cycle_runner.stopped")
 
     def _tick(self) -> None:
-        """Una iteracion del ciclo: heartbeat + tick de posiciones (F14).
+        """Una iteracion del ciclo: heartbeat + market data (CR) + posiciones (F14).
 
-        PositionTickService aisla las fallas por símbolo internamente (loguea
-        ERROR y sigue con el resto) en vez de propagar: PositionManager vive
-        100% en memoria, así que un crash del ciclo por un solo símbolo con
-        problemas de red perdería el monitoreo de SL/TP de todas las demás
-        posiciones abiertas al reiniciar el proceso. Ver tick_service.py.
+        Market data se tickea antes que posiciones para que el resto del ciclo
+        (y fases futuras de Quant/Risk/Execution) trabaje con el snapshot más
+        reciente disponible. Tanto MarketDataCycleService como
+        PositionTickService aislan las fallas por símbolo internamente (loguean
+        ERROR y siguen con el resto) en vez de propagar: un solo símbolo con
+        problemas no debe tumbar el heartbeat ni el monitoreo del resto de los
+        símbolos. Ver cycle_service.py y tick_service.py.
         """
         self._heartbeat_file.touch(exist_ok=True)
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
+        if self._market_data_service is not None:
+            self._market_data_service.tick_all()
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
 
