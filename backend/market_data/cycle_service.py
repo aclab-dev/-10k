@@ -59,17 +59,34 @@ class MarketDataCycleService:
             len(self._adapter.get_open_orders(symbol)) for symbol in self._symbols
         )
 
-        for symbol in self._symbols:
-            try:
-                snapshot = await self._fetcher.fetch_snapshot(
+        # Fetch concurrente por símbolo (I/O-bound, se beneficia con fetchers reales
+        # como BingXDataFetcher). process_snapshot() NO se paraleliza: escribe sobre
+        # la misma Session de SQLAlchemy, que no es segura para uso concurrente.
+        fetch_results = await asyncio.gather(
+            *(
+                self._fetcher.fetch_snapshot(
                     symbol,
                     account_balance_usdt,
                     open_positions_count=open_positions_count,
                     active_orders_count=active_orders_count,
                 )
-                self._engine.process_snapshot(snapshot)
+                for symbol in self._symbols
+            ),
+            return_exceptions=True,
+        )
+
+        for symbol, result in zip(self._symbols, fetch_results, strict=True):
+            if isinstance(result, BaseException):
+                log.error(
+                    "market_data_cycle_service.fetch_failed",
+                    symbol=symbol,
+                    exc_info=result,
+                )
+                continue
+            try:
+                self._engine.process_snapshot(result)
             except Exception:
-                log.error("market_data_cycle_service.tick_failed", symbol=symbol, exc_info=True)
+                log.error("market_data_cycle_service.process_failed", symbol=symbol, exc_info=True)
                 continue
 
 

@@ -99,6 +99,29 @@ def test_run_does_not_touch_bot_run_when_cycle_runner_injected(heartbeat_file: P
     orch.run()  # no debe lanzar ni intentar cerrar un BotRun inexistente
 
 
+def test_run_closes_bot_run_even_when_cycle_runner_raises(sqlite_session: Session) -> None:
+    """El cierre debe ocurrir aunque CycleRunner.run() levante (finally, no solo shutdown OK)."""
+    orch = Orchestrator(session=sqlite_session)
+    orch._cycle_runner = Mock(run=Mock(side_effect=RuntimeError("boom")))  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        orch.run()
+
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+
+
+def test_close_is_public_and_idempotent(sqlite_session: Session) -> None:
+    """close() es invocable sin pasar por run() (scripts/tooling), y no falla si se repite."""
+    orch = Orchestrator(session=sqlite_session)
+
+    orch.close()
+    bot_run = sqlite_session.query(BotRun).one()
+    assert bot_run.status == "STOPPED"
+
+    orch.close()  # no debe lanzar ni re-tocar un BotRun ya cerrado
+
+
 def test_default_construction_raises_for_non_paper_environment(
     monkeypatch: pytest.MonkeyPatch, sqlite_session: Session
 ) -> None:

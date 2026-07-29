@@ -136,19 +136,30 @@ class Orchestrator:
             environment=environment,
             initial_state=self._state_machine.state.value,
         )
-        self._cycle_runner.run()
-        self._close_bot_run()
+        try:
+            self._cycle_runner.run()
+        finally:
+            # finally: garantiza el cierre del BotRun incluso si el loop
+            # levanta una excepcion no controlada, no solo en shutdown limpio.
+            self.close()
         log.info("orchestrator.stopped", final_state=self._state_machine.state.value)
 
-    def _close_bot_run(self) -> None:
-        """Cierra (status STOPPED) el BotRun armado por este Orchestrator, si lo creo el mismo.
+    def close(self) -> None:
+        """Cierra (status STOPPED) el BotRun armado por este Orchestrator y su sesion propia.
 
-        No hace nada si bot_run/session fueron inyectados externamente (el
-        caller es dueño de ese ciclo de vida) o si nunca se armo el pipeline
-        real de market data.
+        Idempotente. No hace nada si bot_run/session fueron inyectados
+        externamente (el caller es dueño de ese ciclo de vida), si nunca se
+        armo el pipeline real de market data, o si ya se cerro antes.
+
+        run() la invoca automaticamente en su finally. Publico para que
+        callers que instancian Orchestrator() sin llegar a invocar run()
+        (scripts, tooling) puedan liberar la sesion y cerrar el BotRun
+        explicitamente.
         """
         if self._bot_run is None or self._db_session is None:
             return
         BotRunRepository(self._db_session).close(self._bot_run)
         self._db_session.commit()
         self._db_session.close()
+        self._bot_run = None
+        self._db_session = None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -171,6 +173,48 @@ def test_tick_all_isolates_snapshot_rejected_per_symbol() -> None:
 
     assert engine.process_snapshot.call_count == len(SYMBOLS)
     session.commit.assert_called_once()
+
+
+class _SlowFetcher(DataFetcher):
+    """Fetcher que tarda `delay_s` por símbolo — sirve para medir concurrencia."""
+
+    def __init__(self, delay_s: float) -> None:
+        self._delay_s = delay_s
+
+    async def fetch_snapshot(
+        self,
+        symbol: str,
+        account_balance_usdt: Decimal,
+        open_positions_count: int = 0,
+        active_orders_count: int = 0,
+    ) -> MarketSnapshot:
+        await asyncio.sleep(self._delay_s)
+        return Mock(name=f"snapshot-{symbol}")
+
+    def is_healthy(self) -> bool:
+        return True
+
+
+def test_tick_all_fetches_symbols_concurrently_not_sequentially() -> None:
+    """El fetch por símbolo debe correr concurrente (asyncio.gather), no uno a uno.
+
+    Con 5 símbolos y 50ms por fetch: secuencial tardaría ~250ms, concurrente ~50ms.
+    Umbral generoso (150ms) para evitar flakiness sin dejar de detectar una
+    regresión a fetch secuencial.
+    """
+    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+    adapter = _FakeAdapter()
+    fetcher = _SlowFetcher(delay_s=0.05)
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, symbols)
+
+    start = time.monotonic()
+    service.tick_all()
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.15
+    assert engine.process_snapshot.call_count == len(symbols)
 
 
 def test_tick_all_with_no_symbols_still_commits() -> None:
