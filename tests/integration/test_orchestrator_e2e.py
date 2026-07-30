@@ -105,9 +105,7 @@ def _make_approve_decision() -> ModelDecision:
             final_trade_quality_score=0.75,
             contradictions_detected=[],
         ),
-        news_context=NewsContextSection(
-            used=False, impact=NewsImpact.NEUTRAL, summary="no news"
-        ),
+        news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="no news"),
         position_management_plan=PositionManagementPlan(
             use_trailing_stop=True,
             move_to_break_even=False,
@@ -153,9 +151,7 @@ def _make_no_operar_decision() -> ModelDecision:
             final_trade_quality_score=0.30,
             contradictions_detected=["low_quant_strength", "low_gpt_confidence"],
         ),
-        news_context=NewsContextSection(
-            used=False, impact=NewsImpact.NEUTRAL, summary="no news"
-        ),
+        news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="no news"),
         position_management_plan=PositionManagementPlan(
             use_trailing_stop=False,
             move_to_break_even=False,
@@ -202,9 +198,7 @@ def _make_block_decision() -> ModelDecision:
             final_trade_quality_score=0.75,
             contradictions_detected=[],
         ),
-        news_context=NewsContextSection(
-            used=False, impact=NewsImpact.NEUTRAL, summary="no news"
-        ),
+        news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="no news"),
         position_management_plan=PositionManagementPlan(
             use_trailing_stop=False,
             move_to_break_even=False,
@@ -258,9 +252,7 @@ class TestOrchestratorE2E:
             orch.close()
 
             pg_session.expire_all()
-            closed = pg_session.scalars(
-                select(BotRun).where(BotRun.id == bot_run_id)
-            ).first()
+            closed = pg_session.scalars(select(BotRun).where(BotRun.id == bot_run_id)).first()
             assert closed is not None
             assert closed.status == "STOPPED"
 
@@ -268,9 +260,7 @@ class TestOrchestratorE2E:
         finally:
             orch.close()  # idempotente; no-op si ya se cerró arriba
 
-    def test_full_tick_produces_market_analysis_for_all_symbols(
-        self, pg_session: Session
-    ) -> None:
+    def test_full_tick_produces_market_analysis_for_all_symbols(self, pg_session: Session) -> None:
         """Un tick real del Orchestrator persiste MarketSnapshot + QuantSignal +
         MarketRegime + VolatilityAssessment para cada símbolo permitido.
 
@@ -443,9 +433,7 @@ def _make_aggregation_result(
     aggregation para construir el RiskValidationResult; el resto de los campos
     del aggregation no afectan la lógica de validate().
     """
-    final_action = (
-        DecisionType.NO_OPERAR if not decision.execute else decision.decision
-    )
+    final_action = DecisionType.NO_OPERAR if not decision.execute else decision.decision
 
     return DecisionAggregationResult(
         aggregation_id=aggregation_id,
