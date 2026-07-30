@@ -70,6 +70,7 @@ execution:
   live_requires_env_confirmation: true
   live_confirmation_env_var: I_UNDERSTAND_LIVE_RISK
   live_confirmation_required_value: "YES"
+  place_order_timeout_seconds: 5.0
 
 database:
   engine: POSTGRESQL

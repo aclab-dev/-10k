@@ -1,9 +1,9 @@
 """Orchestrator: arma el grafo (state machine + cycle runner) y lo corre.
 
 Es el punto de entrada logico del worker. Lee configuracion del entorno,
-instancia los componentes en el orden correcto (incluyendo el ExchangeAdapter
-y el Market Data Engine reales para PAPER) y bloquea hasta que el loop
-termine (shutdown via signal o estado terminal).
+instancia los componentes en el orden correcto (incluyendo el ExchangeAdapter,
+el Market Data Engine y el Execution Engine reales para PAPER) y bloquea
+hasta que el loop termine (shutdown via signal o estado terminal).
 """
 
 from __future__ import annotations
@@ -16,11 +16,14 @@ from types import FrameType
 import structlog
 from sqlalchemy.orm import Session
 
-from backend.core.config import APP_VERSION, Environment, get_config
+from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
 from backend.exchange_adapters.paper_adapter import PaperAdapter
+from backend.execution.engine import ExecutionEngine
+from backend.market_data.analysis_service import MarketAnalysisService
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
+from backend.position_manager.manager import PositionManager
 from backend.storage.database import get_session_factory
 from backend.storage.models import BotRun
 from backend.storage.repositories.bot import BotRunRepository
@@ -35,7 +38,8 @@ class Orchestrator:
 
     Se puede construir con dependencias inyectadas (para tests) o sin
     argumentos, en cuyo caso lee de variables de entorno/config y arma el
-    pipeline real de market data (PaperAdapter + MockDataFetcher en PAPER).
+    pipeline real (PaperAdapter + MockDataFetcher + MarketAnalysisService +
+    ExecutionEngine + PositionManager en PAPER).
     """
 
     def __init__(
@@ -43,34 +47,61 @@ class Orchestrator:
         state_machine: BotStateMachine | None = None,
         cycle_runner: CycleRunner | None = None,
         market_data_service: MarketDataCycleService | None = None,
+        execution_engine: ExecutionEngine | None = None,
         session: Session | None = None,
     ) -> None:
         self._state_machine = state_machine or BotStateMachine(initial=BotState.ACTIVE)
-        # Solo se pueblan si este Orchestrator arma su propio BotRun (ver
-        # _build_market_data_service). Si cycle_runner/market_data_service vienen
-        # inyectados, el caller es dueño de ese ciclo de vida, no nosotros.
+        # Solo se pueblan si este Orchestrator arma su propio contexto PAPER (ver
+        # _prepare_paper_context). Si cycle_runner/market_data_service/
+        # execution_engine vienen inyectados, el caller es dueño de ese ciclo de
+        # vida, no nosotros.
         self._bot_run: BotRun | None = None
         self._db_session: Session | None = None
+        self._position_manager: PositionManager | None = None
+        self._execution_engine: ExecutionEngine | None = None
         if cycle_runner is None:
             interval = parse_interval_from_env(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS"))
-            mds = market_data_service or self._build_market_data_service(session)
+            if (market_data_service is None) != (execution_engine is None):
+                raise ValueError(
+                    "market_data_service y execution_engine deben inyectarse juntos o "
+                    "ninguno de los dos: comparten el mismo PaperAdapter/BotRun. Inyectar "
+                    "solo uno construiria un segundo adapter con estado divergente."
+                )
+            if market_data_service is None:
+                adapter, db_session, bot_run, cfg = self._prepare_paper_context(session)
+                mds = self._build_market_data_service(adapter, db_session, bot_run, cfg)
+                exec_engine = self._build_execution_engine(adapter, db_session, bot_run, cfg)
+            else:
+                # execution_engine no puede ser None acá: si lo fuera, el check
+                # XOR de arriba ya habría lanzado (market_data_service no es None
+                # en esta rama). Narrowing explícito para mypy.
+                assert execution_engine is not None
+                mds = market_data_service
+                exec_engine = execution_engine
             self._cycle_runner = CycleRunner(
-                self._state_machine, interval_seconds=interval, market_data_service=mds
+                self._state_machine,
+                interval_seconds=interval,
+                market_data_service=mds,
+                execution_engine=exec_engine,
             )
         else:
             self._cycle_runner = cycle_runner
         self._signals_installed = False
 
-    def _build_market_data_service(self, session: Session | None) -> MarketDataCycleService:
-        """Arma el pipeline real de market data segun el environment configurado.
+    def _prepare_paper_context(
+        self, session: Session | None
+    ) -> tuple[PaperAdapter, Session, BotRun, AppConfig]:
+        """Arma, una sola vez, lo que market data y execution comparten: el mismo
+        PaperAdapter (estado de cuenta/posiciones/órdenes debe ser uno solo),
+        la sesión de DB y el BotRun del ciclo.
 
         Solo PAPER esta soportado: BingX real (TESTNET/LIVE) es F16/F17 y sigue
         bloqueado, asi que correr en otro environment falla rapido en vez de
         operar silenciosamente con PaperAdapter fuera de PAPER.
 
-        Guarda bot_run/session en self para que run() pueda cerrar el BotRun
-        (status STOPPED) al hacer shutdown graceful, evitando dejarlo colgado
-        en RUNNING y rompiendo la semantica de BotRunRepository.get_active().
+        Guarda bot_run/session en self para que run()/close() puedan cerrar el
+        BotRun (status STOPPED) al hacer shutdown, evitando dejarlo colgado en
+        RUNNING y rompiendo la semantica de BotRunRepository.get_active().
         """
         cfg = get_config()
         environment = cfg.execution.environment
@@ -82,7 +113,6 @@ class Orchestrator:
 
         initial_balance = Decimal(str(cfg.challenge.initial_balance_usdt))
         adapter = PaperAdapter(initial_balance_usdt=initial_balance)
-        fetcher = MockDataFetcher()
         db_session = session or get_session_factory()()
 
         bot_run = BotRun(
@@ -96,14 +126,40 @@ class Orchestrator:
         self._bot_run = bot_run
         self._db_session = db_session
 
+        return adapter, db_session, bot_run, cfg
+
+    @staticmethod
+    def _build_market_data_service(
+        adapter: PaperAdapter, db_session: Session, bot_run: BotRun, cfg: AppConfig
+    ) -> MarketDataCycleService:
+        fetcher = MockDataFetcher()
         engine = MarketDataEngine(db_session, bot_run.id)
+        analysis_service = MarketAnalysisService(db_session, bot_run.id)
         return MarketDataCycleService(
             adapter=adapter,
             fetcher=fetcher,
             engine=engine,
             session=db_session,
             symbols=cfg.trading.allowed_symbols,
+            on_snapshot=analysis_service.on_snapshot,
         )
+
+    def _build_execution_engine(
+        self, adapter: PaperAdapter, db_session: Session, bot_run: BotRun, cfg: AppConfig
+    ) -> ExecutionEngine:
+        position_manager = PositionManager(adapter)
+        self._position_manager = position_manager
+        execution_engine = ExecutionEngine(
+            adapter=adapter,
+            position_manager=position_manager,
+            session=db_session,
+            bot_run_id=bot_run.id,
+            environment=cfg.execution.environment,
+            position_management_defaults=cfg.position_management,
+            place_order_timeout_seconds=cfg.execution.place_order_timeout_seconds,
+        )
+        self._execution_engine = execution_engine
+        return execution_engine
 
     @property
     def state_machine(self) -> BotStateMachine:
@@ -112,6 +168,17 @@ class Orchestrator:
     @property
     def cycle_runner(self) -> CycleRunner:
         return self._cycle_runner
+
+    @property
+    def position_manager(self) -> PositionManager | None:
+        """PositionManager compartido, para que [143] (PositionTickService) lo reuse
+        en vez de instanciar uno nuevo con estado divergente. `None` si nunca se
+        armo el pipeline real (cycle_runner inyectado)."""
+        return self._position_manager
+
+    @property
+    def execution_engine(self) -> ExecutionEngine | None:
+        return self._execution_engine
 
     def install_signal_handlers(self) -> None:
         """Conecta SIGTERM/SIGINT a request_shutdown del cycle runner.
@@ -147,15 +214,20 @@ class Orchestrator:
     def close(self) -> None:
         """Cierra (status STOPPED) el BotRun armado por este Orchestrator y su sesion propia.
 
-        Idempotente. No hace nada si bot_run/session fueron inyectados
-        externamente (el caller es dueño de ese ciclo de vida), si nunca se
-        armo el pipeline real de market data, o si ya se cerro antes.
+        Tambien libera el thread pool interno del ExecutionEngine propio, si
+        hay uno. Idempotente. No hace nada si bot_run/session/execution_engine
+        fueron inyectados externamente (el caller es dueño de ese ciclo de
+        vida), si nunca se armo el pipeline real, o si ya se cerro antes.
 
         run() la invoca automaticamente en su finally. Publico para que
         callers que instancian Orchestrator() sin llegar a invocar run()
         (scripts, tooling) puedan liberar la sesion y cerrar el BotRun
         explicitamente.
         """
+        if self._execution_engine is not None:
+            self._execution_engine.close()
+            self._execution_engine = None
+        self._position_manager = None
         if self._bot_run is None or self._db_session is None:
             return
         BotRunRepository(self._db_session).close(self._bot_run)
