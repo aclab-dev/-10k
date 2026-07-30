@@ -15,6 +15,7 @@ Ejecutar con: pytest -m integration
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -44,6 +45,7 @@ from backend.decision_engine.schemas import (
     PositionManagementPlan,
     QuantSignalsSection,
 )
+from backend.exchange_adapters.schemas import OrderStatus
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine import engine as risk_engine
@@ -227,8 +229,6 @@ def _quant_signals_section() -> QuantSignalsSection:
 
 
 def _make_aggregation_id() -> str:
-    import uuid  # noqa: PLC0415
-
     return str(uuid.uuid4())
 
 
@@ -242,28 +242,31 @@ class TestOrchestratorE2E:
     def test_botrun_lifecycle(self, pg_session: Session) -> None:
         """BotRun arranca en RUNNING y queda STOPPED tras close()."""
         orch = Orchestrator(session=pg_session)
-        bot_run_repo = BotRunRepository(pg_session)
+        try:
+            bot_run_repo = BotRunRepository(pg_session)
 
-        assert orch._bot_run is not None
-        bot_run_id = orch._bot_run.id
+            assert orch._bot_run is not None
+            bot_run_id = orch._bot_run.id
 
-        pg_session.refresh(orch._bot_run)
-        assert orch._bot_run.status == "RUNNING"
+            pg_session.refresh(orch._bot_run)
+            assert orch._bot_run.status == "RUNNING"
 
-        active = bot_run_repo.get_active()
-        assert active is not None
-        assert active.id == bot_run_id
+            active = bot_run_repo.get_active()
+            assert active is not None
+            assert active.id == bot_run_id
 
-        orch.close()
+            orch.close()
 
-        pg_session.expire_all()
-        closed = pg_session.scalars(
-            select(BotRun).where(BotRun.id == bot_run_id)
-        ).first()
-        assert closed is not None
-        assert closed.status == "STOPPED"
+            pg_session.expire_all()
+            closed = pg_session.scalars(
+                select(BotRun).where(BotRun.id == bot_run_id)
+            ).first()
+            assert closed is not None
+            assert closed.status == "STOPPED"
 
-        assert bot_run_repo.get_active() is None
+            assert bot_run_repo.get_active() is None
+        finally:
+            orch.close()  # idempotente; no-op si ya se cerró arriba
 
     def test_full_tick_produces_market_analysis_for_all_symbols(
         self, pg_session: Session
@@ -346,6 +349,8 @@ class TestOrchestratorE2E:
             order_row = OrderRepository(pg_session).get_by_client_order_id(decision.decision_id)
             assert order_row is not None
             assert order_row.bot_run_id == bot_run_id
+            assert order_row.status == OrderStatus.FILLED.value
+            assert order_row.trade_id == result.trade_id
 
             trades = TradeRepository(pg_session).list_open(bot_run_id)
             assert len(trades) == 1
@@ -359,6 +364,8 @@ class TestOrchestratorE2E:
             assert orch.position_manager is not None
             pm_config = orch.position_manager.get_config(_SYMBOL)
             assert pm_config is not None
+            assert pm_config.stop_loss == Decimal(str(decision.stop_loss))
+            assert pm_config.take_profit == Decimal(str(decision.take_profit))
         finally:
             orch.close()
 
