@@ -100,6 +100,13 @@ class ExecutionEngine:
                 confiable, "sin SL no se opera").
             ExecutionTimeoutError: adapter.place_order() excedió el timeout.
         """
+        # SELECT + INSERT (en _persist_order, más abajo) no son atómicos: dos
+        # llamadas concurrentes con el mismo decision_id podrían pasar ambas
+        # este chequeo y competir por orders.uq_orders_client_order_id. No es
+        # explotable hoy porque las decisiones se ejecutan desde un ciclo
+        # single-threaded (CycleRunner._tick()) — si en el futuro esto se
+        # invoca desde más de un path concurrente, hace falta un lock o una
+        # transacción con aislamiento serializable acá.
         existing = self._order_repo.get_by_client_order_id(decision.decision_id)
         if existing is not None:
             log.info(
@@ -239,10 +246,38 @@ class ExecutionEngine:
         )
 
     def _place_order_with_timeout(self, request: OrderRequest) -> OrderResult:
+        """Coloca la orden con un timeout real, sin dejar el pool inutilizable tras un hang.
+
+        `ThreadPoolExecutor` no puede cancelar un thread que ya empezó a
+        correr (`future.cancel()` no aplica una vez arrancado) — al hacer
+        timeout, el worker sigue vivo en segundo plano ejecutando
+        `adapter.place_order()`. Con `max_workers=1`, si no se descarta el
+        pool, ese thread colgado bloquearía TODAS las llamadas futuras a
+        `execute_approved_plan()` en esta instancia (quedarían encoladas
+        detrás de él indefinidamente — un solo hang tumba el resto del ciclo
+        para siempre, no solo esa llamada). Por eso, ante timeout, se
+        descarta el executor y se arma uno nuevo: las llamadas subsiguientes
+        no quedan atrapadas.
+
+        Limitación que esto NO resuelve (documentada, no hay forma de
+        resolverla con `ThreadPoolExecutor`): el thread huérfano sigue vivo y
+        puede seguir mutando `self._adapter` después de que ya se le devolvió
+        `ExecutionTimeoutError` al caller — `PaperAdapter` no es thread-safe
+        (ver su docstring), así que en teoría podría competir con la llamada
+        siguiente. Hoy es inofensivo porque `PaperAdapter` es 100% in-memory
+        y no puede colgarse (nunca dispara este path). Cuando `BingXAdapter`
+        (F16/F17) reuse este call site con I/O de red real, un hang real
+        activaría este riesgo — la resolución de fondo en ese momento debería
+        ser migrar `place_order` a un cliente async cancelable (`httpx`
+        `AsyncClient` + `asyncio.wait_for`, como ya hace `bingx_fetcher.py`),
+        no seguir extendiendo el wrapper de threads.
+        """
         future = self._executor.submit(self._adapter.place_order, request)
         try:
             return future.result(timeout=self._timeout_seconds)
         except FutureTimeoutError as exc:
+            self._executor.shutdown(wait=False)
+            self._executor = ThreadPoolExecutor(max_workers=1)
             raise ExecutionTimeoutError(
                 f"adapter.place_order() excedio timeout={self._timeout_seconds}s "
                 f"(symbol={request.symbol}, client_order_id={request.client_order_id})"

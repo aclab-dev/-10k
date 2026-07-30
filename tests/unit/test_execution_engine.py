@@ -312,3 +312,38 @@ def test_execute_approved_plan_raises_on_timeout() -> None:
 
     with pytest.raises(ExecutionTimeoutError):
         engine.execute_approved_plan(decision, risk_result)
+
+
+def test_timeout_does_not_block_subsequent_calls() -> None:
+    """El thread colgado tras un timeout no debe encolar llamadas siguientes detras suyo.
+
+    ThreadPoolExecutor no puede cancelar un thread ya iniciado — sin descartar
+    y recrear el pool tras el timeout, esta llamada quedaria esperando el
+    sleep(0.3) del primer thread colgado antes de poder correr.
+    """
+
+    class _SlowOnceAdapter(PaperAdapter):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.calls = 0
+
+        def place_order(self, request: OrderRequest) -> OrderResult:
+            self.calls += 1
+            if self.calls == 1:
+                time.sleep(0.3)
+            return super().place_order(request)
+
+    adapter = _SlowOnceAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, _order_repo = _engine(adapter, timeout_seconds=0.05)
+    decision_1 = _make_decision(symbol="BTCUSDT")
+    decision_2 = _make_decision(symbol="ETHUSDT")
+
+    with pytest.raises(ExecutionTimeoutError):
+        engine.execute_approved_plan(decision_1, _make_risk_result(decision_1))
+
+    start = time.monotonic()
+    result = engine.execute_approved_plan(decision_2, _make_risk_result(decision_2))
+    elapsed = time.monotonic() - start
+
+    assert result.order_result.status == OrderStatus.FILLED
+    assert elapsed < 0.15  # muy por debajo del sleep(0.3) del thread colgado
