@@ -177,3 +177,30 @@ class TestExecutionEngineIntegration:
             assert config.take_profit == Decimal(str(decision.take_profit))
         finally:
             orch.close()
+
+    def test_execute_approved_plan_retry_does_not_duplicate_order(
+        self, pg_session: Session
+    ) -> None:
+        """Retry del mismo plan aprobado (mismo decision_id) no debe violar la
+
+        UniqueConstraint de orders.client_order_id ni duplicar Trade/Position.
+        """
+        orch = Orchestrator(session=pg_session)
+        try:
+            orch.cycle_runner._market_data_service.tick_all()  # type: ignore[attr-defined]
+
+            decision = _make_decision()
+            risk_result = _make_risk_result(decision)
+
+            assert orch.execution_engine is not None
+            first = orch.execution_engine.execute_approved_plan(decision, risk_result)
+            second = orch.execution_engine.execute_approved_plan(decision, risk_result)
+
+            assert second.trade_id == first.trade_id
+            assert second.order_db_id == first.order_db_id
+            assert second.position_registered is True
+
+            trade_rows = TradeRepository(pg_session).list_open(orch._bot_run.id)  # type: ignore[union-attr]
+            assert len(trade_rows) == 1
+        finally:
+            orch.close()

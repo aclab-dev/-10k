@@ -87,6 +87,12 @@ class ExecutionEngine:
     ) -> ExecutionResult:
         """Ejecuta un plan aprobado: coloca la orden y, si llena, registra la posición.
 
+        Idempotente: si ya existe una Order persistida con este client_order_id
+        (mismo decision_id — un retry del mismo plan aprobado), devuelve el
+        resultado ya registrado sin re-ejecutar ni duplicar (el adapter es
+        idempotente en memoria via PaperAdapter.place_order, pero eso no evita
+        un segundo INSERT en `orders`; acá se chequea la DB primero).
+
         Raises:
             ValueError: risk_result no ejecutable, entry_type inválido, o no hay
                 dato de volatilidad (ATR) para el símbolo — en ese caso no se
@@ -94,6 +100,15 @@ class ExecutionEngine:
                 confiable, "sin SL no se opera").
             ExecutionTimeoutError: adapter.place_order() excedió el timeout.
         """
+        existing = self._order_repo.get_by_client_order_id(decision.decision_id)
+        if existing is not None:
+            log.info(
+                "execution_engine.idempotent_replay",
+                client_order_id=existing.client_order_id,
+                order_db_id=existing.id,
+            )
+            return self._execution_result_from_existing_order(existing)
+
         if risk_result.decision not in EXECUTABLE_RISK_DECISIONS:
             raise ValueError(
                 f"RiskValidationResult.decision={risk_result.decision} no es ejecutable "
@@ -165,6 +180,37 @@ class ExecutionEngine:
     def _latest_atr(self, symbol: str) -> Decimal | None:
         assessment = self._volatility_repo.get_latest_by_symbol(self._bot_run_id, symbol)
         return assessment.atr if assessment is not None else None
+
+    @staticmethod
+    def _execution_result_from_existing_order(order_row: Order) -> ExecutionResult:
+        """Reconstruye un ExecutionResult a partir de una Order ya persistida (replay idempotente).
+
+        `slippage_usdt` no se persiste en `orders` — no es recuperable en un
+        replay, se devuelve en 0 (no afecta la idempotencia: la orden real ya
+        se colocó una única vez, esto es solo la respuesta al caller repetido).
+        """
+        status = OrderStatus(order_row.status)
+        order_result = OrderResult(
+            order_id=order_row.exchange_order_id or order_row.id,
+            client_order_id=order_row.client_order_id,
+            symbol=order_row.symbol,
+            side=OrderSide(order_row.side),
+            order_type=OrderType(order_row.order_type),
+            status=status,
+            quantity_requested=order_row.quantity,
+            quantity_filled=order_row.quantity if status == OrderStatus.FILLED else Decimal("0"),
+            fill_price=order_row.fill_price,
+            fee_usdt=order_row.fee or Decimal("0"),
+            slippage_usdt=Decimal("0"),
+            is_simulated=order_row.is_simulated,
+            timestamp_utc=order_row.filled_at or order_row.created_at,
+        )
+        return ExecutionResult(
+            order_result=order_result,
+            trade_id=order_row.trade_id,
+            order_db_id=order_row.id,
+            position_registered=order_row.trade_id is not None,
+        )
 
     @staticmethod
     def _compute_quantity(margin_usdt: Decimal, leverage: int, decision: ModelDecision) -> Decimal:

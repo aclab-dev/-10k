@@ -152,9 +152,11 @@ def _engine(
         position_management_defaults=load_config().position_management,
         place_order_timeout_seconds=timeout_seconds,
     )
-    engine._order_repo = Mock()  # type: ignore[attr-defined]
+    order_repo = Mock()
+    order_repo.get_by_client_order_id.return_value = None  # sin retry por default
+    engine._order_repo = order_repo  # type: ignore[attr-defined]
     engine._volatility_repo = volatility_repo  # type: ignore[attr-defined]
-    return engine, session, engine._order_repo  # type: ignore[attr-defined]
+    return engine, session, order_repo
 
 
 def test_execute_approved_plan_fills_and_registers_position() -> None:
@@ -257,6 +259,44 @@ def test_execute_approved_plan_limit_order_pending_does_not_register_position() 
     trade_calls = [c for c in session.add.call_args_list if isinstance(c[0][0], Trade)]
     assert trade_calls == []
     assert engine._position_manager.get_config(decision.symbol) is None  # type: ignore[attr-defined]
+
+
+def test_execute_approved_plan_is_idempotent_on_retry() -> None:
+    """Un segundo execute_approved_plan() con el mismo decision_id no debe duplicar la orden."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    existing_order = Order(
+        id="order-db-1",
+        bot_run_id="run-1",
+        trade_id="trade-1",
+        client_order_id=decision.decision_id,
+        symbol=decision.symbol,
+        environment="PAPER",
+        order_type="MARKET",
+        side="BUY",
+        quantity=Decimal("0.001"),
+        price=Decimal(str(decision.entry_price)),
+        status="FILLED",
+        exchange_order_id="exch-1",
+        filled_at=_NOW,
+        fill_price=Decimal(str(decision.entry_price)),
+        fee=Decimal("0.01"),
+        is_simulated=True,
+    )
+    order_repo.get_by_client_order_id.return_value = existing_order
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.trade_id == "trade-1"
+    assert result.order_db_id == "order-db-1"
+    assert result.position_registered is True
+    assert result.order_result.status == OrderStatus.FILLED
+    order_repo.save.assert_not_called()
+    # No se volvio a llamar place_order: el adapter no tiene ninguna posicion.
+    assert adapter.get_position(decision.symbol) is None
 
 
 def test_execute_approved_plan_raises_on_timeout() -> None:

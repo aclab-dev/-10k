@@ -100,6 +100,22 @@ def test_default_construction_wires_paper_execution_pipeline(sqlite_session: Ses
     assert exec_engine._adapter is mds._adapter  # type: ignore[attr-defined]
 
 
+def test_only_market_data_service_injected_raises() -> None:
+    """Inyectar solo market_data_service construiria un ExecutionEngine real con un
+
+    segundo PaperAdapter divergente del que ya arma market_data_service — debe
+    fallar explícito, no silencioso.
+    """
+    with pytest.raises(ValueError, match="deben inyectarse juntos"):
+        Orchestrator(market_data_service=Mock(spec=MarketDataCycleService))
+
+
+def test_only_execution_engine_injected_raises() -> None:
+    """Inverso: solo execution_engine tambien debe fallar explícito."""
+    with pytest.raises(ValueError, match="deben inyectarse juntos"):
+        Orchestrator(execution_engine=Mock(spec=ExecutionEngine))
+
+
 def test_run_closes_bot_run_on_graceful_shutdown(sqlite_session: Session) -> None:
     """run() debe cerrar (STOPPED) el BotRun propio al terminar, no dejarlo RUNNING colgado."""
     orch = Orchestrator(session=sqlite_session)

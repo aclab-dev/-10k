@@ -61,14 +61,23 @@ class Orchestrator:
         self._execution_engine: ExecutionEngine | None = None
         if cycle_runner is None:
             interval = parse_interval_from_env(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS"))
-            mds = market_data_service
-            exec_engine = execution_engine
-            if mds is None or exec_engine is None:
+            if (market_data_service is None) != (execution_engine is None):
+                raise ValueError(
+                    "market_data_service y execution_engine deben inyectarse juntos o "
+                    "ninguno de los dos: comparten el mismo PaperAdapter/BotRun. Inyectar "
+                    "solo uno construiria un segundo adapter con estado divergente."
+                )
+            if market_data_service is None:
                 adapter, db_session, bot_run, cfg = self._prepare_paper_context(session)
-                if mds is None:
-                    mds = self._build_market_data_service(adapter, db_session, bot_run, cfg)
-                if exec_engine is None:
-                    exec_engine = self._build_execution_engine(adapter, db_session, bot_run, cfg)
+                mds = self._build_market_data_service(adapter, db_session, bot_run, cfg)
+                exec_engine = self._build_execution_engine(adapter, db_session, bot_run, cfg)
+            else:
+                # execution_engine no puede ser None acá: si lo fuera, el check
+                # XOR de arriba ya habría lanzado (market_data_service no es None
+                # en esta rama). Narrowing explícito para mypy.
+                assert execution_engine is not None
+                mds = market_data_service
+                exec_engine = execution_engine
             self._cycle_runner = CycleRunner(
                 self._state_machine,
                 interval_seconds=interval,
