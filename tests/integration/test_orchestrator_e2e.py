@@ -7,8 +7,8 @@ PAPER).
 
 GPT Context / Decision Aggregator no están auto-wired en _tick() todavía
 (pendiente tarjeta [145]); los inputs de decisión se arman a mano para
-ejercitar los tres resultados posibles del ciclo (APPROVE / BLOCK / NO_OPERAR)
-a través de las capas reales de RiskEngine y ExecutionEngine.
+ejercitar los cuatro resultados posibles del ciclo (APPROVE / ADJUST_DOWN /
+BLOCK / NO_OPERAR) a través de las capas reales de RiskEngine y ExecutionEngine.
 
 Ejecutar con: pytest -m integration
 """
@@ -51,7 +51,6 @@ from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision
 from backend.storage.models import BotRun
-from backend.storage.repositories.bot import BotRunRepository
 from backend.storage.repositories.snapshots import (
     MarketRegimeRepository,
     MarketSnapshotRepository,
@@ -71,8 +70,14 @@ _SYMBOLS = list(ALLOWED_SYMBOLS)
 # ---------------------------------------------------------------------------
 
 
-def _make_approve_decision() -> ModelDecision:
-    """Decisión válida con todos los parámetros de riesgo dentro de los límites."""
+def _make_long_decision(
+    *,
+    setup_name: str,
+    rationale: str,
+    trailing_stop: bool = True,
+    timeframes: list[str] | None = None,
+) -> ModelDecision:
+    """Base compartida para decisiones LONG ejecutables."""
     return ModelDecision(
         environment=Environment.PAPER,
         timestamp_utc=_NOW,
@@ -95,8 +100,8 @@ def _make_approve_decision() -> ModelDecision:
         liquidation_distance_percent_estimated=20.0,
         confidence=0.85,
         market_regime=PrimaryRegime.TRENDING,
-        setup_name="momentum_e2e_test",
-        timeframes_used=["5m", "15m", "1h", "4h"],
+        setup_name=setup_name,
+        timeframes_used=timeframes or ["5m", "15m", "1h", "4h"],
         quant_signals=_quant_signals_section(),
         decision_aggregator=DecisionAggregatorSection(
             quant_score=0.65,
@@ -107,13 +112,21 @@ def _make_approve_decision() -> ModelDecision:
         ),
         news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="no news"),
         position_management_plan=PositionManagementPlan(
-            use_trailing_stop=True,
+            use_trailing_stop=trailing_stop,
             move_to_break_even=False,
             partial_close_plan="none",
             max_time_in_trade_minutes=0,
         ),
-        decision_rationale_summary="e2e test fixture — APPROVE path",
+        decision_rationale_summary=rationale,
         execute=True,
+    )
+
+
+def _make_approve_decision() -> ModelDecision:
+    """Decisión válida con todos los parámetros de riesgo dentro de los límites."""
+    return _make_long_decision(
+        setup_name="momentum_e2e_test",
+        rationale="e2e test fixture — APPROVE path",
     )
 
 
@@ -166,47 +179,11 @@ def _make_no_operar_decision() -> ModelDecision:
 def _make_block_decision() -> ModelDecision:
     """Decisión LONG válida para el schema — BLOCK lo disparará el RiskEngine
     por daily_drawdown excedido (daily_loss_usdt alto al llamar validate())."""
-    return ModelDecision(
-        environment=Environment.PAPER,
-        timestamp_utc=_NOW,
-        decision=DecisionType.LONG,
-        symbol=_SYMBOL,
-        entry_type=EntryType.MARKET,
-        entry_price=50_000.0,
-        stop_loss=49_000.0,
-        take_profit=52_000.0,
-        invalidation_price=48_500.0,
-        leverage=3,
-        margin_usdt=5.0,
-        estimated_notional_usdt=15.0,
-        estimated_entry_fee_usdt=0.075,
-        estimated_exit_fee_usdt=0.075,
-        estimated_slippage_usdt=0.05,
-        estimated_funding_usdt=0.01,
-        net_risk_reward=2.0,
-        estimated_max_loss_usdt=5.0,
-        liquidation_distance_percent_estimated=20.0,
-        confidence=0.85,
-        market_regime=PrimaryRegime.TRENDING,
+    return _make_long_decision(
         setup_name="momentum_drawdown_exceeded",
-        timeframes_used=["1h"],
-        quant_signals=_quant_signals_section(),
-        decision_aggregator=DecisionAggregatorSection(
-            quant_score=0.65,
-            gpt_context_score=0.85,
-            risk_quality_score=0.80,
-            final_trade_quality_score=0.75,
-            contradictions_detected=[],
-        ),
-        news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="no news"),
-        position_management_plan=PositionManagementPlan(
-            use_trailing_stop=False,
-            move_to_break_even=False,
-            partial_close_plan="none",
-            max_time_in_trade_minutes=0,
-        ),
-        decision_rationale_summary="e2e test fixture — BLOCK path (daily drawdown excedido)",
-        execute=True,
+        rationale="e2e test fixture — BLOCK path (daily drawdown excedido)",
+        trailing_stop=False,
+        timeframes=["1h"],
     )
 
 
@@ -234,20 +211,25 @@ def _make_aggregation_id() -> str:
 @pytest.mark.integration
 class TestOrchestratorE2E:
     def test_botrun_lifecycle(self, pg_session: Session) -> None:
-        """BotRun arranca en RUNNING y queda STOPPED tras close()."""
+        """BotRun arranca en RUNNING y queda STOPPED tras close().
+
+        Las queries de estado se acotan por bot_run_id para evitar falsos
+        negativos/positivos si el container de Postgres comparte datos de
+        otros tests (los commits del Orchestrator no son reversibles por el
+        rollback del fixture pg_session).
+        """
         orch = Orchestrator(session=pg_session)
         try:
-            bot_run_repo = BotRunRepository(pg_session)
-
             assert orch._bot_run is not None
             bot_run_id = orch._bot_run.id
 
             pg_session.refresh(orch._bot_run)
             assert orch._bot_run.status == "RUNNING"
 
-            active = bot_run_repo.get_active()
-            assert active is not None
-            assert active.id == bot_run_id
+            running = pg_session.scalars(
+                select(BotRun).where(BotRun.id == bot_run_id, BotRun.status == "RUNNING")
+            ).first()
+            assert running is not None
 
             orch.close()
 
@@ -256,7 +238,12 @@ class TestOrchestratorE2E:
             assert closed is not None
             assert closed.status == "STOPPED"
 
-            assert bot_run_repo.get_active() is None
+            assert (
+                pg_session.scalars(
+                    select(BotRun).where(BotRun.id == bot_run_id, BotRun.status == "RUNNING")
+                ).first()
+                is None
+            )
         finally:
             orch.close()  # idempotente; no-op si ya se cerró arriba
 
@@ -356,6 +343,79 @@ class TestOrchestratorE2E:
             assert pm_config is not None
             assert pm_config.stop_loss == Decimal(str(decision.stop_loss))
             assert pm_config.take_profit == Decimal(str(decision.take_profit))
+        finally:
+            orch.close()
+
+    def test_adjust_down_outcome_executes_with_reduced_params(self, pg_session: Session) -> None:
+        """Ciclo ADJUST_DOWN: margen y leverage superan sus caps de config →
+        RiskEngine reduce los parámetros → ExecutionEngine ejecuta el plan
+        ajustado y persiste Order/Trade/Position.
+
+        Se construye un config ad-hoc con caps inferiores a los valores del
+        decision (max_margin=4 < margin=5, max_leverage_paper=2 < leverage=3)
+        para forzar ADJUST_DOWN sin modificar config.yaml ni el schema de
+        ModelDecision (que permanece dentro de sus límites de 10 USDT / 10x).
+
+        El tick previo siembra el VolatilityAssessment (ATR) que ExecutionEngine
+        requiere. ADJUST_DOWN está en EXECUTABLE_RISK_DECISIONS, por lo que el
+        plan se ejecuta con los parámetros reducidos.
+        """
+        orch = Orchestrator(session=pg_session)
+        try:
+            mds = orch.cycle_runner._market_data_service
+            assert mds is not None
+            mds.tick_all()
+
+            decision = _make_long_decision(
+                setup_name="momentum_adjust_down_test",
+                rationale="e2e test fixture — ADJUST_DOWN path",
+            )
+            cfg = get_config()
+            # Caps por debajo de los valores del decision para forzar ADJUST_DOWN.
+            cfg_for_adjust = cfg.model_copy(
+                update={
+                    "risk": cfg.risk.model_copy(update={"max_margin_per_trade_usdt": 4.0}),
+                    "leverage": cfg.leverage.model_copy(update={"max_leverage_paper": 2}),
+                }
+            )
+
+            aggregation_id = _make_aggregation_id()
+            risk_result = risk_engine.validate(
+                aggregation=_make_aggregation_result(aggregation_id, decision),
+                decision=decision,
+                daily_loss_usdt=Decimal("0"),
+                total_loss_usdt=Decimal("0"),
+                config=cfg_for_adjust,
+            )
+
+            assert risk_result.decision == RiskDecision.ADJUST_DOWN
+            assert risk_result.adjusted_parameters is not None
+            assert risk_result.adjusted_parameters.margin_usdt < Decimal(str(decision.margin_usdt))
+            assert risk_result.adjusted_parameters.leverage < decision.leverage
+
+            assert orch.execution_engine is not None
+            result = orch.execution_engine.execute_approved_plan(decision, risk_result)
+
+            assert result.position_registered is True
+            assert result.trade_id is not None
+
+            assert orch._bot_run is not None
+            bot_run_id = orch._bot_run.id
+
+            order_row = OrderRepository(pg_session).get_by_client_order_id(decision.decision_id)
+            assert order_row is not None
+            assert order_row.bot_run_id == bot_run_id
+            assert order_row.status == OrderStatus.FILLED.value
+            assert order_row.trade_id == result.trade_id
+
+            trades = TradeRepository(pg_session).list_open(bot_run_id)
+            assert len(trades) == 1
+            assert trades[0].direction == "LONG"
+
+            position = PositionRepository(pg_session).get_open_by_symbol(bot_run_id, _SYMBOL)
+            assert position is not None
+            assert position.stop_loss == Decimal(str(decision.stop_loss))
+            assert position.take_profit == Decimal(str(decision.take_profit))
         finally:
             orch.close()
 
