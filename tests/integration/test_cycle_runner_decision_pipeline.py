@@ -152,6 +152,17 @@ def _build_bot_run(session: Session) -> BotRun:
     return bot_run
 
 
+def _close_bot_run(session: Session, bot_run: BotRun) -> None:
+    """Cierra el BotRun para no contaminar get_active() en otros tests.
+
+    pg_session hace rollback solo de cambios no commiteados; como _build_bot_run
+    ya commitea, el BotRun queda en la DB entre tests. Cerrarlo (STOPPED) evita
+    que test_get_active_returns_running encuentre un RUNNING ajeno.
+    """
+    bot_run.status = "STOPPED"
+    session.commit()
+
+
 def _build_pipeline(
     session: Session,
     bot_run: BotRun,
@@ -258,6 +269,7 @@ class TestDecisionPipelineApprove:
         assert len(trades) == 1, "Debe haber exactamente un Trade abierto tras APPROVE"
         assert trades[0].symbol == _SYMBOL
         assert trades[0].direction == "LONG"
+        _close_bot_run(pg_session, bot_run)
 
     def test_gpt_client_called_once_per_symbol(self, pg_session: Session) -> None:
         bot_run = _build_bot_run(pg_session)
@@ -272,6 +284,7 @@ class TestDecisionPipelineApprove:
             runner._tick()
 
         assert runner._gpt_client.request.call_count == 1  # type: ignore[union-attr]
+        _close_bot_run(pg_session, bot_run)
 
 
 @pytest.mark.integration
@@ -287,6 +300,7 @@ class TestDecisionPipelineNoOperarGPT:
 
         trades = TradeRepository(pg_session).list_open(bot_run.id)
         assert len(trades) == 0, "No debe haber trades cuando GPT dice NO_OPERAR"
+        _close_bot_run(pg_session, bot_run)
 
 
 @pytest.mark.integration
@@ -301,6 +315,7 @@ class TestDecisionPipelineGPTNone:
 
         trades = TradeRepository(pg_session).list_open(bot_run.id)
         assert len(trades) == 0
+        _close_bot_run(pg_session, bot_run)
 
 
 @pytest.mark.integration
@@ -339,6 +354,7 @@ class TestDecisionPipelineRiskBlock:
 
         trades = TradeRepository(pg_session).list_open(bot_run.id)
         assert len(trades) == 0, "Risk BLOCK por drawdown debe impedir nuevos trades"
+        _close_bot_run(pg_session, bot_run)
 
 
 @pytest.mark.integration
@@ -370,9 +386,11 @@ class TestLossTotalsQuery:
 
         assert total_loss == Decimal("8"), "Suma de pérdidas: 5+3=8"
         assert daily_loss == Decimal("8"), "Hoy: mismas pérdidas"
+        _close_bot_run(pg_session, bot_run)
 
     def test_loss_totals_zero_when_no_closed_trades(self, pg_session: Session) -> None:
         bot_run = _build_bot_run(pg_session)
         daily, total = TradeRepository(pg_session).get_loss_totals(bot_run.id)
         assert daily == Decimal("0")
         assert total == Decimal("0")
+        _close_bot_run(pg_session, bot_run)
