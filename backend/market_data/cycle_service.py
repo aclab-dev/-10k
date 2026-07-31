@@ -53,12 +53,17 @@ class MarketDataCycleService:
         self._symbols = symbols
         self._on_snapshot = on_snapshot
 
-    def tick_all(self) -> None:
-        """Obtiene, valida y persiste un MarketSnapshot por símbolo. Commitea al final."""
-        asyncio.run(self._tick_all_async())
-        self._session.commit()
+    def tick_all(self) -> list[MarketSnapshot]:
+        """Obtiene, valida y persiste un MarketSnapshot por símbolo. Commitea al final.
 
-    async def _tick_all_async(self) -> None:
+        Retorna la lista de snapshots que se procesaron exitosamente, para que
+        el caller (CycleRunner) pueda ejecutar el pipeline de decisión sobre ellos.
+        """
+        snapshots = asyncio.run(self._tick_all_async())
+        self._session.commit()
+        return snapshots
+
+    async def _tick_all_async(self) -> list[MarketSnapshot]:
         account_balance_usdt = self._adapter.get_account_state().balance_usdt
         open_positions_count = sum(
             1 for symbol in self._symbols if self._adapter.get_position(symbol) is not None
@@ -83,6 +88,7 @@ class MarketDataCycleService:
             return_exceptions=True,
         )
 
+        successful: list[MarketSnapshot] = []
         for symbol, result in zip(self._symbols, fetch_results, strict=True):
             if isinstance(result, BaseException):
                 log.error(
@@ -98,6 +104,8 @@ class MarketDataCycleService:
                 continue
             if self._on_snapshot is not None:
                 self._on_snapshot(result)
+            successful.append(result)
+        return successful
 
 
 __all__ = ["MarketDataCycleService"]

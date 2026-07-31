@@ -17,6 +17,9 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
+from backend.decision_engine.aggregator import DecisionAggregator
+from backend.decision_engine.gpt_client import GPTAuthError, GPTClient
+from backend.decision_engine.prompt_builder import PromptBuilder
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.analysis_service import MarketAnalysisService
@@ -71,6 +74,10 @@ class Orchestrator:
                 adapter, db_session, bot_run, cfg = self._prepare_paper_context(session)
                 mds = self._build_market_data_service(adapter, db_session, bot_run, cfg)
                 exec_engine = self._build_execution_engine(adapter, db_session, bot_run, cfg)
+                gpt_client, prompt_builder, aggregator = self._build_decision_components(cfg)
+                decision_session: Session | None = db_session
+                decision_bot_run_id: str | None = str(bot_run.id)
+                decision_cfg: AppConfig | None = cfg
             else:
                 # execution_engine no puede ser None acá: si lo fuera, el check
                 # XOR de arriba ya habría lanzado (market_data_service no es None
@@ -78,15 +85,45 @@ class Orchestrator:
                 assert execution_engine is not None
                 mds = market_data_service
                 exec_engine = execution_engine
+                gpt_client, prompt_builder, aggregator = None, None, None
+                decision_session = None
+                decision_bot_run_id = None
+                decision_cfg = None
             self._cycle_runner = CycleRunner(
                 self._state_machine,
                 interval_seconds=interval,
                 market_data_service=mds,
                 execution_engine=exec_engine,
+                gpt_client=gpt_client,
+                prompt_builder=prompt_builder,
+                aggregator=aggregator,
+                config=decision_cfg,
+                session=decision_session,
+                bot_run_id=decision_bot_run_id,
             )
         else:
             self._cycle_runner = cycle_runner
         self._signals_installed = False
+
+    @staticmethod
+    def _build_decision_components(
+        cfg: AppConfig,
+    ) -> tuple[GPTClient | None, PromptBuilder | None, DecisionAggregator | None]:
+        """Intenta construir GPTClient, PromptBuilder y DecisionAggregator.
+
+        Si OPENAI_API_KEY no esta disponible, loguea una advertencia y retorna
+        (None, None, None). El CycleRunner omitira el pipeline de decision pero
+        seguira corriendo market data y position management normalmente.
+        """
+        try:
+            gpt_client = GPTClient(config=None, failure_policy=cfg.failure_policy)
+        except GPTAuthError:
+            log.warning(
+                "orchestrator.gpt_client_unavailable",
+                reason="OPENAI_API_KEY no configurada — pipeline de decision deshabilitado",
+            )
+            return None, None, None
+        return gpt_client, PromptBuilder(), DecisionAggregator()
 
     def _prepare_paper_context(
         self, session: Session | None
