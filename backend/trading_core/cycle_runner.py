@@ -189,6 +189,8 @@ class CycleRunner:
             try:
                 await self._process_symbol(snapshot)
             except Exception:
+                if self._session is not None:
+                    self._session.rollback()
                 log.error(
                     "cycle_runner.decision_pipeline_error",
                     symbol=snapshot.symbol,
@@ -272,6 +274,7 @@ class CycleRunner:
 
         # 6. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
+        open_position_pnl = self._execution_engine.get_open_position_unrealized_pnl(symbol)
         risk_result: RiskValidationResult = risk_engine.validate(
             aggregation=aggregation,
             decision=gpt_decision,
@@ -280,6 +283,7 @@ class CycleRunner:
             config=self._config,
             last_trade_pnl_usdt=last_trade.net_pnl if last_trade else None,
             last_trade_margin_usdt=last_trade.margin_usdt if last_trade else None,
+            open_position_unrealized_pnl_usdt=open_position_pnl,
         )
 
         # 7. Ejecutar si el Risk Engine aprueba o ajusta

@@ -327,7 +327,14 @@ class TestDecisionPipelineRiskBlock:
         pg_session.add(losing_trade)
         pg_session.commit()
 
-        runner._tick()
+        # Se parchea compute_quant_signals para garantizar que el aggregator aprueba
+        # y el bloqueo venga del Risk Engine (drawdown), no de una contradicción de señales.
+        strong_quant = _make_strong_quant_signals()
+        with patch(
+            "backend.trading_core.cycle_runner.compute_quant_signals",
+            return_value=strong_quant,
+        ):
+            runner._tick()
 
         trades = TradeRepository(pg_session).list_open(bot_run.id)
         assert len(trades) == 0, "Risk BLOCK por drawdown debe impedir nuevos trades"

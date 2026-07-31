@@ -82,6 +82,11 @@ class ExecutionEngine:
         """Libera el thread pool interno. Idempotente."""
         self._executor.shutdown(wait=False)
 
+    def get_open_position_unrealized_pnl(self, symbol: str) -> Decimal | None:
+        """Retorna el PnL no realizado de la posición abierta para el símbolo, o None si no hay."""
+        position = self._adapter.get_position(symbol)
+        return position.unrealized_pnl if position is not None else None
+
     def execute_approved_plan(
         self, decision: ModelDecision, risk_result: RiskValidationResult
     ) -> ExecutionResult:
