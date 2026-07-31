@@ -139,6 +139,7 @@ def _make_gpt_decision(
 
 def _build_bot_run(session: Session) -> BotRun:
     from backend.core.config import APP_VERSION
+
     cfg = load_config()
     bot_run = BotRun(
         environment=Environment.PAPER.value,
