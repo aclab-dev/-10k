@@ -453,9 +453,7 @@ class TestDecisionPipelineMultiSymbolIsolation:
     El fix usa begin_nested() (SAVEPOINT) para aislar el rollback por símbolo.
     """
 
-    def test_first_symbol_trade_survives_second_symbol_failure(
-        self, pg_session: Session
-    ) -> None:
+    def test_first_symbol_trade_survives_second_symbol_failure(self, pg_session: Session) -> None:
         """BTCUSDT → APPROVE → Trade creado; ETHUSDT → GPT lanza → error aislado.
 
         El trade de BTCUSDT debe persistir a pesar del fallo en ETHUSDT.
@@ -489,9 +487,7 @@ class TestDecisionPipelineMultiSymbolIsolation:
         """
         bot_run = _build_bot_run(pg_session)
         eth_decision = _make_gpt_decision(DecisionType.LONG)
-        eth_decision = ModelDecision(
-            **{**eth_decision.model_dump(), "symbol": "ETHUSDT"}
-        )
+        eth_decision = ModelDecision(**{**eth_decision.model_dump(), "symbol": "ETHUSDT"})
 
         runner = _build_pipeline_multi_symbol(
             pg_session,
@@ -512,9 +508,7 @@ class TestDecisionPipelineMultiSymbolIsolation:
         assert trades[0].symbol == "ETHUSDT"
         _close_bot_run(pg_session, bot_run)
 
-    def test_savepoint_preserves_flushed_rows_of_prior_symbol(
-        self, pg_session: Session
-    ) -> None:
+    def test_savepoint_preserves_flushed_rows_of_prior_symbol(self, pg_session: Session) -> None:
         """Savepoint: rows flush-pero-uncommitted del símbolo N sobreviven al fallo del N+1.
 
         Reproduce el bug exacto: GPTClient.request() hace session.add(ModelRequest)+flush
