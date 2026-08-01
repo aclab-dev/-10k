@@ -394,3 +394,180 @@ class TestLossTotalsQuery:
         assert daily == Decimal("0")
         assert total == Decimal("0")
         _close_bot_run(pg_session, bot_run)
+
+
+def _build_pipeline_multi_symbol(
+    session: Session,
+    bot_run: BotRun,
+    symbols: list[str],
+    gpt_side_effect: object,
+) -> CycleRunner:
+    """Construye un CycleRunner con múltiples símbolos y side_effect para GPT."""
+    cfg = load_config()
+    adapter = PaperAdapter(initial_balance_usdt=_INITIAL_BALANCE)
+    position_manager = PositionManager(adapter)
+    fetcher = MockDataFetcher()
+    engine = MarketDataEngine(session, bot_run.id)
+    analysis_service = MarketAnalysisService(session, bot_run.id)
+    mds = MarketDataCycleService(
+        adapter=adapter,
+        fetcher=fetcher,
+        engine=engine,
+        session=session,
+        symbols=symbols,
+        on_snapshot=analysis_service.on_snapshot,
+    )
+    exec_engine = ExecutionEngine(
+        adapter=adapter,
+        position_manager=position_manager,
+        session=session,
+        bot_run_id=bot_run.id,
+        environment=cfg.execution.environment,
+        position_management_defaults=cfg.position_management,
+        place_order_timeout_seconds=cfg.execution.place_order_timeout_seconds,
+    )
+    gpt_client = MagicMock(spec=GPTClient)
+    gpt_client.request = AsyncMock(side_effect=gpt_side_effect)
+    heartbeat = Path(tempfile.mktemp(suffix="_worker_alive"))
+    return CycleRunner(
+        state_machine=BotStateMachine(initial=BotState.ACTIVE),
+        interval_seconds=1,
+        heartbeat_file=heartbeat,
+        market_data_service=mds,
+        execution_engine=exec_engine,
+        gpt_client=gpt_client,
+        prompt_builder=PromptBuilder(),
+        aggregator=DecisionAggregator(),
+        config=cfg,
+        session=session,
+        bot_run_id=bot_run.id,
+    )
+
+
+@pytest.mark.integration
+class TestDecisionPipelineMultiSymbolIsolation:
+    """Verifica que el fallo de un símbolo no afecta el resultado de los anteriores.
+
+    Cubre el bug reportado en el CR: session.rollback() en el except de _run_decision_pipeline
+    revertía rows flush-pero-no-committed de símbolos anteriores (ej. audit trail de GPT).
+    El fix usa begin_nested() (SAVEPOINT) para aislar el rollback por símbolo.
+    """
+
+    def test_first_symbol_trade_survives_second_symbol_failure(
+        self, pg_session: Session
+    ) -> None:
+        """BTCUSDT → APPROVE → Trade creado; ETHUSDT → GPT lanza → error aislado.
+
+        El trade de BTCUSDT debe persistir a pesar del fallo en ETHUSDT.
+        """
+        bot_run = _build_bot_run(pg_session)
+        btc_decision = _make_gpt_decision(DecisionType.LONG)
+
+        runner = _build_pipeline_multi_symbol(
+            pg_session,
+            bot_run,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            gpt_side_effect=[btc_decision, Exception("simulated ETHUSDT GPT failure")],
+        )
+
+        strong_quant = _make_strong_quant_signals()
+        with patch(
+            "backend.trading_core.cycle_runner.compute_quant_signals",
+            return_value=strong_quant,
+        ):
+            runner._tick()
+
+        trades = TradeRepository(pg_session).list_open(bot_run.id)
+        assert len(trades) == 1, "El trade de BTCUSDT debe sobrevivir al fallo de ETHUSDT"
+        assert trades[0].symbol == "BTCUSDT"
+        _close_bot_run(pg_session, bot_run)
+
+    def test_second_symbol_processed_after_first_fails(self, pg_session: Session) -> None:
+        """BTCUSDT → GPT lanza; ETHUSDT → APPROVE → Trade creado.
+
+        El segundo símbolo debe procesarse aunque el primero haya fallado.
+        """
+        bot_run = _build_bot_run(pg_session)
+        eth_decision = _make_gpt_decision(DecisionType.LONG)
+        eth_decision = ModelDecision(
+            **{**eth_decision.model_dump(), "symbol": "ETHUSDT"}
+        )
+
+        runner = _build_pipeline_multi_symbol(
+            pg_session,
+            bot_run,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            gpt_side_effect=[Exception("simulated BTCUSDT GPT failure"), eth_decision],
+        )
+
+        strong_quant = _make_strong_quant_signals()
+        with patch(
+            "backend.trading_core.cycle_runner.compute_quant_signals",
+            return_value=strong_quant,
+        ):
+            runner._tick()
+
+        trades = TradeRepository(pg_session).list_open(bot_run.id)
+        assert len(trades) == 1, "El trade de ETHUSDT debe crearse aunque BTCUSDT haya fallado"
+        assert trades[0].symbol == "ETHUSDT"
+        _close_bot_run(pg_session, bot_run)
+
+    def test_savepoint_preserves_flushed_rows_of_prior_symbol(
+        self, pg_session: Session
+    ) -> None:
+        """Savepoint: rows flush-pero-uncommitted del símbolo N sobreviven al fallo del N+1.
+
+        Reproduce el bug exacto: GPTClient.request() hace session.add(ModelRequest)+flush
+        sin commit. Si el siguiente símbolo lanza y se hace session.rollback(), esas rows
+        desaparecen. Con begin_nested() solo se revierte el savepoint del símbolo fallido.
+
+        BTCUSDT → mock GPT inserta ModelRequest y retorna NO_OPERAR (sin commit posterior)
+        ETHUSDT → mock GPT lanza
+        Assert: la ModelRequest de BTCUSDT sigue visible en la sesión.
+        """
+        from sqlalchemy import func, select
+
+        from backend.storage.models import ModelRequest
+
+        bot_run = _build_bot_run(pg_session)
+        btc_no_operar = _make_gpt_decision(DecisionType.NO_OPERAR, execute=False)
+        sentinel_hash = "test-savepoint-sentinel-btcusdt"
+        call_count = 0
+
+        async def gpt_side_effect(*args: object, **kwargs: object) -> ModelDecision | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Simula lo que hace GPTClient.request(): add + flush, sin commit.
+                pg_session.add(
+                    ModelRequest(
+                        bot_run_id=bot_run.id,
+                        symbol="BTCUSDT",
+                        timestamp=_NOW,
+                        model="gpt-4o-test",
+                        context={},
+                        request_hash=sentinel_hash,
+                    )
+                )
+                pg_session.flush()
+                return btc_no_operar
+            raise RuntimeError("simulated ETHUSDT GPT failure")
+
+        runner = _build_pipeline_multi_symbol(
+            pg_session,
+            bot_run,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            gpt_side_effect=gpt_side_effect,
+        )
+        runner._tick()
+
+        count = pg_session.scalar(
+            select(func.count()).where(
+                ModelRequest.bot_run_id == bot_run.id,
+                ModelRequest.request_hash == sentinel_hash,
+            )
+        )
+        assert count == 1, (
+            "La ModelRequest de BTCUSDT debe sobrevivir al rollback del savepoint de ETHUSDT"
+        )
+        _close_bot_run(pg_session, bot_run)

@@ -184,13 +184,16 @@ class CycleRunner:
         Los simbolos se procesan secuencialmente para evitar concurrencia sobre
         la sesion de SQLAlchemy y el estado del PaperAdapter (no thread-safe).
         Las fallas por simbolo se aislan: una excepcion no bloquea el resto.
+        Un SAVEPOINT por simbolo garantiza que el rollback de un error solo
+        deshace el trabajo de ese simbolo, sin afectar audit rows ya persistidas
+        de simbolos anteriores en el mismo tick.
         """
+        assert self._session is not None
         for snapshot in snapshots:
             try:
-                await self._process_symbol(snapshot)
+                with self._session.begin_nested():
+                    await self._process_symbol(snapshot)
             except Exception:
-                if self._session is not None:
-                    self._session.rollback()
                 log.error(
                     "cycle_runner.decision_pipeline_error",
                     symbol=snapshot.symbol,
