@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import func, select
 
 from backend.storage.models import Order, Position, PositionEvent, Trade
 from backend.storage.repositories.base import BaseRepository
@@ -10,6 +13,49 @@ from backend.storage.repositories.base import BaseRepository
 
 class TradeRepository(BaseRepository[Trade]):
     model = Trade
+
+    def get_loss_totals(self, bot_run_id: str) -> tuple[Decimal, Decimal]:
+        """Retorna (daily_loss_usdt, total_loss_usdt) para este bot run.
+
+        Ambos valores son >= 0 (solo pérdidas realizadas en USDT).
+        daily_loss_usdt: sum(abs(net_pnl)) de trades CLOSED con pérdida hoy (UTC).
+        total_loss_usdt: sum(abs(net_pnl)) de todos los trades CLOSED con pérdida.
+        """
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        daily_raw = self._session.scalar(
+            select(func.sum(Trade.net_pnl)).where(
+                Trade.bot_run_id == bot_run_id,
+                Trade.status == "CLOSED",
+                Trade.net_pnl < 0,
+                Trade.closed_at >= today_start,
+            )
+        )
+        total_raw = self._session.scalar(
+            select(func.sum(Trade.net_pnl)).where(
+                Trade.bot_run_id == bot_run_id,
+                Trade.status == "CLOSED",
+                Trade.net_pnl < 0,
+            )
+        )
+        daily_loss = abs(daily_raw) if daily_raw is not None else Decimal("0")
+        total_loss = abs(total_raw) if total_raw is not None else Decimal("0")
+        return daily_loss, total_loss
+
+    def get_last_closed_trade(self, bot_run_id: str, symbol: str) -> Trade | None:
+        """Retorna el último trade cerrado del símbolo para este bot run."""
+        stmt = (
+            select(Trade)
+            .where(
+                Trade.bot_run_id == bot_run_id,
+                Trade.symbol == symbol,
+                Trade.status == "CLOSED",
+                Trade.closed_at.is_not(None),
+            )
+            .order_by(Trade.closed_at.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
 
     def list_open(self, bot_run_id: str) -> list[Trade]:
         stmt = select(Trade).where(
