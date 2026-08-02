@@ -251,6 +251,79 @@ def test_tick_all_fetches_symbols_concurrently_not_sequentially() -> None:
     assert engine.process_snapshot.call_count == len(symbols)
 
 
+def _snapshot(symbol: str, last_price: Decimal) -> MarketSnapshot:
+    snap = Mock(spec=MarketSnapshot)
+    snap.symbol = symbol
+    snap.last_price = last_price
+    return snap
+
+
+def test_get_last_price_is_none_before_any_tick() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, SYMBOLS)
+
+    assert service.get_last_price("BTCUSDT") is None
+
+
+def test_get_last_price_updates_after_successful_tick() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, ["BTCUSDT"])
+    fetcher.fetch_snapshot = _make_fetch_snapshot({"BTCUSDT": Decimal("50000")})  # type: ignore[method-assign]
+
+    service.tick_all()
+
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
+
+
+def test_get_last_price_stays_stale_when_fetch_fails_next_cycle() -> None:
+    """Un fallo transitorio de fetch no debe borrar el ultimo precio conocido —
+    una posicion abierta con SL/trailing activo necesita seguir teniendo un
+    precio de referencia, aunque este un ciclo desactualizado."""
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, ["BTCUSDT"])
+    fetcher.fetch_snapshot = _make_fetch_snapshot({"BTCUSDT": Decimal("50000")})  # type: ignore[method-assign]
+    service.tick_all()
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
+
+    fetcher.fetch_snapshot = _make_failing_fetch_snapshot()  # type: ignore[method-assign]
+    service.tick_all()
+
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
+
+
+def _make_fetch_snapshot(prices: dict[str, Decimal]):
+    async def _fetch(
+        symbol: str,
+        account_balance_usdt: Decimal,
+        open_positions_count: int = 0,
+        active_orders_count: int = 0,
+    ) -> MarketSnapshot:
+        return _snapshot(symbol, prices[symbol])
+
+    return _fetch
+
+
+def _make_failing_fetch_snapshot():
+    async def _fetch(
+        symbol: str,
+        account_balance_usdt: Decimal,
+        open_positions_count: int = 0,
+        active_orders_count: int = 0,
+    ) -> MarketSnapshot:
+        raise ValueError(f"fetch failed for {symbol}")
+
+    return _fetch
+
+
 def test_tick_all_with_no_symbols_still_commits() -> None:
     adapter = _FakeAdapter()
     fetcher = _FakeFetcher()

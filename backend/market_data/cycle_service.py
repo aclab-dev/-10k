@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from decimal import Decimal
 
 import structlog
 from sqlalchemy.orm import Session
@@ -35,6 +36,14 @@ class MarketDataCycleService:
     `on_snapshot`, si se inyecta, se invoca con cada MarketSnapshot ya validado
     y persistido (p.ej. `MarketAnalysisService.on_snapshot`, F5/F6). Debe aislar
     sus propias fallas — no se envuelve acá en try/except adicional.
+
+    Mantiene además el último `last_price` conocido por símbolo (`get_last_price`),
+    fuente real de `mark_price` para `PositionTickService` (F14): un dict en
+    memoria ya poblado por este mismo ciclo, sin I/O adicional. Si un símbolo
+    falla el fetch o el snapshot es rechazado, el precio cacheado se mantiene
+    (stale mejor que ausente — un fallo transitorio de market data no debe
+    dejar sin ningún precio de referencia a una posición abierta con SL/trailing
+    activos).
     """
 
     def __init__(
@@ -52,6 +61,7 @@ class MarketDataCycleService:
         self._session = session
         self._symbols = symbols
         self._on_snapshot = on_snapshot
+        self._last_prices: dict[str, Decimal] = {}
 
     def tick_all(self) -> list[MarketSnapshot]:
         """Obtiene, valida y persiste un MarketSnapshot por símbolo. Commitea al final.
@@ -104,8 +114,14 @@ class MarketDataCycleService:
                 continue
             if self._on_snapshot is not None:
                 self._on_snapshot(result)
+            self._last_prices[symbol] = result.last_price
             successful.append(result)
         return successful
+
+    def get_last_price(self, symbol: str) -> Decimal | None:
+        """Último `last_price` conocido para `symbol`, o `None` si nunca hubo
+        un snapshot exitoso. Ver nota de staleness en el docstring de la clase."""
+        return self._last_prices.get(symbol)
 
 
 __all__ = ["MarketDataCycleService"]
