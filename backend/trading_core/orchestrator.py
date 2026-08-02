@@ -27,6 +27,7 @@ from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
 from backend.position_manager.manager import PositionManager
+from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import get_session_factory
 from backend.storage.models import BotRun
 from backend.storage.repositories.bot import BotRunRepository
@@ -74,6 +75,10 @@ class Orchestrator:
                 adapter, db_session, bot_run, cfg = self._prepare_paper_context(session)
                 mds = self._build_market_data_service(adapter, db_session, bot_run, cfg)
                 exec_engine = self._build_execution_engine(adapter, db_session, bot_run, cfg)
+                assert self._position_manager is not None
+                position_tick_service: PositionTickService | None = (
+                    self._build_position_tick_service(mds, self._position_manager)
+                )
                 gpt_client, prompt_builder, aggregator = self._build_decision_components(cfg)
                 decision_session: Session | None = db_session
                 decision_bot_run_id: str | None = str(bot_run.id)
@@ -85,6 +90,7 @@ class Orchestrator:
                 assert execution_engine is not None
                 mds = market_data_service
                 exec_engine = execution_engine
+                position_tick_service = None
                 gpt_client, prompt_builder, aggregator = None, None, None
                 decision_session = None
                 decision_bot_run_id = None
@@ -92,6 +98,7 @@ class Orchestrator:
             self._cycle_runner = CycleRunner(
                 self._state_machine,
                 interval_seconds=interval,
+                position_tick_service=position_tick_service,
                 market_data_service=mds,
                 execution_engine=exec_engine,
                 gpt_client=gpt_client,
@@ -197,6 +204,40 @@ class Orchestrator:
         )
         self._execution_engine = execution_engine
         return execution_engine
+
+    @staticmethod
+    def _build_position_tick_service(
+        mds: MarketDataCycleService, position_manager: PositionManager
+    ) -> PositionTickService:
+        """Arma el PositionTickService (F14) con el PositionManager compartido de
+        ExecutionEngine y una fuente de mark_price real.
+
+        Fuente de mark_price: `mds.get_last_price`, el cache en memoria que
+        MarketDataCycleService puebla en cada tick exitoso. CycleRunner tickea
+        market_data_service antes que position_tick_service (ver cycle_runner.py),
+        así que el precio ya está disponible del mismo ciclo.
+
+        Contrato de timeout (comentario #4 del review de Rodrigo en el PR #95):
+        get_mark_price no impone timeout propio acá porque no hace I/O — es una
+        lectura de dict en memoria ya poblado, no puede colgarse. El timeout real
+        queda pendiente para cuando exista un feed de mark_price sobre un exchange
+        real (BingXAdapter, F16/F17), que sí es una llamada bloqueante.
+
+        Si todavía no hay precio cacheado para el símbolo (nunca corrió un tick
+        de market data exitoso), get_mark_price lanza LookupError — PositionTickService.
+        tick_all() ya aísla esa falla por símbolo y reintenta en el próximo ciclo.
+        """
+
+        def get_mark_price(symbol: str) -> Decimal:
+            price = mds.get_last_price(symbol)
+            if price is None:
+                raise LookupError(
+                    f"No hay last_price cacheado para {symbol!r} todavia — "
+                    "ningun tick de market data exitoso corrio aun para este simbolo."
+                )
+            return price
+
+        return PositionTickService(position_manager, get_mark_price=get_mark_price)
 
     @property
     def state_machine(self) -> BotStateMachine:
