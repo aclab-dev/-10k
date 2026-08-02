@@ -362,6 +362,14 @@ class TestOrchestratorE2E:
         reales del ciclo, no que se dispare un branch particular. Se usa un spy
         (wraps=, no un stub) para observar la llamada sin reemplazar la logica
         real — consistente con "no mocks internos" del resto del archivo.
+
+        Se llama a `mds.tick_all()` + `pts.tick_all()` directamente (mismo orden
+        que `CycleRunner._tick()`) en vez de `orch.cycle_runner._tick()`: este
+        archivo arma las decisiones a mano justamente porque `_tick()` dispara
+        el pipeline de decision real (GPT -> Aggregator -> Risk -> Execution) si
+        `OPENAI_API_KEY` esta en el entorno — nada que ver con lo que testea F14,
+        y saltaria llamadas reales a la API de OpenAI en cualquier entorno donde
+        esa key este seteada.
         """
         orch = Orchestrator(session=pg_session)
         try:
@@ -387,12 +395,14 @@ class TestOrchestratorE2E:
             pts = orch.cycle_runner._position_tick_service
             assert pts is not None
 
-            # Ciclo real completo: market data -> position tick service, igual
-            # que el loop operativo (_tick() los llama en ese orden).
+            # Mismo orden que CycleRunner._tick(): market data -> position tick
+            # service. No se usa _tick() completo para no depender de si
+            # OPENAI_API_KEY esta seteada (ver docstring).
             with patch.object(
                 orch.position_manager, "tick", wraps=orch.position_manager.tick
             ) as tick_spy:
-                orch.cycle_runner._tick()
+                mds.tick_all()
+                pts.tick_all()
 
             tick_spy.assert_called_once()
             called_symbol, called_mark_price = tick_spy.call_args.args
