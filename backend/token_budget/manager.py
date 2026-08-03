@@ -79,10 +79,9 @@ class TokenBudgetManager:
         # Ventana deslizante de 24h (no día calendario) — ver max_tokens_per_24h en config.
         used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
 
-        hour_exceeded = used_hour >= cfg.max_tokens_per_hour
-        day_exceeded = used_day >= cfg.max_tokens_per_24h
+        result_status = self._status_for_usage(used_hour, used_day)
 
-        if hour_exceeded or day_exceeded:
+        if result_status == BudgetStatus.EXCEEDED:
             _log.warning(
                 "token_budget.exceeded",
                 bot_run_id=self._bot_run_id,
@@ -106,12 +105,7 @@ class TokenBudgetManager:
                 limit_day=cfg.max_tokens_per_24h,
             )
 
-        alert = cfg.alert_at_percent
-        near_hour = used_hour >= alert * cfg.max_tokens_per_hour
-        near_day = used_day >= alert * cfg.max_tokens_per_24h
-        status = BudgetStatus.WARNING if (near_hour or near_day) else BudgetStatus.NORMAL
-
-        if status == BudgetStatus.WARNING:
+        if result_status == BudgetStatus.WARNING:
             _log.warning(
                 "token_budget.alert",
                 bot_run_id=self._bot_run_id,
@@ -119,12 +113,49 @@ class TokenBudgetManager:
                 limit_hour=cfg.max_tokens_per_hour,
                 tokens_used_day=used_day,
                 limit_day=cfg.max_tokens_per_24h,
-                alert_at_percent=alert,
+                alert_at_percent=cfg.alert_at_percent,
             )
 
         return BudgetCheckResult(
             ok=True,
-            status=status,
+            status=result_status,
+            tokens_used_hour=used_hour,
+            tokens_used_day=used_day,
+            limit_hour=cfg.max_tokens_per_hour,
+            limit_day=cfg.max_tokens_per_24h,
+        )
+
+    def _status_for_usage(self, used_hour: int, used_day: int) -> BudgetStatus:
+        """Evaluación pura de umbrales, sin side-effects (logging/excepciones)."""
+        cfg = self._config
+        if used_hour >= cfg.max_tokens_per_hour or used_day >= cfg.max_tokens_per_24h:
+            return BudgetStatus.EXCEEDED
+        alert = cfg.alert_at_percent
+        near_hour = used_hour >= alert * cfg.max_tokens_per_hour
+        near_day = used_day >= alert * cfg.max_tokens_per_24h
+        if near_hour or near_day:
+            return BudgetStatus.WARNING
+        return BudgetStatus.NORMAL
+
+    # ------------------------------------------------------------------
+    # Lectura de solo estado (dashboard)
+    # ------------------------------------------------------------------
+
+    def get_current_status(self) -> BudgetCheckResult:
+        """Estado actual del budget, de solo lectura.
+
+        A diferencia de check_budget(), nunca levanta TokenBudgetExceededError ni
+        loguea — está pensado para un endpoint GET del dashboard que solo quiere
+        mostrar el consumo hora/día contra los límites configurados.
+        """
+        cfg = self._config
+        now = datetime.now(UTC)
+        used_hour = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=1))
+        used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
+        result_status = self._status_for_usage(used_hour, used_day)
+        return BudgetCheckResult(
+            ok=result_status != BudgetStatus.EXCEEDED,
+            status=result_status,
             tokens_used_hour=used_hour,
             tokens_used_day=used_day,
             limit_hour=cfg.max_tokens_per_hour,
