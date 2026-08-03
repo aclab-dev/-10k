@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.storage.models import AccountState, BotRun, BotState
 from backend.storage.repositories.base import BaseRepository
@@ -48,3 +48,33 @@ class AccountStateRepository(BaseRepository[AccountState]):
             .limit(1)
         )
         return self._session.scalars(stmt).first()
+
+    def list_history(
+        self,
+        bot_run_id: str,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[AccountState], int]:
+        """Serie temporal de AccountState (balance/equity/PnL/drawdown) para el dashboard.
+
+        Devuelve (página ordenada ASC por timestamp, total de registros que matchean el filtro).
+        """
+        filters = [AccountState.bot_run_id == bot_run_id]
+        if since is not None:
+            filters.append(AccountState.timestamp >= since)
+        if until is not None:
+            filters.append(AccountState.timestamp <= until)
+
+        total = self._session.scalar(select(func.count()).select_from(AccountState).where(*filters))
+        stmt = (
+            select(AccountState)
+            .where(*filters)
+            .order_by(AccountState.timestamp.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(self._session.scalars(stmt))
+        return items, int(total) if total is not None else 0
