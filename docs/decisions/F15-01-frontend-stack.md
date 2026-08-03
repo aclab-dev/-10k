@@ -92,13 +92,22 @@ En `backend/app/main.py`, **todos los routers de API y WebSocket deben registrar
 
 ```python
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # 1. Registrar routers PRIMERO (API REST + WebSocket)
 app.include_router(api_router, prefix="/api")
 app.include_router(ws_router, prefix="/api/ws")  # WebSocket bajo /api/ws
 
-# 2. Mount del SPA al final — captura todo lo que no matchea un router
-app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="frontend")
+# 2. Assets estáticos del build (JS/CSS/imágenes) bajo /assets
+app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="frontend-assets")
+
+# 3. Catch-all SPA fallback — necesario porque StaticFiles(html=True) sólo
+# sirve index.html en la raíz del mount, no en paths anidados. Sin esto,
+# un refresh o deep-link a una ruta de React Router (ej. /positions,
+# /backtests/123) devuelve 404 en vez del index.html de la SPA.
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str) -> FileResponse:
+    return FileResponse("frontend/dist/index.html")
 ```
 
 Convenio de prefijos:
@@ -107,7 +116,14 @@ Convenio de prefijos:
 |---|---|
 | REST API | `/api/...` |
 | WebSocket / SSE | `/api/ws/...` |
-| SPA (React) | `/` (catch-all, último) |
+| Assets estáticos (JS/CSS) | `/assets/...` |
+| SPA (React, catch-all) | `/{full_path:path}` (registrado último) |
+
+### Autenticación y autorización
+
+Fuera de scope de F15. El dashboard expone datos sensibles (posiciones abiertas, PnL en vivo, decisiones del Aggregator, métricas de riesgo) y **no debe quedar accesible sin autenticación** antes de ir a producción.
+
+Se crea una tarjeta separada para definir el mecanismo de auth (comparte sesión/token con la API existente vs. login propio) antes de habilitar el dashboard fuera de un entorno local/interno.
 
 ### Docker
 
@@ -127,6 +143,8 @@ FROM python:3.12-slim
 ...
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 ```
+
+`npm ci` requiere `package-lock.json` versionado en el repo (a diferencia de `npm install`, no lo genera). Quien implemente F15 debe commitear el lockfile junto con `package.json` al crear `/frontend`, o el build de Docker falla.
 
 No se modifica `docker-compose.yml`.
 
