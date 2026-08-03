@@ -13,12 +13,13 @@ from sqlalchemy.orm import Session
 from backend.api.dependencies import get_current_bot_run_id
 from backend.api.pagination import Page, PageParams
 from backend.market_data.schemas import ALLOWED_SYMBOLS
+from backend.risk_engine.schemas import RiskDecision
 from backend.storage.database import get_db
 from backend.storage.repositories import RiskValidationRepository
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
-_ALLOWED_RESULTS = frozenset({"APPROVE", "ADJUST_DOWN", "BLOCK"})
+_ALLOWED_RESULTS = frozenset(d.value for d in RiskDecision)
 
 
 class RiskValidationOut(BaseModel):
@@ -47,7 +48,7 @@ def list_risk_validations(
     result: Annotated[
         str | None,
         Query(
-            description="Filtra por resultado: APPROVE | ADJUST_DOWN | BLOCK. "
+            description="Filtra por resultado: APPROVE | ADJUST_DOWN | BLOCK | NO_OPERAR. "
             "Usar BLOCK para la vista de bloqueos."
         ),
     ] = None,

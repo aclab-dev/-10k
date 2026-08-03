@@ -41,9 +41,21 @@ def test_status_account_none_without_account_state(client: TestClient, session: 
     assert response.json()["state"] is None
 
 
-def test_status_explicit_bot_run_id_not_found(client: TestClient, session: Session) -> None:
+def test_status_explicit_bot_run_id_malformed_returns_404(
+    client: TestClient, session: Session
+) -> None:
     make_bot_run(session)
     response = client.get("/api/status", params={"bot_run_id": "does-not-exist"})
+    assert response.status_code == 404
+
+
+def test_status_explicit_bot_run_id_well_formed_but_missing_returns_404(
+    client: TestClient, session: Session
+) -> None:
+    make_bot_run(session)
+    response = client.get(
+        "/api/status", params={"bot_run_id": "00000000-0000-0000-0000-000000000000"}
+    )
     assert response.status_code == 404
 
 

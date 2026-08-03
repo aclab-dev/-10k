@@ -60,6 +60,20 @@ def test_list_risk_validations_filter_by_symbol(client: TestClient, session: Ses
     assert body["items"][0]["symbol"] == "ETHUSDT"
 
 
+def test_list_risk_validations_filter_no_operar(client: TestClient, session: Session) -> None:
+    """NO_OPERAR es un resultado válido: decisión del Aggregator sin edge, propagada
+    por el Risk Engine sin evaluarla (no debe confundirse con BLOCK)."""
+    bot_run = make_bot_run(session)
+    make_risk_validation(session, bot_run, result="NO_OPERAR")
+    make_risk_validation(session, bot_run, result="BLOCK")
+
+    response = client.get("/api/risk/validations", params={"result": "NO_OPERAR"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["result"] == "NO_OPERAR"
+
+
 def test_list_risk_validations_invalid_result_rejected(
     client: TestClient, session: Session
 ) -> None:

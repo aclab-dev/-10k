@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -56,7 +56,9 @@ def get_status(
 ) -> BotStatusOut:
     """Estado actual del bot: run activo, último BotState y snapshot de cuenta (PnL/drawdown)."""
     bot_run = BotRunRepository(db).get_by_id(bot_run_id)
-    assert bot_run is not None  # garantizado por get_current_bot_run_id
+    if bot_run is None:
+        # No debería pasar: get_current_bot_run_id ya validó que bot_run_id existe.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"bot_run_id '{bot_run_id}' no encontrado")
 
     bot_state = BotStateRepository(db).get_latest(bot_run_id)
     account_state = AccountStateRepository(db).get_latest(bot_run_id)

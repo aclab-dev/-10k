@@ -79,6 +79,13 @@ def test_get_decision_detail(client: TestClient, session: Session) -> None:
     assert response.json()["id"] == decision.id
 
 
-def test_get_decision_404_when_not_found(client: TestClient, session: Session) -> None:
+def test_get_decision_404_when_malformed_id(client: TestClient, session: Session) -> None:
     response = client.get("/api/decisions/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_get_decision_404_when_well_formed_but_missing(
+    client: TestClient, session: Session
+) -> None:
+    response = client.get("/api/decisions/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_bot_run_id
+from backend.api.dependencies import get_current_bot_run_id, raise_404_if_not_uuid
 from backend.api.pagination import Page, PageParams
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.storage.database import get_db
@@ -68,6 +68,7 @@ def list_decisions(
 @router.get("/{decision_id}")
 def get_decision(decision_id: str, db: Annotated[Session, Depends(get_db)]) -> DecisionOut:
     """Detalle de una decisión puntual."""
+    raise_404_if_not_uuid(decision_id, param_name="decision_id")
     decision = DecisionRepository(db).get_by_id(decision_id)
     if decision is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"decision_id '{decision_id}' no encontrada")
