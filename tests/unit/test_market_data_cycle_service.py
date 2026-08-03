@@ -74,10 +74,16 @@ class _FakeAdapter(ExchangeAdapter):
 
 
 class _FakeFetcher(DataFetcher):
-    """Fetcher controlable: retorna un sentinel por simbolo o levanta si esta en `failing`."""
+    """Fetcher controlable: retorna un snapshot por simbolo (con `last_price`
+    custom via `prices`, default 0) o levanta si esta en `failing`."""
 
-    def __init__(self, failing: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        failing: set[str] | None = None,
+        prices: dict[str, Decimal] | None = None,
+    ) -> None:
         self.failing = failing or set()
+        self.prices = prices or {}
         self.calls: list[tuple[str, Decimal, int, int]] = []
 
     async def fetch_snapshot(
@@ -90,7 +96,10 @@ class _FakeFetcher(DataFetcher):
         self.calls.append((symbol, account_balance_usdt, open_positions_count, active_orders_count))
         if symbol in self.failing:
             raise ValueError(f"fetch failed for {symbol}")
-        return Mock(name=f"snapshot-{symbol}")
+        snap = Mock(spec=MarketSnapshot, name=f"snapshot-{symbol}")
+        snap.symbol = symbol
+        snap.last_price = self.prices.get(symbol, Decimal("0"))
+        return snap
 
     def is_healthy(self) -> bool:
         return True
@@ -249,6 +258,46 @@ def test_tick_all_fetches_symbols_concurrently_not_sequentially() -> None:
 
     assert elapsed < 0.15
     assert engine.process_snapshot.call_count == len(symbols)
+
+
+def test_get_last_price_is_none_before_any_tick() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, SYMBOLS)
+
+    assert service.get_last_price("BTCUSDT") is None
+
+
+def test_get_last_price_updates_after_successful_tick() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher(prices={"BTCUSDT": Decimal("50000")})
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, ["BTCUSDT"])
+
+    service.tick_all()
+
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
+
+
+def test_get_last_price_stays_stale_when_fetch_fails_next_cycle() -> None:
+    """Un fallo transitorio de fetch no debe borrar el ultimo precio conocido —
+    una posicion abierta con SL/trailing activo necesita seguir teniendo un
+    precio de referencia, aunque este un ciclo desactualizado."""
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher(prices={"BTCUSDT": Decimal("50000")})
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, ["BTCUSDT"])
+    service.tick_all()
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
+
+    fetcher.failing = {"BTCUSDT"}
+    service.tick_all()
+
+    assert service.get_last_price("BTCUSDT") == Decimal("50000")
 
 
 def test_tick_all_with_no_symbols_still_commits() -> None:

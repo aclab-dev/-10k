@@ -18,6 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -343,6 +344,71 @@ class TestOrchestratorE2E:
             assert pm_config is not None
             assert pm_config.stop_loss == Decimal(str(decision.stop_loss))
             assert pm_config.take_profit == Decimal(str(decision.take_profit))
+        finally:
+            orch.close()
+
+    def test_position_tick_service_ticks_open_position_on_next_cycle(
+        self, pg_session: Session
+    ) -> None:
+        """[143]: tras abrir una posicion, el proximo ciclo real del Orchestrator
+        debe tickear PositionManager via PositionTickService con un mark_price
+        real (no mockeado) — verifica el wiring completo, no solo la apertura.
+
+        MockDataFetcher no tiene seed fijo: el precio del proximo tick puede
+        terminar disparando SL/TP real (posicion cerrada) o simplemente moviendo
+        el trailing (posicion sigue abierta) — ambos son resultados validos y
+        no es lo que este test verifica. Lo que importa es que
+        PositionManager.tick() haya sido invocado con el simbolo y el mark_price
+        reales del ciclo, no que se dispare un branch particular. Se usa un spy
+        (wraps=, no un stub) para observar la llamada sin reemplazar la logica
+        real — consistente con "no mocks internos" del resto del archivo.
+
+        Se llama a `mds.tick_all()` + `pts.tick_all()` directamente (mismo orden
+        que `CycleRunner._tick()`) en vez de `orch.cycle_runner._tick()`: este
+        archivo arma las decisiones a mano justamente porque `_tick()` dispara
+        el pipeline de decision real (GPT -> Aggregator -> Risk -> Execution) si
+        `OPENAI_API_KEY` esta en el entorno — nada que ver con lo que testea F14,
+        y saltaria llamadas reales a la API de OpenAI en cualquier entorno donde
+        esa key este seteada.
+        """
+        orch = Orchestrator(session=pg_session)
+        try:
+            mds = orch.cycle_runner._market_data_service
+            assert mds is not None
+            mds.tick_all()
+
+            decision = _make_approve_decision()
+            cfg = get_config()
+            risk_result = risk_engine.validate(
+                aggregation=_make_aggregation_result(_make_aggregation_id(), decision),
+                decision=decision,
+                daily_loss_usdt=Decimal("0"),
+                total_loss_usdt=Decimal("0"),
+                config=cfg,
+            )
+            assert risk_result.decision == RiskDecision.APPROVE
+
+            assert orch.execution_engine is not None
+            orch.execution_engine.execute_approved_plan(decision, risk_result)
+
+            assert orch.position_manager is not None
+            pts = orch.cycle_runner._position_tick_service
+            assert pts is not None
+
+            # Mismo orden que CycleRunner._tick(): market data -> position tick
+            # service. No se usa _tick() completo para no depender de si
+            # OPENAI_API_KEY esta seteada (ver docstring).
+            with patch.object(
+                orch.position_manager, "tick", wraps=orch.position_manager.tick
+            ) as tick_spy:
+                mds.tick_all()
+                pts.tick_all()
+
+            tick_spy.assert_called_once()
+            called_symbol, called_mark_price = tick_spy.call_args.args
+            assert called_symbol == _SYMBOL
+            assert isinstance(called_mark_price, Decimal)
+            assert called_mark_price == mds.get_last_price(_SYMBOL)
         finally:
             orch.close()
 

@@ -18,6 +18,7 @@ from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.fetcher import MockDataFetcher
 from backend.position_manager.manager import PositionManager
+from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
@@ -98,6 +99,46 @@ def test_default_construction_wires_paper_execution_pipeline(sqlite_session: Ses
     # Mismo PaperAdapter que market data — no dos instancias con estado divergente.
     mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
     assert exec_engine._adapter is mds._adapter  # type: ignore[attr-defined]
+
+
+def test_default_construction_wires_paper_position_tick_service(sqlite_session: Session) -> None:
+    """Sin nada inyectado, arma un PositionTickService real (F14) atado al mismo
+    PositionManager que usa ExecutionEngine, con mark_price real via el cache
+    de MarketDataCycleService."""
+    orch = Orchestrator(session=sqlite_session)
+
+    pts = orch.cycle_runner._position_tick_service  # type: ignore[attr-defined]
+    assert isinstance(pts, PositionTickService)
+    assert pts._pm is orch.position_manager  # type: ignore[attr-defined]
+
+    mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
+    mds.tick_all()
+
+    # get_mark_price debe resolver al ultimo precio cacheado por el tick de market data.
+    price = pts._get_mark_price("BTCUSDT")  # type: ignore[attr-defined]
+    assert price == mds.get_last_price("BTCUSDT")
+
+
+def test_position_tick_service_mark_price_raises_before_first_market_data_tick(
+    sqlite_session: Session,
+) -> None:
+    """Sin ningun tick de market data corrido aun, get_mark_price debe fallar
+    explicito (LookupError) en vez de devolver un precio inexistente."""
+    orch = Orchestrator(session=sqlite_session)
+
+    pts = orch.cycle_runner._position_tick_service  # type: ignore[attr-defined]
+    with pytest.raises(LookupError, match="BTCUSDT"):
+        pts._get_mark_price("BTCUSDT")  # type: ignore[attr-defined]
+
+
+def test_position_tick_service_is_none_when_market_data_service_injected() -> None:
+    """Si el caller inyecta market_data_service/execution_engine, es dueno de ese
+    ciclo de vida — Orchestrator no arma un PositionTickService propio."""
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
+    assert orch.cycle_runner._position_tick_service is None  # type: ignore[attr-defined]
 
 
 def test_only_market_data_service_injected_raises() -> None:
