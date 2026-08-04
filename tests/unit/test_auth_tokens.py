@@ -104,6 +104,18 @@ def test_malformed_token_raises_token_invalid(malformed: str) -> None:
         verify_token(malformed, secret_key=SECRET)
 
 
+@pytest.mark.parametrize("malformed", ["abc.ñ", "ñ.abc", "café", "a.b\x80"])
+def test_non_ascii_token_raises_token_invalid_not_type_error(malformed: str) -> None:
+    """Regresión: `hmac.compare_digest` sobre str lanza TypeError con no-ASCII.
+
+    El header lo controla el cliente y Starlette lo decodifica en latin-1, así
+    que cualquier byte llega hasta acá. Sin el chequeo previo esto escapaba como
+    TypeError (500) en vez de TokenInvalid (401).
+    """
+    with pytest.raises(TokenInvalid):
+        verify_token(malformed, secret_key=SECRET)
+
+
 def test_correctly_signed_but_unreadable_payload_is_invalid() -> None:
     """Firma válida sobre un payload que no es JSON: sigue siendo inválido."""
     from backend.auth.tokens import _sign

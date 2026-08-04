@@ -85,7 +85,11 @@ def anon_client(session: Session) -> Generator[TestClient, None, None]:
         yield session
 
     app.dependency_overrides[get_db] = _get_db
-    app.dependency_overrides[get_auth_credentials] = make_auth_credentials
+    # El override se envuelve en un lambda sin argumentos a propósito: FastAPI
+    # inspecciona la firma del callable y convertiría el `enabled` de
+    # `make_auth_credentials` en un query param, dejando que `?enabled=false`
+    # apague la auth y volviendo verde cualquier test de 401 por accidente.
+    app.dependency_overrides[get_auth_credentials] = lambda: make_auth_credentials()
     yield TestClient(app)
     app.dependency_overrides.clear()
 

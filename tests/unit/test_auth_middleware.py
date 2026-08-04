@@ -67,6 +67,20 @@ def test_sensitive_endpoints_reject_a_garbage_token(anon_client: TestClient, pat
 
 
 @pytest.mark.parametrize("path", SENSITIVE_PATHS)
+def test_auth_cannot_be_turned_off_from_the_query_string(
+    anon_client: TestClient, session: Session, path: str
+) -> None:
+    """Regresión del harness: el override de credenciales no debe aceptar params.
+
+    Si el callable del `dependency_overrides` declara `enabled`, FastAPI lo
+    expone como query param y `?enabled=false` apaga la auth — volviendo verde
+    cualquier test de 401 sin que nadie lo note.
+    """
+    make_bot_run(session)
+    assert anon_client.get(f"{path}?enabled=false").status_code == 401
+
+
+@pytest.mark.parametrize("path", SENSITIVE_PATHS)
 def test_auth_runs_before_the_404_of_a_missing_bot_run(anon_client: TestClient, path: str) -> None:
     """Sin bot run activo y sin token: 401, no 404.
 

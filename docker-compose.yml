@@ -44,11 +44,15 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL debe estar definido en .env}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: ${APP_PORT:-8000}
-      # Auth del dashboard (F15). Sin estas tres, la app no levanta mientras
-      # dashboard_auth.enabled sea true. Generarlas con scripts/hash_password.py.
+      # Auth del dashboard (F15). Generarlas con scripts/hash_password.py.
+      # No se usa la sintaxis ${VAR:?error} porque validaria acá siempre, incluso
+      # con la auth deshabilitada. El gate es la validacion fail-closed de la app
+      # (backend/auth/config.py), que respeta dashboard_auth.enabled y da un
+      # mensaje mucho mas concreto.
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
-      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?DASHBOARD_PASSWORD_HASH debe estar definido en .env (python scripts/hash_password.py)}
-      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:?DASHBOARD_SECRET_KEY debe estar definido en .env (python scripts/hash_password.py)}
+      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:-}
+      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:-}
+      BOT__DASHBOARD_AUTH__ENABLED: ${BOT__DASHBOARD_AUTH__ENABLED:-true}
     command: ["sh", "-c", "alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "${APP_PORT:-8000}:8000"

@@ -108,6 +108,14 @@ def verify_token(token: str, *, secret_key: str, now: datetime | None = None) ->
     si la firma es válida pero el token venció. La firma se chequea ANTES de
     mirar el `exp`: los claims de un token sin firmar no son confiables.
     """
+    # Un token legítimo es base64url puro, o sea ASCII. Hay que rechazar lo que
+    # no lo sea ANTES de tocarlo: `hmac.compare_digest` sobre str lanza
+    # TypeError con caracteres no-ASCII, y el header lo controla el cliente
+    # (Starlette lo decodifica en latin-1, así que cualquier byte llega acá).
+    # Sin este chequeo, `Authorization: Bearer a.<0xF1>` da 500 en vez de 401.
+    if not token.isascii():
+        raise TokenInvalid("Token con caracteres no-ASCII")
+
     payload_b64, separator, signature_b64 = token.partition(".")
     if not separator or not payload_b64 or not signature_b64:
         raise TokenInvalid("Formato de token inválido")

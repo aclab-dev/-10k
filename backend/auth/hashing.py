@@ -14,6 +14,7 @@ import binascii
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from functools import lru_cache
 
 # Parámetros de costo. n debe ser potencia de 2. n=2**15, r=8, p=1 es el perfil
@@ -42,6 +43,44 @@ def _b64encode(raw: bytes) -> str:
 def _b64decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
+
+
+@dataclass(frozen=True)
+class _ParsedHash:
+    """Campos de un hash encoded ya validados estructuralmente."""
+
+    n: int
+    r: int
+    p: int
+    salt: bytes
+    digest: bytes
+
+
+def _parse(encoded: str) -> _ParsedHash | None:
+    """Parsea y valida la estructura de un hash encoded. `None` si está malformado.
+
+    Único punto de parseo: `verify_password` y `validate_password_hash` lo
+    comparten para que no puedan divergir — si el boot acepta un hash, el login
+    tiene que poder usarlo.
+    """
+    parts = encoded.split("$")
+    if len(parts) != _FIELD_COUNT or parts[0] != _ALGORITHM:
+        return None
+
+    _, n_raw, r_raw, p_raw, salt_b64, hash_b64 = parts
+    try:
+        n, r, p = int(n_raw), int(r_raw), int(p_raw)
+        salt = _b64decode(salt_b64)
+        digest = _b64decode(hash_b64)
+    except (ValueError, binascii.Error):
+        return None
+
+    # n debe ser potencia de 2 y > 1; r y p, positivos. Son los requisitos de
+    # scrypt: pasarle otra cosa lo haría lanzar en vez de devolver False.
+    if n <= 1 or n & (n - 1) or r < 1 or p < 1 or not salt or not digest:
+        return None
+
+    return _ParsedHash(n=n, r=r, p=p, salt=salt, digest=digest)
 
 
 def hash_password(
@@ -77,37 +116,26 @@ def verify_password(password: str, encoded: str) -> bool:
     filtrar el estado de la configuración por la respuesta HTTP. El caso se
     detecta al boot vía `validate_password_hash`, no acá.
     """
-    parts = encoded.split("$")
-    if len(parts) != _FIELD_COUNT or parts[0] != _ALGORITHM:
-        return False
-
-    _, n_raw, r_raw, p_raw, salt_b64, hash_b64 = parts
-    try:
-        n, r, p = int(n_raw), int(r_raw), int(p_raw)
-        salt = _b64decode(salt_b64)
-        expected = _b64decode(hash_b64)
-    except (ValueError, binascii.Error):
-        return False
-
-    if n <= 1 or n & (n - 1) or r < 1 or p < 1 or not salt or not expected:
+    parsed = _parse(encoded)
+    if parsed is None:
         return False
 
     try:
         derived = hashlib.scrypt(
             password.encode("utf-8"),
-            salt=salt,
-            n=n,
-            r=r,
-            p=p,
-            dklen=len(expected),
-            maxmem=_maxmem(n, r),
+            salt=parsed.salt,
+            n=parsed.n,
+            r=parsed.r,
+            p=parsed.p,
+            dklen=len(parsed.digest),
+            maxmem=_maxmem(parsed.n, parsed.r),
         )
     except (ValueError, MemoryError):
         # Parámetros sintácticamente válidos pero fuera de rango para scrypt
         # (n absurdamente grande, por ejemplo). Mismo trato que hash corrupto.
         return False
 
-    return hmac.compare_digest(derived, expected)
+    return hmac.compare_digest(derived, parsed.digest)
 
 
 def validate_password_hash(encoded: str) -> bool:
@@ -116,19 +144,7 @@ def validate_password_hash(encoded: str) -> bool:
     Se usa al boot para fallar rápido si `DASHBOARD_PASSWORD_HASH` está mal
     escrito, en vez de descubrirlo en el primer login fallido.
     """
-    parts = encoded.split("$")
-    if len(parts) != _FIELD_COUNT or parts[0] != _ALGORITHM:
-        return False
-
-    _, n_raw, r_raw, p_raw, salt_b64, hash_b64 = parts
-    try:
-        n, r, p = int(n_raw), int(r_raw), int(p_raw)
-        salt = _b64decode(salt_b64)
-        digest = _b64decode(hash_b64)
-    except (ValueError, binascii.Error):
-        return False
-
-    return n > 1 and not n & (n - 1) and r >= 1 and p >= 1 and bool(salt) and bool(digest)
+    return _parse(encoded) is not None
 
 
 @lru_cache(maxsize=1)
