@@ -113,3 +113,30 @@ class TokenUsageRepository(BaseRepository[TokenUsage]):
         )
         result = self._session.scalar(stmt)
         return int(result) if result is not None else 0
+
+    def list_filtered(
+        self,
+        bot_run_id: str,
+        *,
+        model: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[TokenUsage], int]:
+        """Listado paginado de consumo de tokens, con filtro opcional por modelo.
+
+        Devuelve (página ordenada DESC por timestamp, total que matchea el filtro).
+        """
+        filters = [TokenUsage.bot_run_id == bot_run_id]
+        if model is not None:
+            filters.append(TokenUsage.model == model)
+
+        total = self._session.scalar(select(func.count()).select_from(TokenUsage).where(*filters))
+        stmt = (
+            select(TokenUsage)
+            .where(*filters)
+            .order_by(TokenUsage.timestamp.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(self._session.scalars(stmt))
+        return items, int(total) if total is not None else 0

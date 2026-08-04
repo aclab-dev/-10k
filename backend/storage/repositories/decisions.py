@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.storage.models import (
     Decision,
@@ -67,6 +67,36 @@ class DecisionRepository(BaseRepository[Decision]):
             .limit(limit)
         )
         return list(self._session.scalars(stmt))
+
+    def list_filtered(
+        self,
+        bot_run_id: str,
+        *,
+        symbol: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[Decision], int]:
+        """Listado paginado de decisiones con filtros combinables symbol/action.
+
+        Devuelve (página ordenada DESC por timestamp, total que matchea el filtro).
+        """
+        filters = [Decision.bot_run_id == bot_run_id]
+        if symbol is not None:
+            filters.append(Decision.symbol == symbol)
+        if action is not None:
+            filters.append(Decision.action == action)
+
+        total = self._session.scalar(select(func.count()).select_from(Decision).where(*filters))
+        stmt = (
+            select(Decision)
+            .where(*filters)
+            .order_by(Decision.timestamp.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(self._session.scalars(stmt))
+        return items, int(total) if total is not None else 0
 
     def list_by_symbol_and_range(
         self,
@@ -171,3 +201,36 @@ class RiskValidationRepository(BaseRepository[RiskValidation]):
             stmt = stmt.where(RiskValidation.bot_run_id == bot_run_id)
         stmt = stmt.order_by(RiskValidation.timestamp.asc())
         return list(self._session.scalars(stmt))
+
+    def list_filtered(
+        self,
+        bot_run_id: str,
+        *,
+        symbol: str | None = None,
+        result: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[RiskValidation], int]:
+        """Listado paginado de risk validations con filtros combinables symbol/result.
+
+        result: APPROVE | ADJUST_DOWN | BLOCK. Usar result="BLOCK" para la vista de bloqueos.
+        Devuelve (página ordenada DESC por timestamp, total que matchea el filtro).
+        """
+        filters = [RiskValidation.bot_run_id == bot_run_id]
+        if symbol is not None:
+            filters.append(RiskValidation.symbol == symbol)
+        if result is not None:
+            filters.append(RiskValidation.result == result)
+
+        total = self._session.scalar(
+            select(func.count()).select_from(RiskValidation).where(*filters)
+        )
+        stmt = (
+            select(RiskValidation)
+            .where(*filters)
+            .order_by(RiskValidation.timestamp.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(self._session.scalars(stmt))
+        return items, int(total) if total is not None else 0
