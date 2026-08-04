@@ -74,11 +74,7 @@ class TokenBudgetManager:
                 limit_day=cfg.max_tokens_per_24h,
             )
 
-        now = datetime.now(UTC)
-        used_hour = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=1))
-        # Ventana deslizante de 24h (no día calendario) — ver max_tokens_per_24h en config.
-        used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
-
+        used_hour, used_day = self._current_usage()
         result_status = self._status_for_usage(used_hour, used_day)
 
         if result_status == BudgetStatus.EXCEEDED:
@@ -125,6 +121,14 @@ class TokenBudgetManager:
             limit_day=cfg.max_tokens_per_24h,
         )
 
+    def _current_usage(self) -> tuple[int, int]:
+        """Tokens consumidos en la última hora y en la ventana deslizante de 24h
+        (no día calendario — ver max_tokens_per_24h en config)."""
+        now = datetime.now(UTC)
+        used_hour = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=1))
+        used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
+        return used_hour, used_day
+
     def _status_for_usage(self, used_hour: int, used_day: int) -> BudgetStatus:
         """Evaluación pura de umbrales, sin side-effects (logging/excepciones)."""
         cfg = self._config
@@ -149,9 +153,7 @@ class TokenBudgetManager:
         mostrar el consumo hora/día contra los límites configurados.
         """
         cfg = self._config
-        now = datetime.now(UTC)
-        used_hour = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=1))
-        used_day = self._repo.tokens_in_window(self._bot_run_id, now - timedelta(hours=24))
+        used_hour, used_day = self._current_usage()
         result_status = self._status_for_usage(used_hour, used_day)
         return BudgetCheckResult(
             ok=result_status != BudgetStatus.EXCEEDED,

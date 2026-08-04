@@ -6,18 +6,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_bot_run_id
+from backend.api.dependencies import get_current_bot_run, get_current_bot_run_id
 from backend.api.pagination import Page, PageParams
 from backend.storage.database import get_db
-from backend.storage.repositories import (
-    AccountStateRepository,
-    BotRunRepository,
-    BotStateRepository,
-)
+from backend.storage.models import BotRun
+from backend.storage.repositories import AccountStateRepository, BotStateRepository
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -51,17 +48,12 @@ class BotStatusOut(BaseModel):
 
 @router.get("")
 def get_status(
-    bot_run_id: Annotated[str, Depends(get_current_bot_run_id)],
+    bot_run: Annotated[BotRun, Depends(get_current_bot_run)],
     db: Annotated[Session, Depends(get_db)],
 ) -> BotStatusOut:
     """Estado actual del bot: run activo, último BotState y snapshot de cuenta (PnL/drawdown)."""
-    bot_run = BotRunRepository(db).get_by_id(bot_run_id)
-    if bot_run is None:
-        # No debería pasar: get_current_bot_run_id ya validó que bot_run_id existe.
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"bot_run_id '{bot_run_id}' no encontrado")
-
-    bot_state = BotStateRepository(db).get_latest(bot_run_id)
-    account_state = AccountStateRepository(db).get_latest(bot_run_id)
+    bot_state = BotStateRepository(db).get_latest(bot_run.id)
+    account_state = AccountStateRepository(db).get_latest(bot_run.id)
 
     return BotStatusOut(
         bot_run_id=bot_run.id,
