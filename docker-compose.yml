@@ -44,6 +44,11 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL debe estar definido en .env}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: ${APP_PORT:-8000}
+      # Auth del dashboard (F15). Sin estas tres, la app no levanta mientras
+      # dashboard_auth.enabled sea true. Generarlas con scripts/hash_password.py.
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
+      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?DASHBOARD_PASSWORD_HASH debe estar definido en .env (python scripts/hash_password.py)}
+      DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:?DASHBOARD_SECRET_KEY debe estar definido en .env (python scripts/hash_password.py)}
     command: ["sh", "-c", "alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "${APP_PORT:-8000}:8000"

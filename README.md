@@ -28,6 +28,27 @@ Bot autónomo de futuros crypto con GPT + Quant Signals + Risk Engine determiní
 | Testnet | `ENVIRONMENT=TESTNET` | Backtesting aprobado |
 | Live | `ENVIRONMENT=LIVE` + `I_UNDERSTAND_LIVE_RISK=YES` | Checklist LIVE completo |
 
+## Dashboard — auth
+
+Los endpoints del dashboard (`/api/status`, `/api/decisions`, `/api/risk`, `/api/tokens`)
+exigen un bearer token. `/health` queda público para el healthcheck de Docker.
+
+Antes del primer `docker compose up`, generar las credenciales:
+
+```bash
+python scripts/hash_password.py
+```
+
+El script imprime `DASHBOARD_PASSWORD_HASH` y `DASHBOARD_SECRET_KEY` para pegar en
+`.env`, junto con `DASHBOARD_USERNAME`. **La app no levanta si falta alguna de las
+tres** (fail-closed). Para desarrollo local sin auth: `BOT__DASHBOARD_AUTH__ENABLED=false`.
+
+Obtener un token:
+
+```bash
+curl -sX POST localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"..."}'
+```
+
 ## Reglas no negociables
 
 - Margen máximo por operación: **10 USDT**
