@@ -378,6 +378,20 @@ class BacktestingBiasGuardConfig(BaseModel):
     require_regime_performance: bool
 
 
+class DashboardAuthConfig(BaseModel):
+    """Auth del dashboard (F15). Los secretos NO viven acá: solo por env var."""
+
+    enabled: bool
+    token_ttl_seconds: int
+
+    @field_validator("token_ttl_seconds")
+    @classmethod
+    def _ttl_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ConfigError(f"dashboard_auth.token_ttl_seconds={v} debe ser > 0")
+        return v
+
+
 class TokenBudgetConfig(BaseModel):
     max_tokens_per_request: int
     max_tokens_per_hour: int
@@ -415,6 +429,7 @@ class AppConfig(BaseModel):
     failure_policy: FailurePolicyConfig
     backtesting_bias_guard: BacktestingBiasGuardConfig
     token_budget: TokenBudgetConfig
+    dashboard_auth: DashboardAuthConfig
 
     # Campos de infra no presentes en el YAML (solo via env vars)
     database_url: str = ""
@@ -422,6 +437,13 @@ class AppConfig(BaseModel):
     app_port: int = 8000
     db_pool_size: int = 5
     db_max_overflow: int = 10
+
+    # NOTA: las credenciales del dashboard (usuario, hash, secret key) NO son
+    # campos de este modelo a propósito. AppConfig se serializa con
+    # `model_dump(mode="json")` hacia `bot_runs.config_snapshot` y
+    # `backtest_runs.config_snapshot`: cualquier secreto acá terminaría en texto
+    # plano en la DB, legible desde los propios endpoints del dashboard.
+    # Viven solo en env vars, leídas por `backend.auth.config`.
 
 
 def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
@@ -489,7 +511,13 @@ def _validate_live_confirmation(cfg: AppConfig) -> None:
 
 
 def load_config(config_path: Path = _CONFIG_PATH) -> AppConfig:
-    """Carga config.yaml, aplica env overrides y valida reglas al boot."""
+    """Carga config.yaml, aplica env overrides y valida reglas al boot.
+
+    Las credenciales del dashboard NO se validan acá a propósito: el worker y los
+    scripts también llaman a esta función y no tienen por qué conocerlas. Esa
+    validación vive en `backend.auth.config.get_auth_credentials`, que solo se
+    invoca desde la API.
+    """
     with config_path.open() as f:
         raw: dict[str, Any] = yaml.safe_load(f)
 
