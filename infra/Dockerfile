@@ -2,6 +2,16 @@
 # Imagen compartida entre el servicio app (FastAPI) y el worker.
 # El comando concreto se define por servicio en docker-compose.yml.
 # =====================================================================
+
+# Build del dashboard (F15-01): SPA estática servida por FastAPI desde
+# frontend/dist. `npm ci` requiere package-lock.json versionado.
+FROM node:22-alpine AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build
+
 FROM python:3.12-slim
 
 # curl es necesario para los healthchecks definidos en docker-compose.yml.
@@ -21,6 +31,7 @@ COPY backend ./backend
 COPY worker ./worker
 COPY alembic.ini ./
 COPY migrations ./migrations
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
