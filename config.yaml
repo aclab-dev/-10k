@@ -169,3 +169,10 @@ token_budget:
   max_tokens_per_hour: 100000
   max_tokens_per_24h: 500000  # ventana deslizante de 24h, no día calendario
   alert_at_percent: 0.8
+
+dashboard_auth:
+  # Auth básica del dashboard (F15). Fail-closed: con enabled=true la app no
+  # levanta si faltan DASHBOARD_USERNAME / DASHBOARD_PASSWORD_HASH /
+  # DASHBOARD_SECRET_KEY en el entorno. Deshabilitar solo en desarrollo local.
+  enabled: true
+  token_ttl_seconds: 43200  # 12h — turno de trabajo sin re-login
