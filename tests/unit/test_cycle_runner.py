@@ -3,20 +3,42 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.position_manager.tick_service import PositionTickService
+from backend.storage.database import Base
+from backend.storage.models import BotRun
+from backend.storage.models import BotState as BotStateRow
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import (
     DEFAULT_INTERVAL_SECONDS,
     CycleRunner,
     parse_interval_from_env,
 )
+
+
+@pytest.fixture
+def db_session() -> Generator[Session, None, None]:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(engine)()
+    yield session
+    session.close()
+
+
+def _make_bot_run(session: Session) -> BotRun:
+    bot_run = BotRun(environment="PAPER", app_version="0.1.0", config_snapshot={}, status="RUNNING")
+    session.add(bot_run)
+    session.commit()
+    return bot_run
 
 
 @pytest.fixture
@@ -208,3 +230,86 @@ def test_parse_interval_negative_or_zero_raises() -> None:
         parse_interval_from_env("0")
     with pytest.raises(ValueError, match="must be > 0"):
         parse_interval_from_env("-5")
+
+
+# -- _sync_state_from_db --
+
+
+def test_sync_state_from_db_is_noop_without_session_or_bot_run_id(heartbeat_file: Path) -> None:
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    runner._sync_state_from_db()  # type: ignore[attr-defined]
+
+    assert sm.state == BotState.ACTIVE
+
+
+def test_sync_state_from_db_adopts_persisted_kill_switch(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """El worker debe enterarse de un kill switch disparado desde la API (otro proceso)."""
+    bot_run = _make_bot_run(db_session)
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    db_session.add(
+        BotStateRow(
+            bot_run_id=bot_run.id,
+            state="KILL_SWITCH_TRIGGERED",
+            previous_state="ACTIVE",
+            reason="kill switch manual",
+        )
+    )
+    db_session.commit()
+
+    runner._sync_state_from_db()  # type: ignore[attr-defined]
+
+    assert sm.state == BotState.KILL_SWITCH_TRIGGERED
+    assert not sm.is_running()
+
+
+def test_sync_state_from_db_ignores_unknown_persisted_state(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    bot_run = _make_bot_run(db_session)
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    db_session.add(BotStateRow(bot_run_id=bot_run.id, state="IDLE", reason="test"))
+    db_session.commit()
+
+    runner._sync_state_from_db()  # type: ignore[attr-defined]
+
+    assert sm.state == BotState.ACTIVE
+
+
+def test_run_calls_sync_state_from_db_each_iteration(heartbeat_file: Path) -> None:
+    """Regresion: run() debe releer el estado persistido en cada vuelta del loop,
+
+    no solo al construir el runner."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+    sync_mock = Mock()
+    runner._sync_state_from_db = sync_mock  # type: ignore[method-assign]
+
+    thread = threading.Thread(target=runner.run)
+    thread.start()
+    try:
+        threading.Event().wait(timeout=1.5)
+    finally:
+        runner.request_shutdown()
+        thread.join(timeout=3.0)
+
+    assert sync_mock.call_count >= 1

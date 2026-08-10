@@ -1,10 +1,10 @@
 """Endpoint del kill switch manual: detiene el bot vía la state machine.
 
-Alcance: persiste la transición (bot_state + kill_switch_events) para que el
-dashboard refleje el nuevo estado. NO detiene un worker corriendo en vivo —
-el cycle_runner mantiene su propia BotStateMachine en memoria en un proceso
-separado y no hace polling de bot_state por ciclo. Cablear esa propagación
-cross-proceso queda fuera de esta card.
+Persiste la transición (bot_state + kill_switch_events) para que el dashboard
+refleje el nuevo estado. El worker corre en un proceso separado con su propia
+BotStateMachine en memoria; se entera de este cambio releyendo bot_state al
+tope de cada iteración de su loop (ver CycleRunner._sync_state_from_db), no
+en el momento exacto del POST — hay hasta un intervalo de ciclo de latencia.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_bot_run
@@ -37,8 +38,6 @@ class KillSwitchRequest(BaseModel):
 
 
 class KillSwitchOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     bot_run_id: str
     state: str
     previous_state: str
@@ -71,6 +70,20 @@ def trigger_kill_switch(
     db: Annotated[Session, Depends(get_db)],
 ) -> KillSwitchOut:
     """Dispara el kill switch manual: transiciona a KILL_SWITCH_TRIGGERED."""
+    # Lock de fila: sin esto, dos POST concurrentes leen el mismo estado
+    # actual, ambos pasan la validacion de transicion y quedan dos filas en
+    # bot_state/kill_switch_events para el mismo hecho. SQLite (tests) no
+    # soporta FOR UPDATE y SQLAlchemy lo omite silenciosamente ahi (el motor
+    # ya serializa escrituras); Postgres si lo respeta.
+    db.execute(select(BotRun).where(BotRun.id == bot_run.id).with_for_update())
+
+    if bot_run.status != "RUNNING":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"No se puede activar el kill switch: el bot run '{bot_run.id}' no esta "
+            f"RUNNING (status actual: '{bot_run.status}')",
+        )
+
     current = _current_bot_state(db, bot_run.id)
     machine = BotStateMachine(initial=current)
 

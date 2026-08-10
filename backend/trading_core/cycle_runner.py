@@ -39,8 +39,9 @@ from backend.position_manager.tick_service import PositionTickService
 from backend.quant_signals.engine import compute_quant_signals
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
-from backend.trading_core.bot_state_machine import BotStateMachine
+from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.volatility.engine import compute_volatility_assessment
 
 log = structlog.get_logger(__name__)
@@ -145,6 +146,7 @@ class CycleRunner:
             interval_seconds=self._interval_seconds,
         )
         while not self._shutdown_event.is_set():
+            self._sync_state_from_db()
             if not self._state_machine.is_running():
                 log.info("cycle_runner.paused_by_state", state=self._state_machine.state.value)
             else:
@@ -153,6 +155,33 @@ class CycleRunner:
             if self._shutdown_event.wait(timeout=self._interval_seconds):
                 break
         log.info("cycle_runner.stopped")
+
+    def _sync_state_from_db(self) -> None:
+        """Relee el estado persistido en bot_state antes de cada iteracion.
+
+        El kill switch manual corre en el proceso de la API, con su propia
+        BotStateMachine en memoria: sin esto, este loop nunca se entera de un
+        kill switch disparado desde el dashboard y sigue operando aunque la
+        API ya muestre KILL_SWITCH_TRIGGERED. No-op si no hay sesion/bot_run_id
+        inyectados (tests unitarios sin DB, o CycleRunner con dependencias de
+        decision no wireadas).
+        """
+        if self._session is None or self._bot_run_id is None:
+            return
+        latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
+        if latest is None:
+            return
+        try:
+            persisted = BotState(latest.state)
+        except ValueError:
+            log.error(
+                "cycle_runner.unknown_persisted_state",
+                bot_run_id=self._bot_run_id,
+                state=latest.state,
+            )
+            return
+        if persisted != self._state_machine.state:
+            self._state_machine.force_set(persisted, reason="synced_from_db")
 
     def _tick(self) -> None:
         """Una iteracion del ciclo: heartbeat + market data + posiciones + decision pipeline.

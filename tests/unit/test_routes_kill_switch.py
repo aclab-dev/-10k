@@ -72,6 +72,26 @@ def test_kill_switch_conflict_from_manual_paused(client: TestClient, session: Se
     assert response.status_code == 409
 
 
+def test_kill_switch_conflict_on_stopped_bot_run(client: TestClient, session: Session) -> None:
+    """bot_run_id es query param y no filtra por status.
+
+    Un run cerrado no debe aceptar un kill switch nuevo.
+    """
+    bot_run = make_bot_run(session, status="STOPPED")
+    response = client.post(
+        "/api/kill-switch", params={"bot_run_id": bot_run.id}, json={"reason": "test"}
+    )
+    assert response.status_code == 409
+
+    stored_state = session.scalars(select(BotState).where(BotState.bot_run_id == bot_run.id)).all()
+    assert len(stored_state) == 0
+
+    events = session.scalars(
+        select(KillSwitchEvent).where(KillSwitchEvent.bot_run_id == bot_run.id)
+    ).all()
+    assert len(events) == 0
+
+
 def test_kill_switch_rejects_unknown_persisted_state(client: TestClient, session: Session) -> None:
     bot_run = make_bot_run(session)
     make_bot_state(session, bot_run, state="IDLE")

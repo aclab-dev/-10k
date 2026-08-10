@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, triggerKillSwitch } from '../api/client'
 
 const DISABLED_STATES = new Set(['KILL_SWITCH_TRIGGERED', 'MANUAL_PAUSED'])
@@ -9,22 +9,35 @@ interface KillSwitchButtonProps {
 }
 
 export function KillSwitchButton({ currentState, onTriggered }: KillSwitchButtonProps) {
-  const [modalOpen, setModalOpen] = useState(false)
+  const dialogRef = useRef<HTMLDialogElement>(null)
   const [reason, setReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const disabled = currentState !== null && DISABLED_STATES.has(currentState)
 
+  // <dialog>.showModal() da focus trap y cierre por Escape gratis. El
+  // listener de 'cancel' (que Escape dispara) bloquea el cierre mientras
+  // hay un submit en curso, igual que closeModal() hacía antes.
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const handleCancel = (e: Event) => {
+      if (submitting) e.preventDefault()
+    }
+    dialog.addEventListener('cancel', handleCancel)
+    return () => dialog.removeEventListener('cancel', handleCancel)
+  }, [submitting])
+
   function openModal() {
     setReason('')
     setError(null)
-    setModalOpen(true)
+    dialogRef.current?.showModal()
   }
 
   function closeModal() {
     if (submitting) return
-    setModalOpen(false)
+    dialogRef.current?.close()
   }
 
   async function confirmKillSwitch() {
@@ -36,7 +49,7 @@ export function KillSwitchButton({ currentState, onTriggered }: KillSwitchButton
     setError(null)
     try {
       await triggerKillSwitch(reason.trim())
-      setModalOpen(false)
+      dialogRef.current?.close()
       onTriggered()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Error inesperado')
@@ -56,44 +69,36 @@ export function KillSwitchButton({ currentState, onTriggered }: KillSwitchButton
         Kill Switch
       </button>
 
-      {modalOpen && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal">
-            <h2>Detener el bot manualmente</h2>
-            <p>
-              Esta acción transiciona el bot a <strong>KILL_SWITCH_TRIGGERED</strong> y requiere
-              revisión manual para retomar. Indicá el motivo:
-            </p>
-            <p className="warning-message">
-              <strong>Esto NO detiene el proceso del worker.</strong> Solo registra el estado en
-              el dashboard; si el worker sigue corriendo, va a seguir operando hasta que se lo
-              detenga por separado.
-            </p>
-            <textarea
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Motivo del kill switch…"
-              rows={3}
-              disabled={submitting}
-              autoFocus
-            />
-            {error && <p className="error-message">{error}</p>}
-            <div className="modal-actions">
-              <button type="button" onClick={closeModal} disabled={submitting}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="danger"
-                onClick={confirmKillSwitch}
-                disabled={submitting}
-              >
-                {submitting ? 'Deteniendo…' : 'Sí, detener el bot'}
-              </button>
-            </div>
-          </div>
+      <dialog ref={dialogRef} className="modal" aria-labelledby="kill-switch-title">
+        <h2 id="kill-switch-title">Detener el bot manualmente</h2>
+        <p>
+          Esta acción transiciona el bot a <strong>KILL_SWITCH_TRIGGERED</strong>: el worker deja
+          de tickear en su próxima iteración del loop y el bot requiere revisión manual para
+          retomar. Indicá el motivo:
+        </p>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Motivo del kill switch…"
+          rows={3}
+          disabled={submitting}
+          autoFocus
+        />
+        {error && <p className="error-message">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" onClick={closeModal} disabled={submitting}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="danger"
+            onClick={confirmKillSwitch}
+            disabled={submitting}
+          >
+            {submitting ? 'Deteniendo…' : 'Sí, detener el bot'}
+          </button>
         </div>
-      )}
+      </dialog>
     </>
   )
 }

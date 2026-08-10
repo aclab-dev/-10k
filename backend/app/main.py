@@ -65,17 +65,25 @@ app.include_router(kill_switch_router, prefix="/api", dependencies=_protected)
 # SPA del dashboard (F15-01): estáticos y catch-all van SIEMPRE al final —
 # cualquier ruta registrada después del catch-all queda inalcanzable. Si el
 # build de /frontend no corrió (tests, dev sin `npm run build`), no se monta
-# nada en vez de romper el arranque de la app. Se chequea index.html (no solo
-# el directorio dist/) para no explotar montando StaticFiles sobre un dist/
-# incompleto sin assets/.
+# nada en vez de romper el arranque de la app. index.html y assets/ son dos
+# artefactos independientes del build de Vite: se chequean los dos porque un
+# dist/ truncado puede tener uno sin el otro, y StaticFiles explota al montar
+# si el directorio assets/ no existe.
 _frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if (_frontend_dist / "index.html").is_file():
+if (_frontend_dist / "index.html").is_file() and (_frontend_dist / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="frontend-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
         if full_path.startswith("api/"):
             raise HTTPException(status.HTTP_404_NOT_FOUND)
+        # Vite copia el contenido de public/ (favicon.svg, robots.txt, etc.) a
+        # la raiz de dist/, no a assets/. Sin este chequeo esos archivos caen
+        # en el fallback de abajo y vuelven con Content-Type text/html.
+        if full_path:
+            candidate = (_frontend_dist / full_path).resolve()
+            if candidate.is_relative_to(_frontend_dist) and candidate.is_file():
+                return FileResponse(candidate)
         return FileResponse(_frontend_dist / "index.html")
 else:
     _log.warning("frontend.dist_missing", detail="frontend/dist no existe, SPA no montada")
