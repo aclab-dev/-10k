@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ApiError, triggerKillSwitch } from '../api/client'
 
-const DISABLED_STATES = new Set(['KILL_SWITCH_TRIGGERED', 'HALTED'])
+const DISABLED_STATES = new Set(['KILL_SWITCH_TRIGGERED', 'MANUAL_PAUSED'])
 
 interface KillSwitchButtonProps {
   currentState: string | null

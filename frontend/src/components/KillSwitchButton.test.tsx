@@ -68,7 +68,12 @@ describe('KillSwitchButton', () => {
   })
 
   it('disables the button when the current state cannot accept the kill switch', () => {
-    render(<KillSwitchButton currentState="HALTED" onTriggered={vi.fn()} />)
+    render(<KillSwitchButton currentState="MANUAL_PAUSED" onTriggered={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Kill Switch' })).toBeDisabled()
+  })
+
+  it('enables the button when the current state can accept the kill switch', () => {
+    render(<KillSwitchButton currentState="HALTED" onTriggered={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Kill Switch' })).toBeEnabled()
   })
 })
