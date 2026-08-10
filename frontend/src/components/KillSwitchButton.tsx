@@ -64,6 +64,11 @@ export function KillSwitchButton({ currentState, onTriggered }: KillSwitchButton
               Esta acción transiciona el bot a <strong>KILL_SWITCH_TRIGGERED</strong> y requiere
               revisión manual para retomar. Indicá el motivo:
             </p>
+            <p className="warning-message">
+              <strong>Esto NO detiene el proceso del worker.</strong> Solo registra el estado en
+              el dashboard; si el worker sigue corriendo, va a seguir operando hasta que se lo
+              detenga por separado.
+            </p>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}

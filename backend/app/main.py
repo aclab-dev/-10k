@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -65,13 +65,17 @@ app.include_router(kill_switch_router, prefix="/api", dependencies=_protected)
 # SPA del dashboard (F15-01): estáticos y catch-all van SIEMPRE al final —
 # cualquier ruta registrada después del catch-all queda inalcanzable. Si el
 # build de /frontend no corrió (tests, dev sin `npm run build`), no se monta
-# nada en vez de romper el arranque de la app.
+# nada en vez de romper el arranque de la app. Se chequea index.html (no solo
+# el directorio dist/) para no explotar montando StaticFiles sobre un dist/
+# incompleto sin assets/.
 _frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if _frontend_dist.is_dir():
+if (_frontend_dist / "index.html").is_file():
     app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="frontend-assets")
 
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
         return FileResponse(_frontend_dist / "index.html")
 else:
     _log.warning("frontend.dist_missing", detail="frontend/dist no existe, SPA no montada")

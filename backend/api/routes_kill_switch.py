@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ from backend.trading_core.bot_state_machine import (
 )
 
 router = APIRouter(prefix="/kill-switch", tags=["kill-switch"])
+_log = structlog.get_logger()
 
 
 class KillSwitchRequest(BaseModel):
@@ -50,11 +52,16 @@ def _current_bot_state(db: Session, bot_run_id: str) -> BotState:
         return BotState.ACTIVE
     try:
         return BotState(latest.state)
-    except ValueError:
-        # Estados legacy/libres que no pertenecen al enum de la state machine
-        # (ej. datos de test o de otro flujo) se tratan como ACTIVE: no hay
-        # forma segura de mapearlos a una transición válida.
-        return BotState.ACTIVE
+    except ValueError as exc:
+        # No hay forma segura de mapear un estado fuera del enum a una
+        # transición válida: fabricar ACTIVE escribiría un estado falso en
+        # la auditoría (bot_state.previous_state / kill_switch_events.state_before).
+        # Falla explícita en vez de silenciar el dato corrupto.
+        _log.error("kill_switch.unknown_bot_state", bot_run_id=bot_run_id, state=latest.state)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Estado de bot desconocido en base: '{latest.state}'",
+        ) from exc
 
 
 @router.post("", status_code=status.HTTP_200_OK)

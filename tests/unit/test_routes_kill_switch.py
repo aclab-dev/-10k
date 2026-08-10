@@ -70,3 +70,19 @@ def test_kill_switch_conflict_from_manual_paused(client: TestClient, session: Se
     make_bot_state(session, bot_run, state="MANUAL_PAUSED")
     response = client.post("/api/kill-switch", json={"reason": "test"})
     assert response.status_code == 409
+
+
+def test_kill_switch_rejects_unknown_persisted_state(client: TestClient, session: Session) -> None:
+    bot_run = make_bot_run(session)
+    make_bot_state(session, bot_run, state="IDLE")
+    response = client.post("/api/kill-switch", json={"reason": "test"})
+    assert response.status_code == 500
+
+    stored_state = session.scalars(select(BotState).where(BotState.bot_run_id == bot_run.id)).all()
+    assert len(stored_state) == 1
+    assert stored_state[0].state == "IDLE"
+
+    events = session.scalars(
+        select(KillSwitchEvent).where(KillSwitchEvent.bot_run_id == bot_run.id)
+    ).all()
+    assert len(events) == 0

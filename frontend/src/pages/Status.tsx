@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useStatus } from '../hooks/useStatus'
 import { KillSwitchButton } from '../components/KillSwitchButton'
 
@@ -30,8 +31,13 @@ interface StatusProps {
 export function Status({ onLoggedOut }: StatusProps) {
   const { status, error, loading, refresh } = useStatus()
 
+  useEffect(() => {
+    if (error?.status === 401) {
+      onLoggedOut()
+    }
+  }, [error, onLoggedOut])
+
   if (error?.status === 401) {
-    onLoggedOut()
     return null
   }
 

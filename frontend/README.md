@@ -1,32 +1,24 @@
-# React + TypeScript + Vite
+# Dashboard frontend (-10k)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+SPA en React + Vite + TypeScript para la vista de estado del bot y el kill switch manual. Ver `docs/decisions/F15-01-frontend-stack.md` para el contexto de la elección del stack.
 
-Currently, two official plugins are available:
+## Desarrollo
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+`vite.config.ts` proxea `/api` a `http://localhost:8000`, así que hace falta el backend corriendo en ese puerto (`uv run uvicorn backend.app.main:app --reload`).
+
+## Scripts
+
+- `npm run dev` — servidor de desarrollo con HMR.
+- `npm run build` — type-check (`tsc -b`) + build de producción a `dist/`.
+- `npm run lint` — oxlint.
+- `npm run test` — tests unitarios (vitest).
+- `npm run preview` — sirve el build de `dist/` localmente.
+
+## Build de producción
+
+El build se sirve como estáticos desde FastAPI (`backend/app/main.py` monta `frontend/dist` si existe). En Docker, el stage `frontend-build` de `infra/Dockerfile` corre `npm ci && npm run build` antes de armar la imagen final.

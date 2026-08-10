@@ -146,8 +146,7 @@ button:disabled {
   border-color: var(--red);
 }
 
-.badge-unknown,
-.badge-unknown-color {
+.badge-unknown {
   background: var(--card-bg);
   border-color: var(--border);
 }

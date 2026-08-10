@@ -20,12 +20,6 @@ export function Login({ onLoggedIn }: LoginProps) {
       setToken(response.access_token)
       onLoggedIn()
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        // Auth deshabilitada server-side (dashboard_auth.enabled=false): no
-        // hay login que hacer, seguimos directo al dashboard.
-        onLoggedIn()
-        return
-      }
       setError(err instanceof ApiError ? err.message : 'Error inesperado')
     } finally {
       setSubmitting(false)
