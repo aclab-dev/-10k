@@ -3,8 +3,14 @@
 Persiste la transición (bot_state + kill_switch_events) para que el dashboard
 refleje el nuevo estado. El worker corre en un proceso separado con su propia
 BotStateMachine en memoria; se entera de este cambio releyendo bot_state al
-tope de cada iteración de su loop (ver CycleRunner._sync_state_from_db), no
-en el momento exacto del POST — hay hasta un intervalo de ciclo de latencia.
+tope de cada iteración de su loop y antes de cada símbolo del pipeline de
+decisión (ver CycleRunner._sync_state_from_db / _run_decision_pipeline), no
+en el momento exacto del POST. El peor caso no es el intervalo de ciclo: si
+el kill switch se dispara mientras un símbolo ya está en medio de su llamada
+a GPT (hasta ~30s + reintentos con backoff), ese símbolo en curso termina de
+procesarse antes de que la reconciliación pueda frenarlo — el resync antes
+de cada símbolo evita que además se abran posiciones para los símbolos
+siguientes del mismo tick.
 """
 
 from __future__ import annotations
@@ -15,7 +21,6 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_current_bot_run
@@ -75,7 +80,12 @@ def trigger_kill_switch(
     # bot_state/kill_switch_events para el mismo hecho. SQLite (tests) no
     # soporta FOR UPDATE y SQLAlchemy lo omite silenciosamente ahi (el motor
     # ya serializa escrituras); Postgres si lo respeta.
-    db.execute(select(BotRun).where(BotRun.id == bot_run.id).with_for_update())
+    # db.refresh(with_for_update=True) en vez de un SELECT descartado: `bot_run`
+    # ya está en la identity map desde `get_current_bot_run`, y un SELECT
+    # adicional no refresca los atributos de un objeto ya cargado en la sesión
+    # salvo que se lo pidas explícitamente — con solo el lock, el chequeo de
+    # status de abajo podía seguir usando el valor leído antes de tomarlo.
+    db.refresh(bot_run, with_for_update=True)
 
     if bot_run.status != "RUNNING":
         raise HTTPException(

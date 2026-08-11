@@ -104,6 +104,13 @@ class BotStateMachine:
         CycleRunner releyendo bot_state, escrito por el endpoint de kill
         switch en el proceso de la API). La transicion ya fue validada por
         quien la persistio; esto solo la refleja localmente.
+
+        Implica un contrato fuerte: la DB es la unica fuente de verdad del
+        estado del worker, y toda transicion que quiera sobrevivir debe
+        persistirse en bot_state. Quien mueva esta state machine en memoria
+        sin escribir esa fila (p.ej. un futuro caller del risk engine) va a
+        ver su cambio revertido en la proxima llamada a
+        CycleRunner._sync_state_from_db, sin error ni warning.
         """
         if target == self._state:
             return

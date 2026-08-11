@@ -72,9 +72,10 @@ export function KillSwitchButton({ currentState, onTriggered }: KillSwitchButton
       <dialog ref={dialogRef} className="modal" aria-labelledby="kill-switch-title">
         <h2 id="kill-switch-title">Detener el bot manualmente</h2>
         <p>
-          Esta acción transiciona el bot a <strong>KILL_SWITCH_TRIGGERED</strong>: el worker deja
-          de tickear en su próxima iteración del loop y el bot requiere revisión manual para
-          retomar. Indicá el motivo:
+          Esta acción transiciona el bot a <strong>KILL_SWITCH_TRIGGERED</strong> y requiere
+          revisión manual para retomar. El worker corre en otro proceso y no se detiene al
+          instante: si ya está operando un símbolo, ese símbolo puede terminar de procesarse
+          (incluida la apertura de una orden) antes de frenar. Indicá el motivo:
         </p>
         <textarea
           value={reason}

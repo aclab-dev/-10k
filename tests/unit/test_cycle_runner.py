@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Generator
 from pathlib import Path
@@ -298,7 +299,10 @@ def test_sync_state_from_db_ignores_unknown_persisted_state(
 def test_run_calls_sync_state_from_db_each_iteration(heartbeat_file: Path) -> None:
     """Regresion: run() debe releer el estado persistido en cada vuelta del loop,
 
-    no solo al construir el runner."""
+    no solo al construir el runner. `>= 1` no distingue "cada iteracion" de
+    "una sola vez antes del while" (esa era la regresion original); con
+    interval_seconds=1 y 2.5s de espera hay margen para al menos 2 vueltas
+    completas, asi que `>= 2` si prueba que se repite."""
     sm = BotStateMachine(initial=BotState.ACTIVE)
     runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
     sync_mock = Mock()
@@ -307,9 +311,52 @@ def test_run_calls_sync_state_from_db_each_iteration(heartbeat_file: Path) -> No
     thread = threading.Thread(target=runner.run)
     thread.start()
     try:
-        threading.Event().wait(timeout=1.5)
+        threading.Event().wait(timeout=2.5)
     finally:
         runner.request_shutdown()
         thread.join(timeout=3.0)
 
-    assert sync_mock.call_count >= 1
+    assert sync_mock.call_count >= 2
+
+
+def test_run_decision_pipeline_aborts_remaining_symbols_after_kill_switch(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Regresion (PR #108, finding A): un kill switch persistido mientras se
+    procesa un simbolo debe frenar los simbolos siguientes del mismo tick, no
+    solo la proxima vuelta del while — antes, _sync_state_from_db solo corria
+    entre iteraciones y el pipeline podia seguir abriendo posiciones para el
+    resto de los simbolos aunque la API ya mostrara KILL_SWITCH_TRIGGERED."""
+    bot_run = _make_bot_run(db_session)
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    processed: list[str] = []
+
+    async def fake_process_symbol(snapshot: Mock) -> None:
+        processed.append(snapshot.symbol)
+        # Simula el kill switch disparado desde la API mientras este simbolo
+        # estaba "en medio de su llamada a GPT".
+        db_session.add(
+            BotStateRow(
+                bot_run_id=bot_run.id,
+                state="KILL_SWITCH_TRIGGERED",
+                previous_state="ACTIVE",
+                reason="kill switch manual",
+            )
+        )
+        db_session.commit()
+
+    runner._process_symbol = fake_process_symbol  # type: ignore[method-assign]
+
+    snapshots = [Mock(symbol="BTCUSDT"), Mock(symbol="ETHUSDT")]
+    asyncio.run(runner._run_decision_pipeline(snapshots))  # type: ignore[attr-defined]
+
+    assert processed == ["BTCUSDT"]
+    assert sm.state == BotState.KILL_SWITCH_TRIGGERED
