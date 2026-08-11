@@ -21,6 +21,8 @@ from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import Base
 from backend.storage.models import BotRun
+from backend.storage.models import BotState as BotStateRow
+from backend.storage.repositories.bot import BotStateRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
 from backend.trading_core.orchestrator import Orchestrator
@@ -200,6 +202,77 @@ def test_close_is_public_and_idempotent(sqlite_session: Session) -> None:
     assert bot_run.status == "STOPPED"
 
     orch.close()  # no debe lanzar ni re-tocar un BotRun ya cerrado
+
+
+def test_worker_restart_carries_over_kill_switch(sqlite_session: Session) -> None:
+    """Si el ultimo bot_run quedo en KILL_SWITCH_TRIGGERED, el worker que arranca
+    despues (restart) debe heredar ese estado en vez de arrancar en ACTIVE.
+
+    Regresion del hallazgo G de la re-review de Agustin en el PR #108: bot_state
+    esta scopeado por bot_run_id, y cada arranque crea un bot_run nuevo — sin
+    este carry-over, un `docker compose restart` despues de un kill switch
+    reactiva el bot silenciosamente.
+    """
+    first = Orchestrator(session=sqlite_session)
+    first_bot_run_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    BotStateRepository(sqlite_session).save(
+        BotStateRow(
+            bot_run_id=first_bot_run_id,
+            state=BotState.KILL_SWITCH_TRIGGERED.value,
+            previous_state=BotState.ACTIVE.value,
+            reason="operador aprieta el boton",
+        )
+    )
+    sqlite_session.commit()
+    first.close()  # simula el shutdown limpio (SIGTERM) antes del restart
+
+    second = Orchestrator(session=sqlite_session)
+
+    assert second.state_machine.state == BotState.KILL_SWITCH_TRIGGERED
+    assert second.cycle_runner._state_machine.is_running() is False  # type: ignore[attr-defined]
+
+    second_bot_run_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+    persisted = BotStateRepository(sqlite_session).get_latest(second_bot_run_id)
+    assert persisted is not None
+    assert persisted.state == BotState.KILL_SWITCH_TRIGGERED.value
+
+
+def test_worker_restart_stays_active_without_prior_kill_switch(sqlite_session: Session) -> None:
+    """Sin kill switch previo, un restart arranca en ACTIVE como siempre."""
+    first = Orchestrator(session=sqlite_session)
+    first.close()
+
+    second = Orchestrator(session=sqlite_session)
+
+    assert second.state_machine.state == BotState.ACTIVE
+    second_bot_run_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+    assert BotStateRepository(sqlite_session).get_latest(second_bot_run_id) is None
+
+
+def test_injected_state_machine_does_not_carry_over_kill_switch(sqlite_session: Session) -> None:
+    """Si el caller inyecta su propia state machine, es dueno del estado inicial:
+    el Orchestrator no debe pisarlo con un carry-over."""
+    first = Orchestrator(session=sqlite_session)
+    first_bot_run_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    BotStateRepository(sqlite_session).save(
+        BotStateRow(
+            bot_run_id=first_bot_run_id,
+            state=BotState.KILL_SWITCH_TRIGGERED.value,
+            previous_state=BotState.ACTIVE.value,
+            reason="operador aprieta el boton",
+        )
+    )
+    sqlite_session.commit()
+    first.close()
+
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    second = Orchestrator(
+        state_machine=sm,
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
+
+    assert second.state_machine.state == BotState.ACTIVE
 
 
 def test_default_construction_raises_for_non_paper_environment(

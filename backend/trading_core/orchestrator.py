@@ -30,7 +30,8 @@ from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import get_session_factory
 from backend.storage.models import BotRun
-from backend.storage.repositories.bot import BotRunRepository
+from backend.storage.models import BotState as BotStateRow
+from backend.storage.repositories.bot import BotRunRepository, BotStateRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner, parse_interval_from_env
 
@@ -54,6 +55,12 @@ class Orchestrator:
         execution_engine: ExecutionEngine | None = None,
         session: Session | None = None,
     ) -> None:
+        # Si el caller no inyecta su propia state machine, este Orchestrator arma
+        # el contexto PAPER real y es responsable de resolver un kill switch
+        # arrastrado del BotRun anterior antes de decidir el estado inicial (ver
+        # _resolve_carried_over_state). Un caller que inyecta su propia state
+        # machine (tests, wiring alternativo) es dueño de ese estado inicial.
+        self._owns_state_machine = state_machine is None
         self._state_machine = state_machine or BotStateMachine(initial=BotState.ACTIVE)
         # Solo se pueblan si este Orchestrator arma su propio contexto PAPER (ver
         # _prepare_paper_context). Si cycle_runner/market_data_service/
@@ -159,6 +166,13 @@ class Orchestrator:
         adapter = PaperAdapter(initial_balance_usdt=initial_balance)
         db_session = session or get_session_factory()()
 
+        # Debe resolverse ANTES de crear el bot_run nuevo: get_most_recent()
+        # busca el BotRun mas nuevo existente, que dejaria de ser el "anterior"
+        # en cuanto insertemos este.
+        carried_over_from = (
+            self._resolve_carried_over_state(db_session) if self._owns_state_machine else None
+        )
+
         bot_run = BotRun(
             environment=environment.value,
             app_version=APP_VERSION,
@@ -170,7 +184,57 @@ class Orchestrator:
         self._bot_run = bot_run
         self._db_session = db_session
 
+        if carried_over_from is not None:
+            # Sin esto, el bot_state del bot_run nuevo queda vacio: el dashboard
+            # y el endpoint del kill switch (_current_bot_state) lo leerian como
+            # ACTIVE por defecto, en desacuerdo con la state machine en memoria
+            # del worker que ya arranco en KILL_SWITCH_TRIGGERED.
+            BotStateRepository(db_session).save(
+                BotStateRow(
+                    bot_run_id=bot_run.id,
+                    state=BotState.KILL_SWITCH_TRIGGERED.value,
+                    previous_state=BotState.ACTIVE.value,
+                    reason=(
+                        f"Arrastrado del bot_run anterior {carried_over_from.id} "
+                        "al reiniciar el worker: el kill switch requiere revision "
+                        "manual antes de retomar."
+                    ),
+                )
+            )
+            db_session.commit()
+
         return adapter, db_session, bot_run, cfg
+
+    def _resolve_carried_over_state(self, db_session: Session) -> BotRun | None:
+        """Si el ultimo BotRun quedo en KILL_SWITCH_TRIGGERED, este arranca ahi tambien.
+
+        bot_state esta scopeado por bot_run_id, y cada arranque del worker crea
+        un bot_run nuevo (ver _prepare_paper_context) con la state machine en
+        ACTIVE por defecto. Sin esto, un restart del worker (deploy, crash,
+        `docker compose restart`) reactiva el bot silenciosamente aunque el
+        operador lo haya frenado explicitamente con el kill switch — el kill
+        switch exige revision manual antes de retomar (PDF 4.8), no un simple
+        reinicio de proceso.
+
+        Devuelve el BotRun del que se arrastro el estado, o None si no aplica
+        (no hay corridas previas, o la ultima no quedo en kill switch).
+        """
+        previous_run = BotRunRepository(db_session).get_most_recent()
+        if previous_run is None:
+            return None
+        previous_state = BotStateRepository(db_session).get_latest(previous_run.id)
+        if previous_state is None or previous_state.state != BotState.KILL_SWITCH_TRIGGERED.value:
+            return None
+        self._state_machine.force_set(
+            BotState.KILL_SWITCH_TRIGGERED,
+            reason=f"carried_over_from_bot_run:{previous_run.id}",
+        )
+        log.warning(
+            "orchestrator.kill_switch_carried_over",
+            previous_bot_run_id=previous_run.id,
+            previous_reason=previous_state.reason,
+        )
+        return previous_run
 
     @staticmethod
     def _build_market_data_service(

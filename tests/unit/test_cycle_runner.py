@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.execution.engine import ExecutionEngine
@@ -294,6 +295,35 @@ def test_sync_state_from_db_ignores_unknown_persisted_state(
     runner._sync_state_from_db()  # type: ignore[attr-defined]
 
     assert sm.state == BotState.ACTIVE
+
+
+def test_sync_state_from_db_survives_db_error(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un error transitorio de DB (conexion caida, timeout) no debe tumbar el
+    loop entero: debe loguear, hacer rollback y seguir con el ultimo estado
+    local conocido, para poder recuperarse en el proximo ciclo."""
+    bot_run = _make_bot_run(db_session)
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    def _raise(self: object, bot_run_id: str) -> None:
+        raise OperationalError("select", {}, Exception("connection lost"))
+
+    monkeypatch.setattr("backend.trading_core.cycle_runner.BotStateRepository.get_latest", _raise)
+    rollback_calls: list[bool] = []
+    monkeypatch.setattr(db_session, "rollback", lambda: rollback_calls.append(True))
+
+    runner._sync_state_from_db()  # type: ignore[attr-defined]  # no debe lanzar
+
+    assert sm.state == BotState.ACTIVE
+    assert rollback_calls == [True]
 
 
 def test_run_calls_sync_state_from_db_each_iteration(heartbeat_file: Path) -> None:

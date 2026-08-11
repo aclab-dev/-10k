@@ -23,6 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.core.config import AppConfig
@@ -174,7 +175,20 @@ class CycleRunner:
         """
         if self._session is None or self._bot_run_id is None:
             return
-        latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
+        try:
+            latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
+        except SQLAlchemyError:
+            # Fail-open, misma razon que el ValueError de mas abajo: frenar el
+            # tick por un error transitorio de DB (conexion caida, timeout) no
+            # es obviamente mejor que seguir operando con el ultimo estado
+            # local conocido, y dejar la excepcion sin atrapar tumbaria el
+            # loop entero — sin log ni oportunidad de recuperarse en el
+            # proximo ciclo.
+            log.error(
+                "cycle_runner.state_sync_db_error", bot_run_id=self._bot_run_id, exc_info=True
+            )
+            self._session.rollback()
+            return
         if latest is None:
             return
         try:
