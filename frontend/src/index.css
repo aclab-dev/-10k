@@ -240,3 +240,174 @@ button:disabled {
   color: #fff;
   border-color: var(--danger);
 }
+
+.app-nav {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-link,
+.tab {
+  background: transparent;
+  border-color: transparent;
+}
+
+.nav-link-active,
+.tab-active {
+  background: var(--card-bg);
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+.history-page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.history-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.history-filters input,
+.history-filters select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.history-filters .error-message,
+.filters-hint {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.filters-hint {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.history-table-wrapper {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.history-table th,
+.history-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.history-table th {
+  font-size: 13px;
+  opacity: 0.7;
+  font-weight: 600;
+}
+
+.history-table .row-selected {
+  background: var(--card-bg);
+}
+
+.row-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.pagination-range {
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.detail-panel {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.detail-header h2 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.detail-body {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.detail-body dt {
+  opacity: 0.7;
+}
+
+.detail-body dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-reasoning {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.detail-reasons {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-x: auto;
+  font-size: 13px;
+}
