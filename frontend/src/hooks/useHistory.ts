@@ -62,8 +62,11 @@ interface UseHistoryResult<T> {
  * Listado paginado con filtros. `fetchPage` debe ser una referencia estable
  * (función de módulo o memoizada): cambiarla dispara una nueva carga.
  *
- * Cambiar `filters` resetea el offset a 0 — si no, filtrar desde la página 3
- * dejaría al usuario mirando una página vacía de un resultado más chico.
+ * `filters` se compara por identidad, así que también tiene que ser estable
+ * (típicamente el valor de un useState): un objeto nuevo en cada render
+ * dispararía una carga por render. Cambiarlo resetea el offset a 0 — si no,
+ * filtrar desde la página 3 dejaría al usuario mirando una página vacía de un
+ * resultado más chico.
  */
 export function useHistory<T, Q extends HistoryQuery>(
   fetchPage: (query: Q) => Promise<Page<T>>,
@@ -90,6 +93,8 @@ export function useHistory<T, Q extends HistoryQuery>(
     let cancelled = false
     setLoading(true)
 
+    // El cast es necesario porque la clave del filtro por pestaña se arma en
+    // runtime (`action` o `result`) y TS no puede probar que coincide con Q.
     fetchPage(toHistoryQuery(filters, offset, kindParam) as Q)
       .then((data) => {
         if (cancelled) return
@@ -98,6 +103,9 @@ export function useHistory<T, Q extends HistoryQuery>(
       })
       .catch((err) => {
         if (cancelled) return
+        // Se descarta la página anterior: dejarla visible junto al mensaje de
+        // error mostraría filas que ya no corresponden a los filtros activos.
+        setPage(null)
         setError(err instanceof ApiError ? err : new ApiError(500, 'Error inesperado'))
       })
       .finally(() => {

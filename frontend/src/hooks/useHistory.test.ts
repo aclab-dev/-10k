@@ -124,6 +124,21 @@ describe('useHistory', () => {
     expect(result.current.items).toEqual([])
   })
 
+  it('discards the previous page when a later request fails', async () => {
+    const fetchPage = vi
+      .fn<(query: HistoryQuery) => Promise<Page<string>>>()
+      .mockResolvedValueOnce(pageOf(['a'], 100))
+      .mockRejectedValueOnce(new ApiError(422, 'rango inválido'))
+    const { result } = renderHook(() => useHistory(fetchPage, EMPTY_FILTERS, 'action'))
+
+    await waitFor(() => expect(result.current.items).toEqual(['a']))
+    act(() => result.current.setOffset(PAGE_SIZE))
+
+    await waitFor(() => expect(result.current.error).not.toBeNull())
+    expect(result.current.items).toEqual([])
+    expect(result.current.total).toBe(0)
+  })
+
   it('wraps a non-ApiError rejection instead of leaking it', async () => {
     const fetchPage = vi
       .fn<(query: HistoryQuery) => Promise<Page<string>>>()

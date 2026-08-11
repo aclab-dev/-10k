@@ -54,18 +54,22 @@ export function HistoryTable<T>({
         <tbody>
           {rows.map((row) => {
             const key = rowKey(row)
+            const selected = key === selectedKey
             return (
-              <tr
-                key={key}
-                className={key === selectedKey ? 'row-selected' : undefined}
-                aria-selected={key === selectedKey}
-              >
+              <tr key={key} className={selected ? 'row-selected' : undefined}>
                 {columns.map((column, index) => (
                   <td key={column.key}>
                     {index === 0 ? (
                       // El botón va en la primera celda para que la fila sea
                       // accesible por teclado: <tr onClick> no es focuseable.
-                      <button type="button" className="row-button" onClick={() => onSelect(row)}>
+                      // aria-current marca la fila abierta: aria-selected no es
+                      // válido en un <tr> de tabla común (solo en grid/treegrid).
+                      <button
+                        type="button"
+                        className="row-button"
+                        aria-current={selected || undefined}
+                        onClick={() => onSelect(row)}
+                      >
                         {column.render(row)}
                       </button>
                     ) : (
