@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ApiError, type HistoryQuery, type Page } from '../api/client'
 
 export const PAGE_SIZE = 25
@@ -55,7 +55,6 @@ interface UseHistoryResult<T> {
   loading: boolean
   error: ApiError | null
   setOffset: (offset: number) => void
-  reload: () => void
 }
 
 /**
@@ -77,7 +76,6 @@ export function useHistory<T, Q extends HistoryQuery>(
   const [error, setError] = useState<ApiError | null>(null)
   const [loading, setLoading] = useState(true)
   const [offset, setOffset] = useState(0)
-  const [reloadTick, setReloadTick] = useState(0)
   const [appliedFilters, setAppliedFilters] = useState(filters)
 
   // Ajuste de estado durante el render (patrón recomendado por React para estado
@@ -86,8 +84,6 @@ export function useHistory<T, Q extends HistoryQuery>(
     setAppliedFilters(filters)
     setOffset(0)
   }
-
-  const reload = useCallback(() => setReloadTick((tick) => tick + 1), [])
 
   useEffect(() => {
     let cancelled = false
@@ -115,7 +111,7 @@ export function useHistory<T, Q extends HistoryQuery>(
     return () => {
       cancelled = true
     }
-  }, [fetchPage, kindParam, filters, offset, reloadTick])
+  }, [fetchPage, kindParam, filters, offset])
 
   return {
     items: page?.items ?? [],
@@ -124,6 +120,5 @@ export function useHistory<T, Q extends HistoryQuery>(
     loading,
     error,
     setOffset,
-    reload,
   }
 }
