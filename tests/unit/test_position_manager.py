@@ -517,6 +517,35 @@ class TestPositionManagerEdge:
         result = pm.tick("BTCUSDT", Decimal("47000"))
         assert result.trigger == PositionTriggerReason.NONE
 
+    def test_no_position_removes_orphan_config(self) -> None:
+        """Posición cerrada externamente (manual/liquidación): el próximo tick limpia
+        la config para que configured_symbols() deje de devolver el símbolo."""
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+        assert pm.configured_symbols() == ["BTCUSDT"]
+
+        # Posición cerrada por fuera del PositionManager (no vía tick/trigger),
+        # p.ej. cierre manual o liquidación reflejados directamente en el adapter.
+        del adapter._positions["BTCUSDT"]
+
+        result = pm.tick("BTCUSDT", Decimal("49000"))
+
+        assert result.trigger == PositionTriggerReason.NONE
+        assert pm.configured_symbols() == []
+        assert pm.get_config("BTCUSDT") is None
+
+    def test_no_position_no_config_is_noop(self) -> None:
+        """Si ya no hay config (ej. segundo tick tras la limpieza), no debe fallar."""
+        adapter = PaperAdapter()
+        pm = PositionManager(adapter)
+
+        result = pm.tick("BTCUSDT", Decimal("47000"))
+
+        assert result.trigger == PositionTriggerReason.NONE
+        assert pm.configured_symbols() == []
+
     def test_no_config_returns_none(self) -> None:
         adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
         _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
