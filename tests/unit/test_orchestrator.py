@@ -249,6 +249,79 @@ def test_worker_restart_stays_active_without_prior_kill_switch(sqlite_session: S
     assert BotStateRepository(sqlite_session).get_latest(second_bot_run_id) is None
 
 
+def test_worker_restart_carries_over_halted(sqlite_session: Session) -> None:
+    """HALTED tambien detiene el ciclo (is_running() == False), asi que debe
+    arrastrarse igual que KILL_SWITCH_TRIGGERED.
+
+    Regresion del hallazgo J de la re-review de Agustin en el PR #108: comparar
+    contra KILL_SWITCH_TRIGGERED puntualmente deja este agujero para cualquier
+    otro estado que frene el ciclo.
+    """
+    first = Orchestrator(session=sqlite_session)
+    first_bot_run_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    BotStateRepository(sqlite_session).save(
+        BotStateRow(
+            bot_run_id=first_bot_run_id,
+            state=BotState.HALTED.value,
+            previous_state=BotState.ACTIVE.value,
+            reason="risk engine",
+        )
+    )
+    sqlite_session.commit()
+    first.close()
+
+    second = Orchestrator(session=sqlite_session)
+
+    assert second.state_machine.state == BotState.HALTED
+    assert second.cycle_runner._state_machine.is_running() is False  # type: ignore[attr-defined]
+
+    second_bot_run_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+    persisted = BotStateRepository(sqlite_session).get_latest(second_bot_run_id)
+    assert persisted is not None
+    assert persisted.state == BotState.HALTED.value
+
+
+def test_carry_over_and_new_bot_run_share_a_single_commit(sqlite_session: Session) -> None:
+    """El bot_run nuevo y su bot_state arrastrado deben nacer atomicamente.
+
+    Regresion del hallazgo I de la re-review de Agustin en el PR #108: dos
+    commits separados dejan una ventana en la que el bot_run nuevo ya existe
+    en la DB pero todavia no tiene bot_state, y un crash justo ahi hace que el
+    proximo arranque no encuentre nada que arrastrar y quede en ACTIVE. Un
+    solo commit para ambos cierra esa ventana.
+    """
+    first = Orchestrator(session=sqlite_session)
+    first_bot_run_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    BotStateRepository(sqlite_session).save(
+        BotStateRow(
+            bot_run_id=first_bot_run_id,
+            state=BotState.KILL_SWITCH_TRIGGERED.value,
+            previous_state=BotState.ACTIVE.value,
+            reason="operador aprieta el boton",
+        )
+    )
+    sqlite_session.commit()
+    first.close()
+
+    commit_calls = 0
+    original_commit = sqlite_session.commit
+
+    def counting_commit() -> None:
+        nonlocal commit_calls
+        commit_calls += 1
+        original_commit()
+
+    sqlite_session.commit = counting_commit  # type: ignore[method-assign]
+
+    second = Orchestrator(session=sqlite_session)
+
+    assert commit_calls == 1
+    second_bot_run_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+    persisted = BotStateRepository(sqlite_session).get_latest(second_bot_run_id)
+    assert persisted is not None
+    assert persisted.state == BotState.KILL_SWITCH_TRIGGERED.value
+
+
 def test_injected_state_machine_does_not_carry_over_kill_switch(sqlite_session: Session) -> None:
     """Si el caller inyecta su propia state machine, es dueno del estado inicial:
     el Orchestrator no debe pisarlo con un carry-over."""

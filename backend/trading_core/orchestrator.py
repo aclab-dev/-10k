@@ -180,7 +180,12 @@ class Orchestrator:
             status="RUNNING",
         )
         db_session.add(bot_run)
-        db_session.commit()
+        # flush (no commit): el id queda disponible para la fila de bot_state
+        # de abajo sin dejar, entre dos commits separados, una ventana donde
+        # el bot_run nuevo ya existe en la DB pero sin estado de kill switch
+        # arrastrado (un crash justo ahi haria que el proximo arranque no
+        # encuentre nada que arrastrar y quede en ACTIVE).
+        db_session.flush()
         self._bot_run = bot_run
         self._db_session = db_session
 
@@ -188,51 +193,68 @@ class Orchestrator:
             # Sin esto, el bot_state del bot_run nuevo queda vacio: el dashboard
             # y el endpoint del kill switch (_current_bot_state) lo leerian como
             # ACTIVE por defecto, en desacuerdo con la state machine en memoria
-            # del worker que ya arranco en KILL_SWITCH_TRIGGERED.
+            # del worker que ya arranco en el estado arrastrado. self._state_machine.state
+            # ya quedo seteado por force_set() dentro de _resolve_carried_over_state.
             BotStateRepository(db_session).save(
                 BotStateRow(
                     bot_run_id=bot_run.id,
-                    state=BotState.KILL_SWITCH_TRIGGERED.value,
+                    state=self._state_machine.state.value,
                     previous_state=BotState.ACTIVE.value,
                     reason=(
                         f"Arrastrado del bot_run anterior {carried_over_from.id} "
-                        "al reiniciar el worker: el kill switch requiere revision "
-                        "manual antes de retomar."
+                        "al reiniciar el worker: el estado detenido requiere "
+                        "revision manual antes de retomar."
                     ),
                 )
             )
-            db_session.commit()
+
+        # Un solo commit: el bot_run nuevo y su bot_state arrastrado (si aplica)
+        # nacen atomicamente, o ninguno de los dos.
+        db_session.commit()
 
         return adapter, db_session, bot_run, cfg
 
     def _resolve_carried_over_state(self, db_session: Session) -> BotRun | None:
-        """Si el ultimo BotRun quedo en KILL_SWITCH_TRIGGERED, este arranca ahi tambien.
+        """Si el ultimo BotRun no quedo corriendo (kill switch o HALTED), este arranca igual.
 
         bot_state esta scopeado por bot_run_id, y cada arranque del worker crea
         un bot_run nuevo (ver _prepare_paper_context) con la state machine en
         ACTIVE por defecto. Sin esto, un restart del worker (deploy, crash,
         `docker compose restart`) reactiva el bot silenciosamente aunque el
-        operador lo haya frenado explicitamente con el kill switch — el kill
-        switch exige revision manual antes de retomar (PDF 4.8), no un simple
-        reinicio de proceso.
+        run anterior haya quedado frenado explicitamente — el kill switch exige
+        revision manual antes de retomar (PDF 4.8), no un simple reinicio de
+        proceso, y lo mismo aplica a cualquier otro estado que detenga el ciclo.
+
+        Se pregunta a la state machine (is_running()) en vez de comparar contra
+        KILL_SWITCH_TRIGGERED puntualmente: hoy el unico writer de bot_state es
+        el endpoint del kill switch, pero el dia que el risk engine escriba
+        HALTED este chequeo ya lo cubre sin tener que volver a tocarlo.
 
         Devuelve el BotRun del que se arrastro el estado, o None si no aplica
-        (no hay corridas previas, o la ultima no quedo en kill switch).
+        (no hay corridas previas, el estado persistido es invalido, o la
+        ultima corrida seguia corriendo).
         """
         previous_run = BotRunRepository(db_session).get_most_recent()
         if previous_run is None:
             return None
         previous_state = BotStateRepository(db_session).get_latest(previous_run.id)
-        if previous_state is None or previous_state.state != BotState.KILL_SWITCH_TRIGGERED.value:
+        if previous_state is None:
+            return None
+        try:
+            persisted_state = BotState(previous_state.state)
+        except ValueError:
+            return None
+        if BotStateMachine(initial=persisted_state).is_running():
             return None
         self._state_machine.force_set(
-            BotState.KILL_SWITCH_TRIGGERED,
+            persisted_state,
             reason=f"carried_over_from_bot_run:{previous_run.id}",
         )
         log.warning(
             "orchestrator.kill_switch_carried_over",
             previous_bot_run_id=previous_run.id,
             previous_reason=previous_state.reason,
+            carried_over_state=persisted_state.value,
         )
         return previous_run
 
