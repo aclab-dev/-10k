@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, status
@@ -63,3 +64,45 @@ def get_current_bot_run_id(
 ) -> str:
     """Atajo para endpoints que solo necesitan el id, no el objeto completo."""
     return bot_run.id
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normaliza a UTC un datetime del query string.
+
+    Un valor naive se interpreta como UTC en vez de dejarlo pasar: las columnas
+    timestamp son TIMESTAMPTZ y PostgreSQL resolvería el naive contra el
+    TimeZone de la sesión, así que el mismo filtro daría resultados distintos
+    según cómo esté configurado el server. El frontend manda siempre offset
+    explícito; esto solo cubre llamadas manuales a la API.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+class TimeRange:
+    """Dependencia de FastAPI para el filtro por fecha de los listados de historial.
+
+    Rango semiabierto `[from_ts, to_ts)`, ambos opcionales y normalizados a UTC.
+    """
+
+    def __init__(
+        self,
+        from_ts: Annotated[
+            datetime | None,
+            Query(description="Filtra timestamp >= from_ts (ISO 8601). Naive se asume UTC."),
+        ] = None,
+        to_ts: Annotated[
+            datetime | None,
+            Query(description="Filtra timestamp < to_ts (ISO 8601). Naive se asume UTC."),
+        ] = None,
+    ) -> None:
+        self.from_ts = _as_utc(from_ts)
+        self.to_ts = _as_utc(to_ts)
+        if self.from_ts is not None and self.to_ts is not None and self.from_ts > self.to_ts:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "rango inválido: from_ts es posterior a to_ts",
+            )

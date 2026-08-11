@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_bot_run_id
+from backend.api.dependencies import TimeRange, get_current_bot_run_id
 from backend.api.pagination import Page, PageParams
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.risk_engine.schemas import RiskDecision
@@ -44,6 +44,7 @@ def list_risk_validations(
     bot_run_id: Annotated[str, Depends(get_current_bot_run_id)],
     db: Annotated[Session, Depends(get_db)],
     page: Annotated[PageParams, Depends()],
+    time_range: Annotated[TimeRange, Depends()],
     symbol: Annotated[str | None, Query(description="Filtra por símbolo, ej. BTCUSDT")] = None,
     result: Annotated[
         str | None,
@@ -53,14 +54,20 @@ def list_risk_validations(
         ),
     ] = None,
 ) -> Page[RiskValidationOut]:
-    """Listado paginado de validaciones del Risk Engine, con filtros por símbolo y resultado."""
+    """Listado paginado de validaciones del Risk Engine, con filtros por fecha, símbolo y result."""
     if symbol is not None and symbol not in ALLOWED_SYMBOLS:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"symbol inválido: '{symbol}'")
     if result is not None and result not in _ALLOWED_RESULTS:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"result inválido: '{result}'")
 
     items, total = RiskValidationRepository(db).list_filtered(
-        bot_run_id, symbol=symbol, result=result, limit=page.limit, offset=page.offset
+        bot_run_id,
+        symbol=symbol,
+        result=result,
+        from_ts=time_range.from_ts,
+        to_ts=time_range.to_ts,
+        limit=page.limit,
+        offset=page.offset,
     )
     return Page[RiskValidationOut](
         items=[RiskValidationOut.model_validate(i) for i in items],
