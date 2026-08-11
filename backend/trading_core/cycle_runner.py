@@ -23,6 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import structlog
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.core.config import AppConfig
@@ -39,8 +40,9 @@ from backend.position_manager.tick_service import PositionTickService
 from backend.quant_signals.engine import compute_quant_signals
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
-from backend.trading_core.bot_state_machine import BotStateMachine
+from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.volatility.engine import compute_volatility_assessment
 
 log = structlog.get_logger(__name__)
@@ -88,6 +90,11 @@ class CycleRunner:
         self._config = config
         self._session = session
         self._bot_run_id = bot_run_id
+        if self._session is None or self._bot_run_id is None:
+            # Sin esto el kill switch queda inerte sin ninguna señal: hoy solo
+            # pasa en tests (Orchestrator en produccion siempre inyecta ambos),
+            # pero un cambio de wiring futuro podria apagarlo en silencio.
+            log.warning("cycle_runner.kill_switch_sync_disabled")
 
         # Auxiliary components for the decision pipeline
         self._regime_engine: MarketRegimeEngine | None = None
@@ -145,6 +152,7 @@ class CycleRunner:
             interval_seconds=self._interval_seconds,
         )
         while not self._shutdown_event.is_set():
+            self._sync_state_from_db()
             if not self._state_machine.is_running():
                 log.info("cycle_runner.paused_by_state", state=self._state_machine.state.value)
             else:
@@ -153,6 +161,54 @@ class CycleRunner:
             if self._shutdown_event.wait(timeout=self._interval_seconds):
                 break
         log.info("cycle_runner.stopped")
+
+    def _sync_state_from_db(self) -> None:
+        """Relee el estado persistido en bot_state antes de cada iteracion del while
+        y antes de cada simbolo del pipeline de decision (ver _run_decision_pipeline).
+
+        El kill switch manual corre en el proceso de la API, con su propia
+        BotStateMachine en memoria: sin esto, este loop nunca se entera de un
+        kill switch disparado desde el dashboard y sigue operando aunque la
+        API ya muestre KILL_SWITCH_TRIGGERED. No-op si no hay sesion/bot_run_id
+        inyectados (tests unitarios sin DB, o CycleRunner con dependencias de
+        decision no wireadas).
+        """
+        if self._session is None or self._bot_run_id is None:
+            return
+        try:
+            latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
+        except SQLAlchemyError:
+            # Fail-open, misma razon que el ValueError de mas abajo: frenar el
+            # tick por un error transitorio de DB (conexion caida, timeout) no
+            # es obviamente mejor que seguir operando con el ultimo estado
+            # local conocido, y dejar la excepcion sin atrapar tumbaria el
+            # loop entero — sin log ni oportunidad de recuperarse en el
+            # proximo ciclo.
+            log.error(
+                "cycle_runner.state_sync_db_error", bot_run_id=self._bot_run_id, exc_info=True
+            )
+            self._session.rollback()
+            return
+        if latest is None:
+            return
+        try:
+            persisted = BotState(latest.state)
+        except ValueError:
+            # Fail-open a proposito, asimetrico respecto del endpoint (que
+            # devuelve 500 ante el mismo dato corrupto en
+            # routes_kill_switch._current_bot_state): frenar el tick acá
+            # dejaria posiciones abiertas sin gestionar, que no es obviamente
+            # mejor que seguir operando con el ultimo estado local conocido.
+            # Si esta asimetria deja de ser aceptable, revisar junto con el
+            # endpoint en vez de cambiar solo un lado.
+            log.error(
+                "cycle_runner.unknown_persisted_state",
+                bot_run_id=self._bot_run_id,
+                state=latest.state,
+            )
+            return
+        if persisted != self._state_machine.state:
+            self._state_machine.force_set(persisted, reason="synced_from_db")
 
     def _tick(self) -> None:
         """Una iteracion del ciclo: heartbeat + market data + posiciones + decision pipeline.
@@ -187,9 +243,29 @@ class CycleRunner:
         Un SAVEPOINT por simbolo garantiza que el rollback de un error solo
         deshace el trabajo de ese simbolo, sin afectar audit rows ya persistidas
         de simbolos anteriores en el mismo tick.
+
+        `_sync_state_from_db` solo corria entre iteraciones del while de run(),
+        no dentro de un tick — y con varios simbolos, cada uno con su propia
+        llamada a GPT (hasta ~30s + reintentos con backoff), un tick puede
+        durar minutos. Sin el chequeo de abajo, un kill switch disparado a
+        mitad de tick no frenaba nada hasta la proxima vuelta del while: el
+        pipeline seguia abriendo posiciones para los simbolos que faltaban.
+        Resincronizamos antes de cada simbolo (no solo al principio del
+        pipeline): es la unica forma de que el chequeo detecte un kill switch
+        disparado mientras el simbolo anterior estaba en medio de su llamada
+        a GPT. Es un SELECT extra por simbolo contra una tabla indexada por
+        bot_run_id — al lado de una llamada a GPT no se nota.
         """
         assert self._session is not None
         for snapshot in snapshots:
+            self._sync_state_from_db()
+            if not self._state_machine.is_running():
+                log.info(
+                    "cycle_runner.pipeline_aborted_by_state",
+                    state=self._state_machine.state.value,
+                    remaining_symbol=snapshot.symbol,
+                )
+                return
             try:
                 with self._session.begin_nested():
                     await self._process_symbol(snapshot)

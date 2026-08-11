@@ -18,6 +18,15 @@ class BotRunRepository(BaseRepository[BotRun]):
         stmt = select(BotRun).where(BotRun.status == "RUNNING").limit(1)
         return self._session.scalars(stmt).first()
 
+    def get_most_recent(self) -> BotRun | None:
+        """Devuelve el BotRun mas nuevo (cualquier status), o None si no hay ninguno.
+
+        Usado al arrancar un worker nuevo para decidir si hay que arrastrar el
+        ultimo estado conocido (ver Orchestrator._resolve_carried_over_state).
+        """
+        stmt = select(BotRun).order_by(BotRun.started_at.desc()).limit(1)
+        return self._session.scalars(stmt).first()
+
     def close(self, bot_run: BotRun, status: str = "STOPPED") -> BotRun:
         bot_run.status = status
         bot_run.ended_at = datetime.now(UTC)

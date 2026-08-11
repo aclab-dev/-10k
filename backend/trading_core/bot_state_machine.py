@@ -97,6 +97,32 @@ class BotStateMachine:
             reason=reason,
         )
 
+    def force_set(self, target: BotState, reason: str = "") -> None:
+        """Fuerza el estado sin validar la tabla de transiciones.
+
+        Para reconciliar con un estado persistido por otro proceso (el
+        CycleRunner releyendo bot_state, escrito por el endpoint de kill
+        switch en el proceso de la API). La transicion ya fue validada por
+        quien la persistio; esto solo la refleja localmente.
+
+        Implica un contrato fuerte: la DB es la unica fuente de verdad del
+        estado del worker, y toda transicion que quiera sobrevivir debe
+        persistirse en bot_state. Quien mueva esta state machine en memoria
+        sin escribir esa fila (p.ej. un futuro caller del risk engine) va a
+        ver su cambio revertido en la proxima llamada a
+        CycleRunner._sync_state_from_db, sin error ni warning.
+        """
+        if target == self._state:
+            return
+        previous = self._state
+        self._state = target
+        log.info(
+            "bot_state_machine.force_set",
+            previous=previous.value,
+            current=target.value,
+            reason=reason,
+        )
+
     def can_trade(self) -> bool:
         """Solo ACTIVE permite abrir nuevas posiciones (PDF 4.8)."""
         return self._state == BotState.ACTIVE

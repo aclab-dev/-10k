@@ -1,0 +1,242 @@
+:root {
+  --text: #1f2328;
+  --bg: #fff;
+  --border: #d9dce1;
+  --card-bg: #f6f8fa;
+  --green: #1a7f37;
+  --yellow: #9a6700;
+  --red: #cf222e;
+  --danger: #cf222e;
+  --danger-hover: #a40e26;
+
+  font: 16px/145% system-ui, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e6edf3;
+    --bg: #0d1117;
+    --border: #30363d;
+    --card-bg: #161b22;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+h1 {
+  font-size: 28px;
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text);
+  padding: 8px 16px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app-loading,
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100svh;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 320px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.login-form input {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.error-message {
+  color: var(--red);
+  font-size: 14px;
+}
+
+.status-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 16px;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  gap: 16px;
+}
+
+.environment {
+  color: var(--text);
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.state-section {
+  margin-bottom: 24px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 14px;
+  border: 1px solid transparent;
+}
+
+.badge-green {
+  background: rgba(26, 127, 55, 0.15);
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.badge-yellow {
+  background: rgba(154, 103, 0, 0.15);
+  color: var(--yellow);
+  border-color: var(--yellow);
+}
+
+.badge-red {
+  background: rgba(207, 34, 46, 0.15);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.badge-unknown {
+  background: var(--card-bg);
+  border-color: var(--border);
+}
+
+.state-reason,
+.previous-state {
+  margin-top: 8px;
+  opacity: 0.8;
+  font-size: 14px;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card-bg);
+}
+
+.metric-label {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.metric-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.empty-hint {
+  margin-top: 16px;
+  opacity: 0.7;
+  font-size: 14px;
+}
+
+.kill-switch-button {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+  font-weight: 600;
+  padding: 10px 20px;
+}
+
+.kill-switch-button:not(:disabled):hover {
+  background: var(--danger-hover);
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 360px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal textarea {
+  font: inherit;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.modal-actions .danger {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
