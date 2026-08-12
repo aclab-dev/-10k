@@ -182,3 +182,15 @@ dashboard_auth:
   # DASHBOARD_SECRET_KEY en el entorno. Deshabilitar solo en desarrollo local.
   enabled: true
   token_ttl_seconds: 43200  # 12h — turno de trabajo sin re-login
+
+  login_throttle:
+    # Rate limiting y lockout de brute-force en POST /api/auth/login.
+    # Deshabilitarlo deja el endpoint aceptando intentos ilimitados: solo para
+    # tests o desarrollo local.
+    enabled: true
+    max_failures_per_username: 5   # fallos consecutivos antes de bloquear al usuario
+    max_failures_per_ip: 10        # más alto: una IP puede probar varios usuarios
+    window_seconds: 900            # 15min — ventana deslizante del conteo
+    lockout_seconds: 300           # 5min — primer bloqueo
+    lockout_backoff_factor: 2.0    # cada reincidencia duplica el bloqueo anterior
+    max_lockout_seconds: 3600      # 1h — techo, para no autoexcluirse un día entero

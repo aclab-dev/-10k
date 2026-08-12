@@ -12,6 +12,7 @@ from backend.storage.repositories.audit import (
     SystemEventRepository,
     TokenUsageRepository,
 )
+from backend.storage.repositories.auth import LoginThrottleRepository
 from backend.storage.repositories.base import BaseRepository
 from backend.storage.repositories.bot import (
     AccountStateRepository,
@@ -74,4 +75,6 @@ __all__ = [
     "BacktestRunRepository",
     "BacktestResultRepository",
     "NewsContextRepository",
+    # auth
+    "LoginThrottleRepository",
 ]

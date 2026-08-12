@@ -74,6 +74,9 @@ ALL_EXPECTED_TABLES = {
     "errors",
     "kill_switch_events",
     "strategy_setups",
+    # Operativas del dashboard (F15), fuera del Anexo B
+    "login_attempts",
+    "login_lockouts",
 }
 
 
@@ -125,7 +128,7 @@ def _make_bot_run(session: Session) -> BotRun:
 
 
 class TestTableCoverage:
-    def test_all_28_tables_registered(self, engine):
+    def test_all_expected_tables_registered(self, engine):
         inspector = inspect(engine)
         actual = set(inspector.get_table_names())
         assert actual == ALL_EXPECTED_TABLES, (
@@ -133,8 +136,8 @@ class TestTableCoverage:
             f"Tablas extra: {actual - ALL_EXPECTED_TABLES}"
         )
 
-    def test_base_metadata_has_28_tables(self):
-        assert len(Base.metadata.tables) == 28
+    def test_base_metadata_has_no_unlisted_tables(self):
+        assert len(Base.metadata.tables) == len(ALL_EXPECTED_TABLES)
 
 
 # ---------------------------------------------------------------------------
