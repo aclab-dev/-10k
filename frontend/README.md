@@ -1,6 +1,14 @@
 # Dashboard frontend (-10k)
 
-SPA en React + Vite + TypeScript para la vista de estado del bot y el kill switch manual. Ver `docs/decisions/F15-01-frontend-stack.md` para el contexto de la elección del stack.
+SPA en React + Vite + TypeScript para la vista de estado del bot, el kill switch manual y el historial de decisiones y bloqueos. Ver `docs/decisions/F15-01-frontend-stack.md` para el contexto de la elección del stack.
+
+## Vistas
+
+- **Estado** — estado del bot, métricas de cuenta y kill switch manual.
+- **Historial** — tabla paginada de decisiones (`/api/decisions`) y de validaciones del Risk Engine
+  (`/api/risk/validations`), con filtros por rango de fechas, símbolo y acción/resultado, y
+  drill-down al detalle de cada fila. Los filtros de fecha se editan en hora local del navegador y
+  se mandan al backend en UTC.
 
 ## Desarrollo
 

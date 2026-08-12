@@ -74,11 +74,15 @@ class DecisionRepository(BaseRepository[Decision]):
         *,
         symbol: str | None = None,
         action: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[Decision], int]:
-        """Listado paginado de decisiones con filtros combinables symbol/action.
+        """Listado paginado de decisiones con filtros combinables symbol/action/rango.
 
+        El rango es semiabierto: `timestamp >= from_ts` y `timestamp < to_ts`, para que
+        ventanas contiguas no se pisen ni dejen huecos.
         Devuelve (página ordenada DESC por timestamp, total que matchea el filtro).
         """
         filters = [Decision.bot_run_id == bot_run_id]
@@ -86,6 +90,10 @@ class DecisionRepository(BaseRepository[Decision]):
             filters.append(Decision.symbol == symbol)
         if action is not None:
             filters.append(Decision.action == action)
+        if from_ts is not None:
+            filters.append(Decision.timestamp >= from_ts)
+        if to_ts is not None:
+            filters.append(Decision.timestamp < to_ts)
 
         total = self._session.scalar(select(func.count()).select_from(Decision).where(*filters))
         stmt = (
@@ -208,12 +216,15 @@ class RiskValidationRepository(BaseRepository[RiskValidation]):
         *,
         symbol: str | None = None,
         result: str | None = None,
+        from_ts: datetime | None = None,
+        to_ts: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[RiskValidation], int]:
-        """Listado paginado de risk validations con filtros combinables symbol/result.
+        """Listado paginado de risk validations con filtros combinables symbol/result/rango.
 
         result: APPROVE | ADJUST_DOWN | BLOCK. Usar result="BLOCK" para la vista de bloqueos.
+        El rango es semiabierto: `timestamp >= from_ts` y `timestamp < to_ts`.
         Devuelve (página ordenada DESC por timestamp, total que matchea el filtro).
         """
         filters = [RiskValidation.bot_run_id == bot_run_id]
@@ -221,6 +232,10 @@ class RiskValidationRepository(BaseRepository[RiskValidation]):
             filters.append(RiskValidation.symbol == symbol)
         if result is not None:
             filters.append(RiskValidation.result == result)
+        if from_ts is not None:
+            filters.append(RiskValidation.timestamp >= from_ts)
+        if to_ts is not None:
+            filters.append(RiskValidation.timestamp < to_ts)
 
         total = self._session.scalar(
             select(func.count()).select_from(RiskValidation).where(*filters)

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from tests.unit.conftest import make_bot_run, make_risk_validation
+
+_T0 = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+_T1 = datetime(2026, 3, 2, 12, 0, tzinfo=UTC)
+_T2 = datetime(2026, 3, 3, 12, 0, tzinfo=UTC)
 
 
 def test_list_risk_validations_404_when_no_active_bot_run(client: TestClient) -> None:
@@ -79,4 +85,44 @@ def test_list_risk_validations_invalid_result_rejected(
 ) -> None:
     make_bot_run(session)
     response = client.get("/api/risk/validations", params={"result": "MAYBE"})
+    assert response.status_code == 422
+
+
+def test_list_risk_validations_range_is_half_open(client: TestClient, session: Session) -> None:
+    bot_run = make_bot_run(session)
+    make_risk_validation(session, bot_run, timestamp=_T0)
+    make_risk_validation(session, bot_run, timestamp=_T1)
+    make_risk_validation(session, bot_run, timestamp=_T2)
+
+    response = client.get(
+        "/api/risk/validations", params={"from_ts": _T1.isoformat(), "to_ts": _T2.isoformat()}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["timestamp"].startswith("2026-03-02T12:00:00")
+
+
+def test_list_risk_validations_range_combines_with_result(
+    client: TestClient, session: Session
+) -> None:
+    bot_run = make_bot_run(session)
+    make_risk_validation(session, bot_run, result="BLOCK", timestamp=_T1)
+    make_risk_validation(session, bot_run, result="APPROVE", timestamp=_T1)
+    make_risk_validation(session, bot_run, result="BLOCK", timestamp=_T0)
+
+    response = client.get(
+        "/api/risk/validations", params={"from_ts": _T1.isoformat(), "result": "BLOCK"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+
+
+def test_list_risk_validations_inverted_range_rejected(
+    client: TestClient, session: Session
+) -> None:
+    make_bot_run(session)
+    response = client.get(
+        "/api/risk/validations", params={"from_ts": _T2.isoformat(), "to_ts": _T0.isoformat()}
+    )
     assert response.status_code == 422

@@ -52,6 +52,71 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>
 }
 
+/** Respuesta paginada genérica del backend (`Page[T]`). */
+export interface Page<T> {
+  items: T[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface DecisionOut {
+  id: string
+  bot_run_id: string
+  symbol: string
+  timestamp: string
+  action: string
+  direction: string | null
+  confidence: number | null
+  margin_usdt: string | null
+  leverage: number | null
+  stop_loss: string | null
+  take_profit: string | null
+  reasoning: string | null
+}
+
+export interface RiskValidationOut {
+  id: string
+  bot_run_id: string
+  symbol: string
+  timestamp: string
+  result: string
+  original_margin: string | null
+  original_leverage: number | null
+  adjusted_margin: string | null
+  adjusted_leverage: number | null
+  reasons: Record<string, unknown> | null
+  daily_loss_at_check: string | null
+  total_loss_at_check: string | null
+}
+
+/** Filtros comunes a los listados de historial. `from_ts`/`to_ts` en ISO 8601 UTC. */
+export interface HistoryQuery {
+  symbol?: string
+  from_ts?: string
+  to_ts?: string
+  limit: number
+  offset: number
+}
+
+export interface DecisionsQuery extends HistoryQuery {
+  action?: string
+}
+
+export interface RiskValidationsQuery extends HistoryQuery {
+  result?: string
+}
+
+function buildQueryString(query: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') {
+      params.set(key, String(value))
+    }
+  }
+  return params.toString()
+}
+
 export interface LoginResponse {
   access_token: string
   token_type: string
@@ -117,4 +182,18 @@ export async function triggerKillSwitch(reason: string): Promise<KillSwitchOut> 
     method: 'POST',
     body: JSON.stringify({ reason }),
   })
+}
+
+export async function getDecisions(query: DecisionsQuery): Promise<Page<DecisionOut>> {
+  return request<Page<DecisionOut>>(`/api/decisions?${buildQueryString({ ...query })}`)
+}
+
+export async function getDecision(decisionId: string): Promise<DecisionOut> {
+  return request<DecisionOut>(`/api/decisions/${encodeURIComponent(decisionId)}`)
+}
+
+export async function getRiskValidations(
+  query: RiskValidationsQuery,
+): Promise<Page<RiskValidationOut>> {
+  return request<Page<RiskValidationOut>>(`/api/risk/validations?${buildQueryString({ ...query })}`)
 }

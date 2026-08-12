@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from backend.api.dependencies import get_current_bot_run_id, raise_404_if_not_uuid
+from backend.api.dependencies import TimeRange, get_current_bot_run_id, raise_404_if_not_uuid
 from backend.api.pagination import Page, PageParams
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.storage.database import get_db
@@ -43,19 +43,26 @@ def list_decisions(
     bot_run_id: Annotated[str, Depends(get_current_bot_run_id)],
     db: Annotated[Session, Depends(get_db)],
     page: Annotated[PageParams, Depends()],
+    time_range: Annotated[TimeRange, Depends()],
     symbol: Annotated[str | None, Query(description="Filtra por símbolo, ej. BTCUSDT")] = None,
     action: Annotated[
         str | None, Query(description="Filtra por acción: OPEN | CLOSE | NO_OPERAR")
     ] = None,
 ) -> Page[DecisionOut]:
-    """Listado paginado de decisiones, con filtros opcionales por símbolo y acción."""
+    """Listado paginado de decisiones, con filtros opcionales por fecha, símbolo y acción."""
     if symbol is not None and symbol not in ALLOWED_SYMBOLS:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"symbol inválido: '{symbol}'")
     if action is not None and action not in _ALLOWED_ACTIONS:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"action inválida: '{action}'")
 
     items, total = DecisionRepository(db).list_filtered(
-        bot_run_id, symbol=symbol, action=action, limit=page.limit, offset=page.offset
+        bot_run_id,
+        symbol=symbol,
+        action=action,
+        from_ts=time_range.from_ts,
+        to_ts=time_range.to_ts,
+        limit=page.limit,
+        offset=page.offset,
     )
     return Page[DecisionOut](
         items=[DecisionOut.model_validate(i) for i in items],
