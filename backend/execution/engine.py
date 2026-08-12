@@ -143,8 +143,9 @@ class ExecutionEngine:
         if decision.entry_price <= 0:
             raise ValueError(f"entry_price debe ser > 0, recibido {decision.entry_price}")
 
-        # Chequeo ANTES de tocar el adapter: sin ATR no se puede registrar un
-        # trailing stop confiable con la config default (trailing_default_mode=ATR).
+        # Chequeo ANTES de tocar el adapter: sin ATR no se puede registrar un trailing
+        # stop confiable con la config default (trailing_default_mode=ATR) ni calcular
+        # el be_trigger_delta del break-even, que también es ATR-based.
         # Fail closed en vez de abrir una posición sin protección registrable.
         atr_1h = self._latest_atr(decision.symbol)
         if atr_1h is None:
@@ -365,6 +366,7 @@ class ExecutionEngine:
             stop_loss=Decimal(str(decision.stop_loss)),
             take_profit=Decimal(str(decision.take_profit)),
             use_trailing_stop=decision.position_management_plan.use_trailing_stop,
+            move_to_break_even=decision.position_management_plan.move_to_break_even,
             defaults=self._position_management_defaults,
             atr_1h=atr_1h,
         )

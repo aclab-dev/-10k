@@ -81,6 +81,7 @@ def test_blocks_invalid_trailing_mode() -> None:
             trailing_default_mode="BOGUS",
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
+            be_trigger_atr_multiplier=1.0,
         )
 
 
@@ -98,6 +99,7 @@ def test_blocks_fixed_trailing_mode_at_boot() -> None:
             trailing_default_mode="FIXED",
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
+            be_trigger_atr_multiplier=1.0,
         )
 
 
@@ -113,6 +115,25 @@ def test_blocks_trailing_percent_out_of_range() -> None:
             trailing_default_mode="PERCENT",
             trailing_default_percent=1.5,
             trailing_default_atr_multiplier=2.5,
+            be_trigger_atr_multiplier=1.0,
+        )
+
+
+def test_blocks_non_positive_be_trigger_atr_multiplier() -> None:
+    """be_trigger_delta = atr_1h * multiplicador y PositionConfig lo exige > 0:
+    un multiplicador <= 0 falla al boot, no al abrir la primera posición."""
+    from backend.core.config import PositionManagementConfig
+
+    with pytest.raises(ConfigError, match="be_trigger_atr_multiplier"):
+        PositionManagementConfig(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="ATR",
+            trailing_default_percent=0.02,
+            trailing_default_atr_multiplier=2.5,
+            be_trigger_atr_multiplier=0.0,
         )
 
 
