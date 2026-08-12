@@ -184,7 +184,7 @@ class ExecutionEngine:
             self._session.commit()
             log.error(
                 "execution_engine.filled_without_fill_price",
-                client_order_id=order_row.client_order_id,
+                client_order_id=decision.decision_id,
                 symbol=decision.symbol,
             )
             raise RuntimeError(

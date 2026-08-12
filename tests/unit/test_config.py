@@ -79,7 +79,7 @@ def test_be_sl_offset_percent_covers_round_trip_taker_fees(monkeypatch: pytest.M
     en break-even (ver F14). Si el taker rate del fee model sube y nadie actualiza este
     default, el break-even vuelve a perder plata en cada stop-out — este test lo detecta.
 
-    Nota: esto valida contra el fee model de PAPER/backtesting (FeeModel.DEFAULT_TAKER_RATE).
+    Nota: esto valida contra el fee model de PAPER/backtesting (fee_model.DEFAULT_TAKER_RATE).
     Cuando entre el adapter de BingX (F16/F17) con tasas reales de exchange, este default
     hay que revalidarlo contra esas tasas, que pueden no coincidir con el fee model simulado.
     """
