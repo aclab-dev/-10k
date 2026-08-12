@@ -144,6 +144,12 @@ position_management:
   trailing_default_mode: ATR
   trailing_default_percent: 0.02        # 2% del high-water (modo PERCENT)
   trailing_default_atr_multiplier: 2.5  # atr_1h * 2.5 (modo ATR)
+  # Break-even (F14): distancia a favor que dispara el movimiento del SL a entry,
+  # como múltiplo del ATR(1h) al abrir. 1.0 = una unidad completa de volatilidad
+  # horaria a favor: lo bastante lejos para no ser ruido, y estrictamente antes que
+  # la distancia de trailing (2.5 * ATR), así el break-even protege el capital
+  # primero y el trailing toma el relevo después.
+  be_trigger_atr_multiplier: 1.0
 
 failure_policy:
   gpt_failure_blocks_new_entries: true

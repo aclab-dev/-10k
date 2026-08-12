@@ -320,6 +320,11 @@ class PositionManagementConfig(BaseModel):
     trailing_default_mode: str
     trailing_default_percent: float
     trailing_default_atr_multiplier: float
+    # Default de distancia del break-even (F14), expresado como múltiplo del ATR(1h)
+    # vigente al abrir la posición: be_trigger_delta = atr_1h * este multiplicador.
+    # ATR-based y no un delta absoluto porque el mismo número no significa lo mismo en
+    # BTC (~50k) que en XRP (~2), ni en régimen calmo que en alta volatilidad.
+    be_trigger_atr_multiplier: float
 
     @field_validator("trailing_default_mode")
     @classmethod
@@ -354,6 +359,15 @@ class PositionManagementConfig(BaseModel):
     def atr_multiplier_positive(cls, v: float) -> float:
         if v <= 0.0:
             raise ConfigError(f"trailing_default_atr_multiplier={v} debe ser > 0.")
+        return v
+
+    @field_validator("be_trigger_atr_multiplier")
+    @classmethod
+    def be_trigger_multiplier_positive(cls, v: float) -> float:
+        # PositionConfig.be_trigger_delta exige > 0: un multiplicador <= 0 haría
+        # explotar la construcción del PositionConfig al abrir la posición.
+        if v <= 0.0:
+            raise ConfigError(f"be_trigger_atr_multiplier={v} debe ser > 0.")
         return v
 
 
