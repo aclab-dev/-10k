@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from backend.storage.models import LoginAttempt, LoginLockout, LoginScope
 from backend.storage.repositories.base import BaseRepository
@@ -87,22 +88,42 @@ class LoginThrottleRepository(BaseRepository[LoginAttempt]):
 
         El contador incrementa aunque el lockout anterior ya haya vencido: la
         reincidencia es exactamente lo que el backoff tiene que castigar.
+
+        El INSERT va en un savepoint porque un brute-force es concurrente por
+        definición: dos requests que cruzan el umbral a la vez intentan crear la
+        misma fila y una choca contra el unique. Sin esto, ese choque saldría
+        como 500 del login justo cuando el throttle importa.
         """
-        lockout = self.get_lockout(scope, identifier)
-        if lockout is None:
-            lockout = LoginLockout(
-                scope=scope.value,
-                identifier=identifier,
-                locked_until=locked_until,
-                lockout_count=1,
-                created_at=now,
-                updated_at=now,
-            )
-        else:
-            lockout.lockout_count += 1
-            lockout.locked_until = locked_until
-            lockout.updated_at = now
-        self._session.add(lockout)
+        existing = self.get_lockout(scope, identifier)
+        if existing is not None:
+            return self._renew(existing, locked_until=locked_until, now=now)
+
+        lockout = LoginLockout(
+            scope=scope.value,
+            identifier=identifier,
+            locked_until=locked_until,
+            lockout_count=1,
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            with self._session.begin_nested():
+                self._session.add(lockout)
+        except IntegrityError:
+            concurrent = self.get_lockout(scope, identifier)
+            if concurrent is None:
+                # El unique no fue el de (scope, identifier): no es la carrera
+                # que este except cubre y no hay nada que reintentar.
+                raise
+            return self._renew(concurrent, locked_until=locked_until, now=now)
+        return lockout
+
+    def _renew(
+        self, lockout: LoginLockout, *, locked_until: datetime, now: datetime
+    ) -> LoginLockout:
+        lockout.lockout_count += 1
+        lockout.locked_until = locked_until
+        lockout.updated_at = now
         self._session.flush()
         return lockout
 

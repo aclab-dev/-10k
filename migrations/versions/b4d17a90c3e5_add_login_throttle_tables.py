@@ -38,6 +38,9 @@ def upgrade() -> None:
         "login_attempts",
         ["scope", "identifier", "timestamp"],
     )
+    # La purga de intentos vencidos filtra solo por timestamp: el compuesto no
+    # le sirve porque timestamp es su última columna.
+    op.create_index("ix_login_attempts_timestamp", "login_attempts", ["timestamp"])
 
     op.create_table(
         "login_lockouts",
@@ -55,5 +58,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("login_lockouts")
+    op.drop_index("ix_login_attempts_timestamp", table_name="login_attempts")
     op.drop_index("ix_login_attempts_scope_identifier_timestamp", table_name="login_attempts")
     op.drop_table("login_attempts")

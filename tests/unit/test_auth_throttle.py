@@ -234,6 +234,45 @@ def test_la_reincidencia_duplica_el_lockout(session: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Concurrencia
+# ---------------------------------------------------------------------------
+
+
+def test_dos_requests_que_cruzan_el_umbral_a_la_vez_no_rompen(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un brute-force es concurrente: el INSERT del lockout puede perder la carrera.
+
+    Se simula haciendo que el repo no vea la fila que otra request ya creó, que
+    es exactamente lo que pasa cuando ambas leen antes de que la otra commitee.
+    """
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=T0 + timedelta(seconds=60), now=T0)
+
+    original_get = LoginThrottleRepository.get_lockout
+    llamadas = {"n": 0}
+
+    def get_lockout_ciego(
+        self: LoginThrottleRepository, scope: LoginScope, identifier: str
+    ) -> object | None:
+        # Solo la primera lectura miente: la del reintento tiene que ver la fila.
+        if scope is LoginScope.USERNAME and llamadas["n"] == 0:
+            llamadas["n"] += 1
+            return None
+        return original_get(self, scope, identifier)
+
+    monkeypatch.setattr(LoginThrottleRepository, "get_lockout", get_lockout_ciego)
+
+    lockout = LoginThrottleRepository(session).upsert_lockout(
+        LoginScope.USERNAME, USER, locked_until=T0 + timedelta(seconds=120), now=T0
+    )
+
+    assert lockout.lockout_count == 2
+    monkeypatch.undo()
+    assert LoginThrottleRepository(session).get_lockout(LoginScope.USERNAME, USER) is not None
+
+
+# ---------------------------------------------------------------------------
 # Login exitoso
 # ---------------------------------------------------------------------------
 

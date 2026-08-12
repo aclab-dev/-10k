@@ -873,6 +873,9 @@ class LoginAttempt(Base):
 
     __table_args__ = (
         Index("ix_login_attempts_scope_identifier_timestamp", "scope", "identifier", "timestamp"),
+        # La purga filtra solo por timestamp, y el índice compuesto no le sirve
+        # porque timestamp es su última columna.
+        Index("ix_login_attempts_timestamp", "timestamp"),
     )
 
 
