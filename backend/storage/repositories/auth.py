@@ -10,9 +10,10 @@ Como el resto de los repos, no commitea: eso lo decide el caller.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.storage.models import LoginAttempt, LoginLockout, LoginScope
@@ -75,6 +76,29 @@ class LoginThrottleRepository(BaseRepository[LoginAttempt]):
             LoginLockout.identifier == identifier,
         )
         return self._session.scalars(stmt).one_or_none()
+
+    def get_lockouts(
+        self, pairs: Sequence[tuple[LoginScope, str]]
+    ) -> dict[tuple[LoginScope, str], LoginLockout]:
+        """Trae los lockouts de varios pares en una sola query.
+
+        El chequeo previo al login mira los dos scopes en cada request, incluida
+        la exitosa: con `get_lockout` eso son dos round trips en el path caliente.
+        Se usa un OR de igualdades y no un `IN` de tuplas porque las row values
+        no están en todos los dialectos que corren los tests.
+        """
+        if not pairs:
+            return {}
+
+        stmt = select(LoginLockout).where(
+            or_(
+                *(
+                    and_(LoginLockout.scope == scope.value, LoginLockout.identifier == identifier)
+                    for scope, identifier in pairs
+                )
+            )
+        )
+        return {(LoginScope(row.scope), row.identifier): row for row in self._session.scalars(stmt)}
 
     def upsert_lockout(
         self,

@@ -37,12 +37,20 @@ _TOO_MANY_ATTEMPTS = "Demasiados intentos fallidos. Probá de nuevo más tarde."
 
 
 def _client_ip(request: Request) -> str | None:
-    """IP de origen de la request.
+    """IP de origen de la request, según lo que resolvió el servidor ASGI.
 
-    Se lee de `request.client`, que uvicorn ya resuelve desde `X-Forwarded-For`
-    cuando se corre con `--proxy-headers`. Leer el header acá sería peor: sin
-    proxy de confianza adelante, el cliente lo elige y el límite por IP se evade
-    cambiando un string.
+    No se lee `X-Forwarded-For` acá: sin un proxy de confianza adelante, ese
+    header lo elige el cliente y el límite por IP se evade cambiando un string.
+    Resolverlo es responsabilidad del servidor ASGI, que sabe quién es el peer.
+
+    **Requisito de infra**: uvicorn aplica `X-Forwarded-For` solo si el peer está
+    en `forwarded_allow_ips`, que por defecto es `127.0.0.1`. Detrás de un
+    reverse proxy que no sea localhost desde la perspectiva de uvicorn (por
+    ejemplo, otro contenedor), hay que setear `FORWARDED_ALLOW_IPS` con la
+    dirección del proxy. Sin eso, `request.client.host` es la IP del proxy y
+    todos los clientes caen en el mismo bucket: unos pocos fallos bloquean a
+    todo el mundo detrás de ese proxy. Nunca usar `*`, que es el otro extremo:
+    habilita a cualquiera a falsear su IP y saltearse el límite.
     """
     return request.client.host if request.client else None
 

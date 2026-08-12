@@ -132,8 +132,14 @@ class LoginThrottle:
         if not self._config.enabled:
             return ThrottleDecision(locked=False, retry_after_seconds=0)
 
-        for scope, identifier in self._identities(username, ip):
-            lockout = self._repo.get_lockout(scope, identifier)
+        identities = self._identities(username, ip)
+        # Una sola query para los dos scopes: esto corre en cada login, también
+        # en los exitosos. El orden de `identities` define la prioridad del
+        # scope reportado, así que el recorrido sigue siendo secuencial.
+        lockouts = self._repo.get_lockouts(identities)
+
+        for scope, identifier in identities:
+            lockout = lockouts.get((scope, identifier))
             if lockout is None:
                 continue
             locked_until = _as_utc(lockout.locked_until)

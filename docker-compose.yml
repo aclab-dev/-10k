@@ -53,6 +53,14 @@ services:
       DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:-}
       DASHBOARD_SECRET_KEY: ${DASHBOARD_SECRET_KEY:-}
       BOT__DASHBOARD_AUTH__ENABLED: ${BOT__DASHBOARD_AUTH__ENABLED:-true}
+      # Peers cuyo X-Forwarded-For uvicorn acepta. 127.0.0.1 es su default y es
+      # lo correcto para este compose, que expone el puerto directo y no tiene
+      # proxy adelante. Al poner un reverse proxy hay que setearlo con la
+      # direccion del proxy: sin eso, el rate limiting por IP del login (F15) ve
+      # la IP del proxy para todos y bloquea a todos juntos. Nunca "*": deja que
+      # cualquier cliente falsee su IP y se saltee el limite. Tampoco vacio:
+      # uvicorn lo toma literal y termina sin ningun peer confiable.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     command: ["sh", "-c", "alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
     ports:
       - "${APP_PORT:-8000}:8000"

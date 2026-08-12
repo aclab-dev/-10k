@@ -191,6 +191,43 @@ def test_los_fallos_dentro_de_la_ventana_siguen_sumando(session: Session) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Lectura de lockouts
+# ---------------------------------------------------------------------------
+
+
+def test_los_lockouts_de_ambos_scopes_salen_en_una_sola_query(session: Session) -> None:
+    """El chequeo corre en cada login, también en el exitoso: no gasta dos viajes."""
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=T0, now=T0)
+    repo.upsert_lockout(LoginScope.IP, IP, locked_until=T0, now=T0)
+
+    lockouts = repo.get_lockouts([(LoginScope.USERNAME, USER), (LoginScope.IP, IP)])
+
+    assert set(lockouts) == {(LoginScope.USERNAME, USER), (LoginScope.IP, IP)}
+
+
+def test_la_lectura_combinada_ignora_pares_que_no_existen(session: Session) -> None:
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=T0, now=T0)
+
+    lockouts = repo.get_lockouts([(LoginScope.USERNAME, USER), (LoginScope.IP, IP)])
+
+    assert set(lockouts) == {(LoginScope.USERNAME, USER)}
+
+
+def test_la_lectura_combinada_no_cruza_scopes(session: Session) -> None:
+    """Un identificador bloqueado como usuario no debe aparecer como IP bloqueada."""
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, "203.0.113.7", locked_until=T0, now=T0)
+
+    assert repo.get_lockouts([(LoginScope.IP, "203.0.113.7")]) == {}
+
+
+def test_la_lectura_combinada_sin_pares_no_consulta(session: Session) -> None:
+    assert LoginThrottleRepository(session).get_lockouts([]) == {}
+
+
+# ---------------------------------------------------------------------------
 # Liberación y backoff acumulado
 # ---------------------------------------------------------------------------
 
