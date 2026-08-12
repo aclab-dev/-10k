@@ -527,8 +527,18 @@ class TestPositionManagerEdge:
         assert pm.configured_symbols() == ["BTCUSDT"]
 
         # Posición cerrada por fuera del PositionManager (no vía tick/trigger),
-        # p.ej. cierre manual o liquidación reflejados directamente en el adapter.
-        del adapter._positions["BTCUSDT"]
+        # p.ej. cierre manual o liquidación: se simula vía orden reduce-only por
+        # la API pública del adapter, como lo haría un cierre manual real.
+        adapter.place_order(
+            OrderRequest(
+                symbol="BTCUSDT",
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=Decimal("1"),
+                price=Decimal("50000"),
+                is_reduce_only=True,
+            )
+        )
 
         result = pm.tick("BTCUSDT", Decimal("49000"))
 
