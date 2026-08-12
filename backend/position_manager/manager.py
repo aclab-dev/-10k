@@ -306,6 +306,16 @@ class PositionManager:
         """
         position = self._adapter.get_position(symbol)
         if position is None:
+            # Posición cerrada por fuera del PositionManager (manual o liquidación):
+            # por contrato de ExchangeAdapter.get_position() (ver base.py) None nunca
+            # es transitorio, y set_config() solo se llama tras confirmar la orden de
+            # entrada FILLED, así que no hay ventana legítima donde exista config
+            # sin posición salvo este caso. Sin remove_config acá, configured_symbols()
+            # seguiría devolviendo el símbolo indefinidamente con PositionTickService
+            # corriendo en loop real.
+            if symbol in self._configs:
+                _log.warning("position_manager.orphan_config_removed", symbol=symbol)
+                self.remove_config(symbol)
             return TickResult(
                 symbol=symbol,
                 trigger=PositionTriggerReason.NONE,

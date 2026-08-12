@@ -56,7 +56,13 @@ class ExchangeAdapter(ABC):
 
     @abstractmethod
     def get_position(self, symbol: str) -> PositionState | None:
-        """Retorna la posición abierta para el símbolo dado, o None si no hay."""
+        """Retorna la posición abierta para el símbolo dado, o None si no hay.
+
+        Contrato: None significa "no hay posición", nunca "no pude averiguarlo".
+        Ante error de API, red o timeout la implementación DEBE levantar excepción,
+        no retornar None. PositionManager.tick() interpreta None como cierre externo
+        y descarta la PositionConfig del símbolo.
+        """
 
     @abstractmethod
     def get_open_orders(self, symbol: str) -> list[OrderResult]:
