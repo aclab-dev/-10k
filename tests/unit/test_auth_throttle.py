@@ -241,6 +241,44 @@ def test_el_lockout_sigue_vigente_antes_de_vencer(session: Session) -> None:
     assert decision.retry_after_seconds == 1
 
 
+def test_reporta_el_lockout_mas_largo_de_los_dos_scopes(session: Session) -> None:
+    """Reportar el más corto haría reintentar contra el otro, todavía vigente."""
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=T0 + timedelta(seconds=60), now=T0)
+    repo.upsert_lockout(LoginScope.IP, IP, locked_until=T0 + timedelta(seconds=300), now=T0)
+
+    decision = LoginThrottle(session, make_config()).check_lockout(USER, IP, now=T0)
+
+    assert decision.scope is LoginScope.IP
+    assert decision.retry_after_seconds == 300
+
+
+def test_ignora_el_scope_vencido_al_elegir_el_mas_largo(session: Session) -> None:
+    """El vencido no cuenta aunque su locked_until sea el mayor de los dos."""
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=T0 + timedelta(seconds=600), now=T0)
+    repo.upsert_lockout(LoginScope.IP, IP, locked_until=T0 + timedelta(seconds=900), now=T0)
+
+    # T0+700: el de usuario ya venció, el de IP sigue vigente.
+    decision = LoginThrottle(session, make_config()).check_lockout(
+        USER, IP, now=T0 + timedelta(seconds=700)
+    )
+
+    assert decision.scope is LoginScope.IP
+    assert decision.retry_after_seconds == 200
+
+
+def test_ante_empate_reporta_el_scope_de_usuario(session: Session) -> None:
+    repo = LoginThrottleRepository(session)
+    vence = T0 + timedelta(seconds=60)
+    repo.upsert_lockout(LoginScope.USERNAME, USER, locked_until=vence, now=T0)
+    repo.upsert_lockout(LoginScope.IP, IP, locked_until=vence, now=T0)
+
+    decision = LoginThrottle(session, make_config()).check_lockout(USER, IP, now=T0)
+
+    assert decision.scope is LoginScope.USERNAME
+
+
 def test_el_lockout_se_libera_al_vencer(session: Session) -> None:
     throttle = LoginThrottle(session, make_config())
     fail_n(throttle, 3, at=T0)
@@ -268,6 +306,53 @@ def test_la_reincidencia_duplica_el_lockout(session: Session) -> None:
     decision = throttle.check_lockout(USER, IP, now=liberado)
     assert decision.locked is True
     assert decision.retry_after_seconds == 120
+
+
+# ---------------------------------------------------------------------------
+# Purga de lockouts
+# ---------------------------------------------------------------------------
+
+
+def test_los_lockouts_vencidos_hace_rato_se_purgan(session: Session) -> None:
+    """Un escaneo desde muchas IPs deja una fila por IP y ninguna loguea nunca bien."""
+    config = make_config()
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(
+        LoginScope.IP, "198.51.100.9", locked_until=T0 + timedelta(seconds=60), now=T0
+    )
+
+    retencion = max(config.window_seconds, config.max_lockout_seconds)
+    mucho_despues = T0 + timedelta(seconds=retencion + 120)
+    LoginThrottle(session, config).record_failure(USER, IP, now=mucho_despues)
+
+    assert repo.get_lockout(LoginScope.IP, "198.51.100.9") is None
+
+
+def test_la_purga_conserva_el_backoff_de_quien_puede_reincidir(session: Session) -> None:
+    """Borrar un lockout recién vencido le devolvería el backoff mínimo al atacante."""
+    config = make_config()
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(
+        LoginScope.IP, "198.51.100.9", locked_until=T0 + timedelta(seconds=60), now=T0
+    )
+
+    LoginThrottle(session, config).record_failure(USER, IP, now=T0 + timedelta(seconds=120))
+
+    conservado = repo.get_lockout(LoginScope.IP, "198.51.100.9")
+    assert conservado is not None
+    assert conservado.lockout_count == 1
+
+
+def test_la_purga_no_toca_lockouts_vigentes(session: Session) -> None:
+    config = make_config(window_seconds=1, max_lockout_seconds=60)
+    repo = LoginThrottleRepository(session)
+    repo.upsert_lockout(
+        LoginScope.IP, "198.51.100.9", locked_until=T0 + timedelta(seconds=3600), now=T0
+    )
+
+    LoginThrottle(session, config).record_failure(USER, IP, now=T0 + timedelta(seconds=1800))
+
+    assert repo.get_lockout(LoginScope.IP, "198.51.100.9") is not None
 
 
 # ---------------------------------------------------------------------------

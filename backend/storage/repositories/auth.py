@@ -151,6 +151,20 @@ class LoginThrottleRepository(BaseRepository[LoginAttempt]):
         self._session.flush()
         return lockout
 
+    def purge_lockouts_before(self, cutoff: datetime) -> None:
+        """Descarta lockouts vencidos hace rato, con su historial de backoff.
+
+        Sin esto la tabla crece sin techo: un escaneo desde muchas IPs deja una
+        fila por IP y ninguna se limpia nunca, porque `clear_lockout` solo corre
+        tras un login exitoso que esas IPs no van a hacer.
+
+        El `cutoff` lo elige el caller para no borrar el `lockout_count` de quien
+        todavía puede reincidir: perder esa memoria le devolvería el backoff
+        mínimo a un atacante que insiste.
+        """
+        self._session.execute(delete(LoginLockout).where(LoginLockout.locked_until < cutoff))
+        self._session.flush()
+
     def clear_lockout(self, scope: LoginScope, identifier: str) -> None:
         """Elimina el lockout del par, junto con su historial de backoff."""
         self._session.execute(

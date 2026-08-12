@@ -134,22 +134,28 @@ class LoginThrottle:
 
         identities = self._identities(username, ip)
         # Una sola query para los dos scopes: esto corre en cada login, también
-        # en los exitosos. El orden de `identities` define la prioridad del
-        # scope reportado, así que el recorrido sigue siendo secuencial.
+        # en los exitosos.
         lockouts = self._repo.get_lockouts(identities)
 
-        for scope, identifier in identities:
-            lockout = lockouts.get((scope, identifier))
-            if lockout is None:
-                continue
-            locked_until = _as_utc(lockout.locked_until)
-            if locked_until > now:
-                return ThrottleDecision(
-                    locked=True,
-                    retry_after_seconds=_remaining_seconds(locked_until, now),
-                    scope=scope,
-                )
-        return ThrottleDecision(locked=False, retry_after_seconds=0)
+        active = [
+            (scope, _as_utc(lockout.locked_until))
+            for scope, identifier in identities
+            if (lockout := lockouts.get((scope, identifier))) is not None
+            and _as_utc(lockout.locked_until) > now
+        ]
+        if not active:
+            return ThrottleDecision(locked=False, retry_after_seconds=0)
+
+        # Gana el bloqueo más largo, no el primero: reportar el más corto haría
+        # que el cliente espere, reintente y se choque con el otro, todavía
+        # vigente. `max` conserva el primero ante empate, así que un empate
+        # sigue reportando USERNAME.
+        scope, locked_until = max(active, key=lambda item: item[1])
+        return ThrottleDecision(
+            locked=True,
+            retry_after_seconds=_remaining_seconds(locked_until, now),
+            scope=scope,
+        )
 
     def record_failure(self, username: str, ip: str | None, *, now: datetime) -> None:
         """Registra un intento fallido y bloquea si se alcanzó el umbral.
@@ -157,12 +163,23 @@ class LoginThrottle:
         Al bloquear se consumen los intentos contados: sin eso, al vencer el
         lockout los fallos que siguen dentro de la ventana volverían a bloquear
         con el primer intento nuevo.
+
+        **Límite conocido**: contar y decidir no es atómico. Bajo READ COMMITTED,
+        varias requests concurrentes pueden leer el conteo antes de que las otras
+        commiteen su INSERT, y pasar el umbral sin que ninguna cree el lockout.
+        El exceso está acotado por las requests en vuelo —cada una paga scrypt
+        antes de contar, así que la concurrencia real la limita el pool de
+        threads y la memoria— y se corrige sola: la primera request posterior a
+        esos commits ve el conteo completo y bloquea. Cerrarlo del todo pide un
+        lock por identificador (`pg_advisory_xact_lock`), que es específico de
+        Postgres y quedaría sin cubrir por los tests, que corren en SQLite.
         """
         if not self._config.enabled:
             return
 
         window_start = now - timedelta(seconds=self._config.window_seconds)
         self._repo.purge_attempts_before(window_start)
+        self._repo.purge_lockouts_before(self._backoff_memory_start(now))
 
         for scope, identifier in self._identities(username, ip):
             self._repo.record_failure(scope, identifier, now=now)
@@ -192,6 +209,17 @@ class LoginThrottle:
                 lockout_count=next_count,
                 lockout_seconds=duration,
             )
+
+    def _backoff_memory_start(self, now: datetime) -> datetime:
+        """Momento antes del cual un lockout vencido ya no aporta nada.
+
+        Un lockout vencido sigue siendo útil mientras su `lockout_count` pueda
+        castigar una reincidencia. Se conserva por el mayor entre la ventana de
+        conteo y el bloqueo más largo posible: quien no reintentó en todo ese
+        tiempo es, a los fines del backoff, un ofensor nuevo.
+        """
+        retention = max(self._config.window_seconds, self._config.max_lockout_seconds)
+        return now - timedelta(seconds=retention)
 
     def clear(self, username: str, ip: str | None) -> None:
         """Resetea contadores y backoff tras un login exitoso."""
