@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import structlog
+
 from backend.core.config import PositionManagementConfig
 from backend.position_manager.schemas import PositionConfig, TrailingMode
+
+_log = structlog.get_logger(__name__)
 
 # Tope de be_sl_offset como fracción de be_trigger_delta. PositionConfig exige
 # be_sl_offset < be_trigger_delta (si no, el SL queda al nivel del trigger y cierra
@@ -89,6 +93,17 @@ def build_position_config(
         fee_buffer = entry_price * Decimal(str(defaults.be_sl_offset_percent))
         max_offset = be_trigger_delta * _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER
         be_sl_offset = min(fee_buffer, max_offset)
+
+        if fee_buffer > max_offset:
+            _log.warning(
+                "position_manager.be_sl_offset_clamped",
+                symbol=symbol,
+                entry_price=str(entry_price),
+                atr_1h=str(atr_1h),
+                fee_buffer=str(fee_buffer),
+                be_trigger_delta=str(be_trigger_delta),
+                be_sl_offset=str(be_sl_offset),
+            )
 
     return PositionConfig(
         symbol=symbol,

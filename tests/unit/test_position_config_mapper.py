@@ -6,8 +6,17 @@ from decimal import Decimal
 
 import pytest
 
-from backend.core.config import PositionManagementConfig
+from backend.core.config import PositionManagementConfig, load_config
 from backend.position_manager.config_mapper import build_position_config
+
+
+def _real_position_management_defaults(monkeypatch: pytest.MonkeyPatch) -> PositionManagementConfig:
+    """Carga position_management tal como queda con config.yaml real (sin overrides
+    de env), para que el test detecte si alguien cambia los defaults del archivo."""
+    for key in list(__import__("os").environ.keys()):
+        if key.startswith("BOT__"):
+            monkeypatch.delenv(key, raising=False)
+    return load_config().position_management
 
 
 def _defaults(
@@ -272,12 +281,15 @@ class TestBuildPositionConfigBeSlOffset:
         assert config.be_sl_offset == Decimal("0")
         assert config.be_trigger_delta is None
 
-    def test_be_sl_offset_never_violates_invariant_with_config_yaml_defaults(self) -> None:
-        """Reproduce los defaults reales de config.yaml (be_trigger_atr_multiplier=1.0,
-        be_sl_offset_percent=0.0015) en un rango de entry_price/atr_1h, incluyendo
-        regímenes de baja volatilidad relativa donde el porcentaje del entry podría
-        superar el ATR si no se clampeara."""
-        defaults = _defaults(be_trigger_atr_multiplier=1.0, be_sl_offset_percent=0.0015)
+    def test_be_sl_offset_never_violates_invariant_with_config_yaml_defaults(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Carga be_trigger_atr_multiplier/be_sl_offset_percent desde config.yaml real
+        (no hardcodeados) y verifica que la invariante se sostiene en un rango de
+        entry_price/atr_1h, incluyendo regímenes de baja volatilidad relativa donde el
+        porcentaje del entry podría superar el ATR si no se clampeara. Si alguien toca
+        config.yaml, este test lo detecta."""
+        defaults = _real_position_management_defaults(monkeypatch)
         cases = [
             (Decimal("50000"), Decimal("500")),  # BTC, ATR normal
             (Decimal("2"), Decimal("0.02")),  # XRP, ATR normal

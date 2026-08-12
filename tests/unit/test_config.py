@@ -74,6 +74,17 @@ def test_be_sl_offset_default_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.position_management.be_sl_offset_percent == 0.0015
 
 
+def test_be_sl_offset_percent_covers_round_trip_taker_fees(monkeypatch: pytest.MonkeyPatch) -> None:
+    """be_sl_offset_percent existe para cubrir el fee de entrada + salida de un stop-out
+    en break-even (ver F14). Si el taker rate del fee model sube y nadie actualiza este
+    default, el break-even vuelve a perder plata en cada stop-out — este test lo detecta."""
+    from backend.backtesting.fee_model import _DEFAULT_TAKER_RATE
+
+    cfg = _load(monkeypatch)
+    round_trip_taker_rate = float(_DEFAULT_TAKER_RATE) * 2
+    assert cfg.position_management.be_sl_offset_percent >= round_trip_taker_rate
+
+
 def test_blocks_invalid_trailing_mode() -> None:
     from backend.core.config import PositionManagementConfig
 
