@@ -164,15 +164,9 @@ class LoginThrottle:
         lockout los fallos que siguen dentro de la ventana volverían a bloquear
         con el primer intento nuevo.
 
-        **Límite conocido**: contar y decidir no es atómico. Bajo READ COMMITTED,
-        varias requests concurrentes pueden leer el conteo antes de que las otras
-        commiteen su INSERT, y pasar el umbral sin que ninguna cree el lockout.
-        El exceso está acotado por las requests en vuelo —cada una paga scrypt
-        antes de contar, así que la concurrencia real la limita el pool de
-        threads y la memoria— y se corrige sola: la primera request posterior a
-        esos commits ve el conteo completo y bloquea. Cerrarlo del todo pide un
-        lock por identificador (`pg_advisory_xact_lock`), que es específico de
-        Postgres y quedaría sin cubrir por los tests, que corren en SQLite.
+        Contar y decidir se serializan por identidad con un advisory lock (ver
+        `LoginThrottleRepository.lock_identity`): sin eso, un burst concurrente
+        pasa el umbral configurado sin que ninguna request cree el lockout.
         """
         if not self._config.enabled:
             return
@@ -182,6 +176,9 @@ class LoginThrottle:
         self._repo.purge_lockouts_before(self._backoff_memory_start(now))
 
         for scope, identifier in self._identities(username, ip):
+            # Contar y decidir tienen que ser atómicos por identidad: sin esto,
+            # un burst concurrente pasa el umbral sin que nadie cree el lockout.
+            self._repo.lock_identity(scope, identifier)
             self._repo.record_failure(scope, identifier, now=now)
             failures = self._repo.count_failures_since(scope, identifier, window_start)
             if failures < self._max_failures(scope):

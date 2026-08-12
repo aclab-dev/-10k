@@ -10,6 +10,7 @@ Como el resto de los repos, no commitea: eso lo decide el caller.
 
 from __future__ import annotations
 
+import zlib
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -19,9 +20,57 @@ from sqlalchemy.exc import IntegrityError
 from backend.storage.models import LoginAttempt, LoginLockout, LoginScope
 from backend.storage.repositories.base import BaseRepository
 
+# Primera clave del advisory lock: separa los espacios de nombres de cada scope.
+_LOCK_NAMESPACE = {LoginScope.USERNAME: 1, LoginScope.IP: 2}
+
+_INT32_RANGE = 2**32
+_INT32_MAX = 2**31
+
+
+def _advisory_key(identifier: str) -> int:
+    """Deriva la segunda clave del lock, un int32 con signo.
+
+    Se hashea en Python y no con `hashtext` de Postgres para no depender de una
+    función interna sin contrato de estabilidad. Una colisión solo serializa de
+    más a dos identidades: es correcto igual, apenas un poco menos paralelo.
+    """
+    key = zlib.crc32(identifier.encode("utf-8"))
+    return key - _INT32_RANGE if key >= _INT32_MAX else key
+
 
 class LoginThrottleRepository(BaseRepository[LoginAttempt]):
     model = LoginAttempt
+
+    # ------------------------------------------------------------------
+    # Serialización por identidad
+    # ------------------------------------------------------------------
+
+    def lock_identity(self, scope: LoginScope, identifier: str) -> None:
+        """Serializa el conteo y la decisión de bloqueo de una identidad.
+
+        Contar los fallos y decidir si se bloquea son dos pasos: bajo READ
+        COMMITTED, varias requests concurrentes leen el conteo antes de que las
+        otras commiteen y pasan el umbral sin que ninguna cree el lockout. El
+        lock advisory serializa esa sección crítica por identidad.
+
+        Se toma después de scrypt y se libera al terminar la transacción, que el
+        endpoint commitea enseguida: no hay derivación de clave adentro del lock.
+
+        Solo aplica en PostgreSQL, que es la base del proyecto; en otros
+        dialectos (SQLite en los tests unitarios) es un no-op y la serialización
+        la da el propio test, que es single-thread. La cobertura real está en
+        `tests/integration/test_login_throttle_concurrency.py`.
+        """
+        if self._session.get_bind().dialect.name != "postgresql":
+            return
+
+        # Namespace por scope en la primera clave: así un username y una IP que
+        # hashean igual no se serializan entre sí. El orden de toma siempre es
+        # USERNAME y después IP, y las dos claves viven en espacios disjuntos,
+        # así que no puede formarse un ciclo de espera.
+        self._session.execute(
+            select(func.pg_advisory_xact_lock(_LOCK_NAMESPACE[scope], _advisory_key(identifier)))
+        )
 
     # ------------------------------------------------------------------
     # Intentos fallidos
