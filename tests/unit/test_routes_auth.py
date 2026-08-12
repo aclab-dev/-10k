@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -173,8 +174,8 @@ def test_me_works_without_a_token_when_auth_is_disabled(
 MAX_FAILURES = 3
 
 
-def make_throttle_config(**overrides) -> LoginThrottleConfig:
-    defaults = {
+def make_throttle_config(**overrides: Any) -> LoginThrottleConfig:
+    defaults: dict[str, Any] = {
         "enabled": True,
         "max_failures_per_username": MAX_FAILURES,
         # Todas las requests del TestClient comparten IP: si el límite por IP
