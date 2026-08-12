@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 
 import pytest
@@ -13,7 +14,7 @@ from backend.position_manager.config_mapper import build_position_config
 def _real_position_management_defaults(monkeypatch: pytest.MonkeyPatch) -> PositionManagementConfig:
     """Carga position_management tal como queda con config.yaml real (sin overrides
     de env), para que el test detecte si alguien cambia los defaults del archivo."""
-    for key in list(__import__("os").environ.keys()):
+    for key in list(os.environ.keys()):
         if key.startswith("BOT__"):
             monkeypatch.delenv(key, raising=False)
     return load_config().position_management

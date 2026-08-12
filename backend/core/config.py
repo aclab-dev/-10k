@@ -381,6 +381,10 @@ class PositionManagementConfig(BaseModel):
     @field_validator("be_sl_offset_percent")
     @classmethod
     def be_sl_offset_percent_in_open_unit_interval(cls, v: float) -> float:
+        # Intervalo abierto a propósito: 0 no está permitido. No hay forma de
+        # desactivar el buffer de fees por config sin apagar break_even_enabled
+        # entero — no es un off-by-one, es la política (F14: el SL de break-even
+        # nunca debe volver a quedar exacto en entry).
         if not 0.0 < v < 1.0:
             raise ConfigError(f"be_sl_offset_percent={v} debe estar en (0, 1).")
         return v

@@ -213,9 +213,15 @@ def test_execute_approved_plan_maps_be_sl_offset_from_fill_price_not_decision_en
 def test_execute_approved_plan_raises_on_filled_without_fill_price() -> None:
     """Guard defensivo de engine.py: si el adapter devolviera FILLED sin fill_price
     (violación de su propia invariante), no debe registrarse un PositionManager con
-    entry_price desconocido — mejor fallar ruidosamente."""
+    entry_price desconocido — mejor fallar ruidosamente.
+
+    La orden ya fue colocada en el exchange en este punto, así que el order_row
+    tiene que quedar persistido (commit) ANTES del raise: sin fila en `orders`,
+    un retry del mismo decision_id no la encontraría vía get_by_client_order_id
+    y colocaría una segunda orden real (rompe idempotencia) además de dejar una
+    ejecución sin registro auditable."""
     adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
-    engine, _session, _order_repo = _engine(adapter)
+    engine, session, order_repo = _engine(adapter)
     decision = _make_decision()
     risk_result = _make_risk_result(decision)
 
@@ -235,6 +241,12 @@ def test_execute_approved_plan_raises_on_filled_without_fill_price() -> None:
 
     with pytest.raises(RuntimeError, match="FILLED sin fill_price"):
         engine.execute_approved_plan(decision, risk_result)
+
+    order_repo.save.assert_called_once()
+    persisted_order = order_repo.save.call_args[0][0]
+    assert persisted_order.client_order_id == "test-client-order-id"
+    session.commit.assert_called_once()
+    assert engine._position_manager.get_config(decision.symbol) is None  # type: ignore[attr-defined]
 
 
 def test_execute_approved_plan_uses_adjusted_parameters_not_original() -> None:

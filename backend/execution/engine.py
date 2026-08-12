@@ -176,6 +176,17 @@ class ExecutionEngine:
         if result.fill_price is None:
             # Invariante del adapter: FILLED siempre trae fill_price. Defensivo para
             # mypy y para no registrar un PositionManager sin entry_price real.
+            # Commitear el order_row ANTES de romper: la orden ya está colocada en el
+            # exchange, así que dejarla sin fila en `orders` (rollback via SAVEPOINT en
+            # CycleRunner) deja una ejecución real sin registro auditable y rompe el
+            # chequeo de idempotencia (get_by_client_order_id no la encontraría en un
+            # retry, y se colocaría una segunda orden real).
+            self._session.commit()
+            log.error(
+                "execution_engine.filled_without_fill_price",
+                client_order_id=order_row.client_order_id,
+                symbol=decision.symbol,
+            )
             raise RuntimeError(
                 f"OrderResult.status=FILLED sin fill_price (symbol={decision.symbol})"
             )

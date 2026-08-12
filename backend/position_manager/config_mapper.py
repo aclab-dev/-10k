@@ -26,6 +26,7 @@ _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER = Decimal("0.5")
 
 def build_position_config(
     symbol: str,
+    *,
     stop_loss: Decimal,
     take_profit: Decimal,
     use_trailing_stop: bool,
@@ -49,6 +50,14 @@ def build_position_config(
             queda activo.
         atr_1h: ATR de referencia (1h) al momento de abrir la posición. Requerido
             si el trailing efectivo queda en modo ATR o si el break-even queda activo.
+
+    Nota: en régimen de baja volatilidad relativa (atr_1h/entry_price bajo),
+        be_sl_offset se clampea a _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER *
+        be_trigger_delta para no violar la invariante be_sl_offset < be_trigger_delta.
+        El offset final en ese caso puede quedar por debajo del costo redondo de fees
+        que be_sl_offset_percent está pensado para cubrir — no está garantizado que
+        cubra el round-trip. El clamp deja rastro en el log
+        (position_manager.be_sl_offset_clamped).
 
     Raises:
         ValueError: si el trailing o el break-even efectivos requieren un dato que no

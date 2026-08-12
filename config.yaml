@@ -156,6 +156,10 @@ position_management:
   # ~2x fee taker (apertura + cierre, 0.05% c/u = 0.10%) más slippage. 0.15% cubre
   # ese costo con margen. Porcentaje del precio (no múltiplo de ATR) porque el fee es
   # proporcional al notional, no a la volatilidad del símbolo.
+  # OJO: en régimen de baja volatilidad relativa, build_position_config clampea el
+  # offset efectivo a _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER (0.5) * be_trigger_delta,
+  # que puede quedar por debajo de este 0.15% — el valor de acá no está garantizado
+  # en todos los regímenes (ver position_manager/config_mapper.py).
   be_sl_offset_percent: 0.0015
 
 failure_policy:
