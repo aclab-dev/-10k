@@ -173,10 +173,17 @@ class ExecutionEngine:
                 position_registered=False,
             )
 
+        if result.fill_price is None:
+            # Invariante del adapter: FILLED siempre trae fill_price. Defensivo para
+            # mypy y para no registrar un PositionManager sin entry_price real.
+            raise RuntimeError(
+                f"OrderResult.status=FILLED sin fill_price (symbol={decision.symbol})"
+            )
+
         trade_row = self._persist_trade(decision, adjusted, result)
         order_row.trade_id = trade_row.id
         self._persist_position(decision, adjusted, result, trade_row.id)
-        self._register_position_manager(decision, atr_1h)
+        self._register_position_manager(decision, atr_1h, result.fill_price)
 
         self._session.commit()
         return ExecutionResult(
@@ -360,7 +367,9 @@ class ExecutionEngine:
         self._session.flush()
         return position_row
 
-    def _register_position_manager(self, decision: ModelDecision, atr_1h: Decimal) -> None:
+    def _register_position_manager(
+        self, decision: ModelDecision, atr_1h: Decimal, entry_price: Decimal
+    ) -> None:
         config = build_position_config(
             symbol=decision.symbol,
             stop_loss=Decimal(str(decision.stop_loss)),
@@ -368,6 +377,7 @@ class ExecutionEngine:
             use_trailing_stop=decision.position_management_plan.use_trailing_stop,
             move_to_break_even=decision.position_management_plan.move_to_break_even,
             defaults=self._position_management_defaults,
+            entry_price=entry_price,
             atr_1h=atr_1h,
         )
         self._position_manager.set_config(config)

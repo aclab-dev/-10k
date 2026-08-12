@@ -18,6 +18,7 @@ def _defaults(
     trailing_default_percent: float = 0.02,
     trailing_default_atr_multiplier: float = 2.5,
     be_trigger_atr_multiplier: float = 1.0,
+    be_sl_offset_percent: float = 0.0015,
 ) -> PositionManagementConfig:
     return PositionManagementConfig(
         partial_close_enabled_mvp=False,
@@ -28,6 +29,7 @@ def _defaults(
         trailing_default_percent=trailing_default_percent,
         trailing_default_atr_multiplier=trailing_default_atr_multiplier,
         be_trigger_atr_multiplier=be_trigger_atr_multiplier,
+        be_sl_offset_percent=be_sl_offset_percent,
     )
 
 
@@ -40,6 +42,7 @@ class TestBuildPositionConfigSlTp:
             use_trailing_stop=False,
             move_to_break_even=False,
             defaults=_defaults(),
+            entry_price=Decimal("50000"),
         )
         assert config.symbol == "BTCUSDT"
         assert config.stop_loss == Decimal("48000")
@@ -56,6 +59,7 @@ class TestBuildPositionConfigTrailingPercent:
             use_trailing_stop=True,
             move_to_break_even=False,
             defaults=_defaults(trailing_default_mode="PERCENT", trailing_default_percent=0.02),
+            entry_price=Decimal("3000"),
         )
         assert config.trailing_percent == Decimal("0.02")
         assert config.trailing_atr is None
@@ -71,6 +75,7 @@ class TestBuildPositionConfigTrailingAtr:
             use_trailing_stop=True,
             move_to_break_even=False,
             defaults=_defaults(trailing_default_mode="ATR", trailing_default_atr_multiplier=2.5),
+            entry_price=Decimal("50000"),
             atr_1h=Decimal("500"),
         )
         assert config.trailing_atr == Decimal("500")
@@ -85,6 +90,7 @@ class TestBuildPositionConfigTrailingAtr:
                 use_trailing_stop=True,
                 move_to_break_even=False,
                 defaults=_defaults(trailing_default_mode="ATR"),
+                entry_price=Decimal("50000"),
                 atr_1h=None,
             )
 
@@ -104,6 +110,7 @@ class TestBuildPositionConfigTrailingFixed:
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
             be_trigger_atr_multiplier=1.0,
+            be_sl_offset_percent=0.0015,
         )
         with pytest.raises(ValueError, match="FIXED"):
             build_position_config(
@@ -113,6 +120,7 @@ class TestBuildPositionConfigTrailingFixed:
                 use_trailing_stop=True,
                 move_to_break_even=False,
                 defaults=defaults,
+                entry_price=Decimal("50000"),
             )
 
 
@@ -125,6 +133,7 @@ class TestBuildPositionConfigTrailingDisabled:
             use_trailing_stop=False,
             move_to_break_even=False,
             defaults=_defaults(trailing_default_mode="ATR"),
+            entry_price=Decimal("50000"),
             atr_1h=None,
         )
         assert config.resolved_trailing_mode is None
@@ -137,6 +146,7 @@ class TestBuildPositionConfigTrailingDisabled:
             use_trailing_stop=True,
             move_to_break_even=False,
             defaults=_defaults(trailing_stop_enabled=False, trailing_default_mode="ATR"),
+            entry_price=Decimal("50000"),
             atr_1h=None,
         )
         assert config.resolved_trailing_mode is None
@@ -151,11 +161,10 @@ class TestBuildPositionConfigBreakEven:
             use_trailing_stop=False,
             move_to_break_even=True,
             defaults=_defaults(be_trigger_atr_multiplier=1.0),
+            entry_price=Decimal("50000"),
             atr_1h=Decimal("500"),
         )
         assert config.be_trigger_delta == Decimal("500")
-        # be_sl_offset todavía no tiene default en config.yaml: SL exacto en entry.
-        assert config.be_sl_offset == Decimal("0")
 
     def test_multiplier_scales_the_delta(self) -> None:
         config = build_position_config(
@@ -165,6 +174,7 @@ class TestBuildPositionConfigBreakEven:
             use_trailing_stop=False,
             move_to_break_even=True,
             defaults=_defaults(be_trigger_atr_multiplier=1.5),
+            entry_price=Decimal("3000"),
             atr_1h=Decimal("40"),
         )
         assert config.be_trigger_delta == Decimal("60")
@@ -177,9 +187,11 @@ class TestBuildPositionConfigBreakEven:
             use_trailing_stop=False,
             move_to_break_even=False,
             defaults=_defaults(),
+            entry_price=Decimal("50000"),
             atr_1h=Decimal("500"),
         )
         assert config.be_trigger_delta is None
+        assert config.be_sl_offset == Decimal("0")
 
     def test_break_even_enabled_false_skips_break_even_even_if_requested(self) -> None:
         config = build_position_config(
@@ -189,9 +201,11 @@ class TestBuildPositionConfigBreakEven:
             use_trailing_stop=False,
             move_to_break_even=True,
             defaults=_defaults(break_even_enabled=False),
+            entry_price=Decimal("50000"),
             atr_1h=Decimal("500"),
         )
         assert config.be_trigger_delta is None
+        assert config.be_sl_offset == Decimal("0")
 
     def test_break_even_without_atr_1h_raises(self) -> None:
         with pytest.raises(ValueError, match="move_to_break_even requiere atr_1h"):
@@ -202,6 +216,7 @@ class TestBuildPositionConfigBreakEven:
                 use_trailing_stop=False,
                 move_to_break_even=True,
                 defaults=_defaults(),
+                entry_price=Decimal("50000"),
                 atr_1h=None,
             )
 
@@ -219,9 +234,83 @@ class TestBuildPositionConfigBreakEven:
                 trailing_default_atr_multiplier=2.5,
                 be_trigger_atr_multiplier=1.0,
             ),
+            entry_price=Decimal("50000"),
             atr_1h=Decimal("500"),
         )
         assert config.be_trigger_delta == Decimal("500")
         assert config.trailing_atr == Decimal("500")
         assert config.trailing_atr_multiplier == Decimal("2.5")
         assert config.be_trigger_delta < config.trailing_atr * config.trailing_atr_multiplier
+
+
+class TestBuildPositionConfigBeSlOffset:
+    def test_maps_be_sl_offset_from_entry_price_percent(self) -> None:
+        config = build_position_config(
+            symbol="BTCUSDT",
+            stop_loss=Decimal("48000"),
+            take_profit=Decimal("53000"),
+            use_trailing_stop=False,
+            move_to_break_even=True,
+            defaults=_defaults(be_trigger_atr_multiplier=1.0, be_sl_offset_percent=0.0015),
+            entry_price=Decimal("50000"),
+            atr_1h=Decimal("500"),
+        )
+        # entry_price * be_sl_offset_percent = 50000 * 0.0015 = 75, muy por debajo
+        # del tope de 0.5 * be_trigger_delta (250): queda sin clampear.
+        assert config.be_sl_offset == Decimal("75")
+
+    def test_be_sl_offset_is_zero_when_break_even_inactive(self) -> None:
+        config = build_position_config(
+            symbol="BTCUSDT",
+            stop_loss=Decimal("48000"),
+            take_profit=Decimal("53000"),
+            use_trailing_stop=False,
+            move_to_break_even=False,
+            defaults=_defaults(be_sl_offset_percent=0.0015),
+            entry_price=Decimal("50000"),
+        )
+        assert config.be_sl_offset == Decimal("0")
+        assert config.be_trigger_delta is None
+
+    def test_be_sl_offset_never_violates_invariant_with_config_yaml_defaults(self) -> None:
+        """Reproduce los defaults reales de config.yaml (be_trigger_atr_multiplier=1.0,
+        be_sl_offset_percent=0.0015) en un rango de entry_price/atr_1h, incluyendo
+        regímenes de baja volatilidad relativa donde el porcentaje del entry podría
+        superar el ATR si no se clampeara."""
+        defaults = _defaults(be_trigger_atr_multiplier=1.0, be_sl_offset_percent=0.0015)
+        cases = [
+            (Decimal("50000"), Decimal("500")),  # BTC, ATR normal
+            (Decimal("2"), Decimal("0.02")),  # XRP, ATR normal
+            (Decimal("50000"), Decimal("5")),  # BTC, régimen de volatilidad muy baja
+            (Decimal("100000"), Decimal("1")),  # precio alto, ATR mínimo
+        ]
+        for entry_price, atr_1h in cases:
+            config = build_position_config(
+                symbol="BTCUSDT",
+                stop_loss=Decimal("1"),
+                take_profit=Decimal("999999"),
+                use_trailing_stop=False,
+                move_to_break_even=True,
+                defaults=defaults,
+                entry_price=entry_price,
+                atr_1h=atr_1h,
+            )
+            assert config.be_trigger_delta is not None
+            assert config.be_sl_offset < config.be_trigger_delta
+
+    def test_be_sl_offset_clamped_below_trigger_in_low_volatility_regime(self) -> None:
+        """entry_price alto + atr_1h relativamente chico: el porcentaje del entry
+        superaría be_trigger_delta sin el clamp de _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER."""
+        config = build_position_config(
+            symbol="BTCUSDT",
+            stop_loss=Decimal("1"),
+            take_profit=Decimal("999999"),
+            use_trailing_stop=False,
+            move_to_break_even=True,
+            defaults=_defaults(be_trigger_atr_multiplier=1.0, be_sl_offset_percent=0.0015),
+            entry_price=Decimal("100000"),
+            atr_1h=Decimal("1"),
+        )
+        # be_trigger_delta = 1, fee_buffer sin clamp = 100000 * 0.0015 = 150 > 1.
+        assert config.be_trigger_delta == Decimal("1")
+        assert config.be_sl_offset == Decimal("0.5")  # clamp = 0.5 * be_trigger_delta
