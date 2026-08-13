@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 
 APP_VERSION = "0.1.0"
 
@@ -411,11 +411,61 @@ class BacktestingBiasGuardConfig(BaseModel):
     require_regime_performance: bool
 
 
+class LoginThrottleConfig(BaseModel):
+    """Rate limiting y lockout del login del dashboard (F15).
+
+    Los fallos se cuentan en una ventana deslizante por dos scopes independientes:
+    el usuario tipeado y la IP de origen. El primero frena el ataque dirigido a una
+    cuenta; el segundo, el barrido de usuarios desde un mismo origen.
+    """
+
+    enabled: bool
+    max_failures_per_username: int
+    max_failures_per_ip: int
+    window_seconds: int
+    lockout_seconds: int
+    lockout_backoff_factor: float
+    max_lockout_seconds: int
+
+    @field_validator(
+        "max_failures_per_username",
+        "max_failures_per_ip",
+        "window_seconds",
+        "lockout_seconds",
+        "max_lockout_seconds",
+    )
+    @classmethod
+    def _positive(cls, v: int, info: ValidationInfo) -> int:
+        if v <= 0:
+            raise ConfigError(f"dashboard_auth.login_throttle.{info.field_name}={v} debe ser > 0")
+        return v
+
+    @field_validator("lockout_backoff_factor")
+    @classmethod
+    def _backoff_at_least_one(cls, v: float) -> float:
+        # <1 acortaría el lockout en cada reincidencia: premiaría al atacante.
+        if v < 1.0:
+            raise ConfigError(
+                f"dashboard_auth.login_throttle.lockout_backoff_factor={v} debe ser >= 1.0"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _max_lockout_not_below_base(self) -> "LoginThrottleConfig":
+        if self.max_lockout_seconds < self.lockout_seconds:
+            raise ConfigError(
+                f"dashboard_auth.login_throttle.max_lockout_seconds={self.max_lockout_seconds} "
+                f"no puede ser menor que lockout_seconds={self.lockout_seconds}"
+            )
+        return self
+
+
 class DashboardAuthConfig(BaseModel):
     """Auth del dashboard (F15). Los secretos NO viven acá: solo por env var."""
 
     enabled: bool
     token_ttl_seconds: int
+    login_throttle: LoginThrottleConfig
 
     @field_validator("token_ttl_seconds")
     @classmethod

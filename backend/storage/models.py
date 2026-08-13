@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
@@ -22,6 +23,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -836,6 +838,73 @@ class StrategySetup(Base):
     __table_args__ = (UniqueConstraint("name", name="uq_strategy_setups_name"),)
 
 
+# ---------------------------------------------------------------------------
+# Auth throttling (F15) — operativas del dashboard, fuera del Anexo B
+#
+# Viven en Postgres y no en memoria porque el contador tiene que ser compartido
+# entre workers y sobrevivir a un reinicio: si no, se evade levantando procesos o
+# esperando a que el proceso recicle. No usan `system_events` porque esa tabla
+# exige `bot_run_id`, y un intento de login no pertenece a ninguna corrida del bot.
+# ---------------------------------------------------------------------------
+
+
+class LoginScope(StrEnum):
+    """Dimensión por la que se cuentan los fallos de login."""
+
+    USERNAME = "USERNAME"
+    IP = "IP"
+
+
+class LoginAttempt(Base):
+    """Un intento de login fallido, para el conteo por ventana deslizante.
+
+    Solo se persisten los fallos: los logins exitosos no aportan al conteo y
+    guardarlos convertiría la tabla en un log de sesiones que nadie pidió.
+    """
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)  # LoginScope
+    identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    __table_args__ = (
+        Index("ix_login_attempts_scope_identifier_timestamp", "scope", "identifier", "timestamp"),
+        # La purga filtra solo por timestamp, y el índice compuesto no le sirve
+        # porque timestamp es su última columna.
+        Index("ix_login_attempts_timestamp", "timestamp"),
+    )
+
+
+class LoginLockout(Base):
+    """Bloqueo activo (o vencido) de un usuario o IP.
+
+    `lockout_count` sobrevive al vencimiento del bloqueo a propósito: es lo que
+    hace crecer el backoff ante reincidencia. Se resetea solo con un login exitoso.
+    """
+
+    __tablename__ = "login_lockouts"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)  # LoginScope
+    identifier: Mapped[str] = mapped_column(String(255), nullable=False)
+    locked_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lockout_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+    __table_args__ = (
+        UniqueConstraint("scope", "identifier", name="uq_login_lockouts_scope_identifier"),
+    )
+
+
 __all__ = [
     "Base",
     "BotRun",
@@ -866,4 +935,7 @@ __all__ = [
     "ErrorRecord",
     "KillSwitchEvent",
     "StrategySetup",
+    "LoginScope",
+    "LoginAttempt",
+    "LoginLockout",
 ]

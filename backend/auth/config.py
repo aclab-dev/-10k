@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from backend.auth.hashing import validate_password_hash
-from backend.core.config import ConfigError, get_config
+from backend.core.config import ConfigError, LoginThrottleConfig, get_config
 
 _REQUIRED_ENV_VARS = ("DASHBOARD_USERNAME", "DASHBOARD_PASSWORD_HASH", "DASHBOARD_SECRET_KEY")
 
@@ -82,6 +82,16 @@ def validate_credentials(credentials: AuthCredentials) -> None:
             f"DASHBOARD_SECRET_KEY debe tener al menos {_MIN_SECRET_KEY_LENGTH} caracteres. "
             "Generarla con `python scripts/hash_password.py`."
         )
+
+
+def get_login_throttle_config() -> LoginThrottleConfig:
+    """Config del rate limiting del login.
+
+    Existe como dependencia propia y no como campo de `AuthCredentials` porque no
+    es un secreto: sale del YAML, y separarla deja que los tests la sobreescriban
+    sin tocar las credenciales.
+    """
+    return get_config().dashboard_auth.login_throttle
 
 
 @lru_cache(maxsize=1)
