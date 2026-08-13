@@ -146,12 +146,12 @@ class TestBotRunRepository:
     def test_get_active_returns_most_recent_running(self, session: Session) -> None:
         """Con dos RUNNING gana el mas nuevo por started_at, no el orden de insercion.
 
-        El viejo se inserta segundo a proposito: un limit(1) sin order_by
-        devolveria el que el motor tenga mas a mano, no el correcto.
+        El viejo se inserta primero a proposito: un limit(1) sin order_by lo
+        devolveria a el, que es exactamente el bug.
         """
         repo = BotRunRepository(session)
-        newest = _bot_run(session, status="RUNNING", started_at=_now())
         _bot_run(session, status="RUNNING", started_at=_now() - timedelta(hours=2))
+        newest = _bot_run(session, status="RUNNING", started_at=_now())
         active = repo.get_active()
         assert active is not None
         assert active.id == newest.id
