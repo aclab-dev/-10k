@@ -14,8 +14,24 @@ class BotRunRepository(BaseRepository[BotRun]):
     model = BotRun
 
     def get_active(self) -> BotRun | None:
-        """Devuelve el BotRun en estado RUNNING, si existe."""
-        stmt = select(BotRun).where(BotRun.status == "RUNNING").limit(1)
+        """Devuelve el BotRun RUNNING mas reciente, si existe.
+
+        El invariante es "a lo sumo un RUNNING" y lo sostiene
+        close_orphan_running() al arrancar el worker, pero el order_by no es
+        redundante: entre que un worker nuevo cierra los huerfanos y termina de
+        insertar su propio bot_run hay una ventana en la que un lector podria
+        ver dos filas RUNNING. Sin orden explicito, cual de las dos gana lo
+        decide el planner de Postgres y puede cambiar entre llamadas — y la API
+        (get_current_bot_run) y el worker tienen que coincidir en que bot_run
+        miran, o el kill switch escribe el estado de un run que nadie sincroniza.
+        Mismo criterio que get_most_recent(): gana el mas nuevo.
+        """
+        stmt = (
+            select(BotRun)
+            .where(BotRun.status == "RUNNING")
+            .order_by(BotRun.started_at.desc())
+            .limit(1)
+        )
         return self._session.scalars(stmt).first()
 
     def get_most_recent(self) -> BotRun | None:
@@ -26,6 +42,36 @@ class BotRunRepository(BaseRepository[BotRun]):
         """
         stmt = select(BotRun).order_by(BotRun.started_at.desc()).limit(1)
         return self._session.scalars(stmt).first()
+
+    def close_orphan_running(self, *, reason: str) -> list[BotRun]:
+        """Cierra como CRASHED los BotRun que quedaron colgados en RUNNING.
+
+        Orchestrator.close() marca STOPPED el run al hacer shutdown, pero corre
+        en el finally de run(): un SIGKILL (OOM, `docker kill`, corte de luz) se
+        lo saltea y deja la fila en RUNNING para siempre. El arranque siguiente
+        agrega otra, y ahi el invariante "a lo sumo un RUNNING" deja de valer.
+
+        Se cierran al arrancar en vez de solo desempatar en la lectura para que
+        el invariante se sostenga en la DB y no solo en get_active(); ver
+        docs/decisions/F15-03-bot-run-active-resolution.md.
+
+        CRASHED y no STOPPED: STOPPED afirma que hubo shutdown limpio, y estas
+        corridas son justamente las que no lo tuvieron. Mezclarlas borraria la
+        unica evidencia de que el proceso murio mal.
+
+        `ended_at` queda en el momento en que se detecta el huerfano, no en el
+        de la muerte real (que nadie registro). El motivo se anota en `notes`.
+
+        Devuelve los BotRun cerrados (vacio si no habia ninguno), para que el
+        caller pueda loguearlos. No commitea: sigue la convencion de
+        BaseRepository y queda a cargo del caller.
+        """
+        stmt = select(BotRun).where(BotRun.status == "RUNNING").order_by(BotRun.started_at.asc())
+        orphans = list(self._session.scalars(stmt))
+        for orphan in orphans:
+            orphan.notes = reason if orphan.notes is None else f"{orphan.notes}\n{reason}"
+            self.close(orphan, status="CRASHED")
+        return orphans
 
     def close(self, bot_run: BotRun, status: str = "STOPPED") -> BotRun:
         bot_run.status = status

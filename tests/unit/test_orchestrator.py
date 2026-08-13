@@ -22,7 +22,7 @@ from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
-from backend.storage.repositories.bot import BotStateRepository
+from backend.storage.repositories.bot import BotRunRepository, BotStateRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
 from backend.trading_core.orchestrator import Orchestrator
@@ -320,6 +320,88 @@ def test_carry_over_and_new_bot_run_share_a_single_commit(sqlite_session: Sessio
     persisted = BotStateRepository(sqlite_session).get_latest(second_bot_run_id)
     assert persisted is not None
     assert persisted.state == BotState.KILL_SWITCH_TRIGGERED.value
+
+
+def _simulate_sigkill(orch: Orchestrator) -> None:
+    """Deja el BotRun colgado en RUNNING, como cuando el proceso muere por SIGKILL.
+
+    close() (que corre en el finally de run()) es justamente lo que no pasa en
+    ese caso. Solo se libera el thread pool del ExecutionEngine, que es del
+    proceso de pytest y no de la corrida simulada.
+    """
+    if orch.execution_engine is not None:
+        orch.execution_engine.close()
+
+
+def test_startup_closes_orphan_running_bot_run(sqlite_session: Session) -> None:
+    """Un bot_run que quedo en RUNNING sin shutdown limpio se cierra como CRASHED
+    al arrancar el worker siguiente, y el activo pasa a ser el nuevo.
+
+    Sin esto conviven dos filas RUNNING: la API resuelve el bot_run por
+    get_active() y el worker sincroniza contra el suyo, asi que el kill switch
+    puede escribir el estado de una corrida que ya no existe.
+    """
+    first = Orchestrator(session=sqlite_session)
+    orphan_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    _simulate_sigkill(first)
+
+    second = Orchestrator(session=sqlite_session)
+    second_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+
+    repo = BotRunRepository(sqlite_session)
+    orphan = repo.get_by_id(orphan_id)
+    assert orphan is not None
+    assert orphan.status == "CRASHED"
+    assert orphan.ended_at is not None
+    assert orphan.notes is not None and "SIGKILL" in orphan.notes
+
+    active = repo.get_active()
+    assert active is not None
+    assert active.id == second_id
+
+
+def test_startup_carries_over_kill_switch_from_orphan_run(sqlite_session: Session) -> None:
+    """Cerrar el huerfano no debe romper el carry-over: el estado se arrastra por
+    bot_state del run mas reciente, no por su status."""
+    first = Orchestrator(session=sqlite_session)
+    orphan_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    BotStateRepository(sqlite_session).save(
+        BotStateRow(
+            bot_run_id=orphan_id,
+            state=BotState.KILL_SWITCH_TRIGGERED.value,
+            previous_state=BotState.ACTIVE.value,
+            reason="operador aprieta el boton",
+        )
+    )
+    sqlite_session.commit()
+    _simulate_sigkill(first)
+
+    second = Orchestrator(session=sqlite_session)
+
+    assert second.state_machine.state == BotState.KILL_SWITCH_TRIGGERED
+    second_id = second._bot_run.id  # type: ignore[attr-defined,union-attr]
+    persisted = BotStateRepository(sqlite_session).get_latest(second_id)
+    assert persisted is not None
+    assert persisted.state == BotState.KILL_SWITCH_TRIGGERED.value
+
+    orphan = BotRunRepository(sqlite_session).get_by_id(orphan_id)
+    assert orphan is not None
+    assert orphan.status == "CRASHED"
+
+
+def test_startup_does_not_touch_runs_closed_cleanly(sqlite_session: Session) -> None:
+    """Un run cerrado con shutdown limpio conserva STOPPED: CRASHED es la marca
+    de que el proceso murio mal, y sirve solo si distingue los dos casos."""
+    first = Orchestrator(session=sqlite_session)
+    first_id = first._bot_run.id  # type: ignore[attr-defined,union-attr]
+    first.close()
+
+    Orchestrator(session=sqlite_session)
+
+    closed = BotRunRepository(sqlite_session).get_by_id(first_id)
+    assert closed is not None
+    assert closed.status == "STOPPED"
+    assert closed.notes is None
 
 
 def test_injected_state_machine_does_not_carry_over_kill_switch(sqlite_session: Session) -> None:

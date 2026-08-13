@@ -7,7 +7,7 @@ la lógica de consulta sin necesidad de un servidor PostgreSQL real.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -107,13 +107,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _bot_run(session: Session, status: str = "RUNNING") -> BotRun:
+def _bot_run(
+    session: Session, status: str = "RUNNING", started_at: datetime | None = None
+) -> BotRun:
     run = BotRun(
         environment="PAPER",
         app_version="0.1.0",
         config_snapshot={"test": True},
         status=status,
     )
+    if started_at is not None:
+        run.started_at = started_at
     session.add(run)
     session.flush()
     return run
@@ -138,6 +142,56 @@ class TestBotRunRepository:
         active = repo.get_active()
         assert active is not None
         assert active.id == run.id
+
+    def test_get_active_returns_most_recent_running(self, session: Session) -> None:
+        """Con dos RUNNING gana el mas nuevo por started_at, no el orden de insercion.
+
+        El viejo se inserta segundo a proposito: un limit(1) sin order_by
+        devolveria el que el motor tenga mas a mano, no el correcto.
+        """
+        repo = BotRunRepository(session)
+        newest = _bot_run(session, status="RUNNING", started_at=_now())
+        _bot_run(session, status="RUNNING", started_at=_now() - timedelta(hours=2))
+        active = repo.get_active()
+        assert active is not None
+        assert active.id == newest.id
+
+    def test_get_active_ignores_non_running(self, session: Session) -> None:
+        repo = BotRunRepository(session)
+        _bot_run(session, status="STOPPED", started_at=_now())
+        _bot_run(session, status="CRASHED", started_at=_now())
+        assert repo.get_active() is None
+
+    def test_close_orphan_running_marks_crashed(self, session: Session) -> None:
+        repo = BotRunRepository(session)
+        orphan = _bot_run(session, status="RUNNING", started_at=_now() - timedelta(hours=1))
+        closed = repo.close_orphan_running(reason="murio feo")
+        assert [run.id for run in closed] == [orphan.id]
+        assert orphan.status == "CRASHED"
+        assert orphan.ended_at is not None
+        assert orphan.notes == "murio feo"
+        assert repo.get_active() is None
+
+    def test_close_orphan_running_leaves_closed_runs_alone(self, session: Session) -> None:
+        repo = BotRunRepository(session)
+        stopped = _bot_run(session, status="STOPPED", started_at=_now() - timedelta(hours=3))
+        stopped_ended_at = stopped.ended_at
+        repo.close_orphan_running(reason="murio feo")
+        assert stopped.status == "STOPPED"
+        assert stopped.ended_at == stopped_ended_at
+        assert stopped.notes is None
+
+    def test_close_orphan_running_appends_to_existing_notes(self, session: Session) -> None:
+        repo = BotRunRepository(session)
+        orphan = _bot_run(session, status="RUNNING")
+        orphan.notes = "nota previa"
+        session.flush()
+        repo.close_orphan_running(reason="murio feo")
+        assert orphan.notes == "nota previa\nmurio feo"
+
+    def test_close_orphan_running_without_orphans(self, session: Session) -> None:
+        repo = BotRunRepository(session)
+        assert repo.close_orphan_running(reason="murio feo") == []
 
     def test_close_sets_status(self, session: Session) -> None:
         repo = BotRunRepository(session)
