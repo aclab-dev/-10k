@@ -126,6 +126,7 @@ class PositionManager:
             trailing_atr_dynamic=config.trailing_atr_dynamic,
             trailing_atr_smoothing_alpha=str(config.trailing_atr_smoothing_alpha),
             be_trigger_delta=str(config.be_trigger_delta),
+            be_sl_offset=str(config.be_sl_offset),
         )
 
     def get_config(self, symbol: str) -> PositionConfig | None:

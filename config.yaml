@@ -150,6 +150,17 @@ position_management:
   # la distancia de trailing (2.5 * ATR), así el break-even protege el capital
   # primero y el trailing toma el relevo después.
   be_trigger_atr_multiplier: 1.0
+  # Buffer del break-even (F14) para cubrir el costo redondo de la operación, como
+  # porcentaje del entry_price: be_sl_offset = entry_price * este valor. Con offset 0
+  # el SL de break-even queda exacto en el entry y un stop-out ahí todavía pierde
+  # ~2x fee taker (apertura + cierre, 0.05% c/u = 0.10%) más slippage. 0.15% cubre
+  # ese costo con margen. Porcentaje del precio (no múltiplo de ATR) porque el fee es
+  # proporcional al notional, no a la volatilidad del símbolo.
+  # OJO: en régimen de baja volatilidad relativa, build_position_config clampea el
+  # offset efectivo a _BE_SL_OFFSET_MAX_FRACTION_OF_TRIGGER (0.5) * be_trigger_delta,
+  # que puede quedar por debajo de este 0.15% — el valor de acá no está garantizado
+  # en todos los regímenes (ver position_manager/config_mapper.py).
+  be_sl_offset_percent: 0.0015
 
 failure_policy:
   gpt_failure_blocks_new_entries: true

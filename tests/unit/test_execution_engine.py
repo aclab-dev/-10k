@@ -28,7 +28,13 @@ from backend.decision_engine.schemas import (
     QuantSignalsSection,
 )
 from backend.exchange_adapters.paper_adapter import PaperAdapter
-from backend.exchange_adapters.schemas import OrderRequest, OrderResult, OrderStatus
+from backend.exchange_adapters.schemas import (
+    OrderRequest,
+    OrderResult,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from backend.execution.engine import ExecutionEngine, ExecutionTimeoutError
 from backend.market_regime.schemas import PrimaryRegime
 from backend.position_manager.manager import PositionManager
@@ -49,6 +55,7 @@ def _make_decision(
     leverage: int = 3,
     margin_usdt: float = 5.0,
     use_trailing_stop: bool = False,
+    move_to_break_even: bool = False,
 ) -> ModelDecision:
     execute = decision_type != DecisionType.NO_OPERAR
     return ModelDecision(
@@ -98,7 +105,7 @@ def _make_decision(
         ),
         position_management_plan=PositionManagementPlan(
             use_trailing_stop=use_trailing_stop,
-            move_to_break_even=False,
+            move_to_break_even=move_to_break_even,
             partial_close_plan="none",
             max_time_in_trade_minutes=0,
         ),
@@ -181,6 +188,65 @@ def test_execute_approved_plan_fills_and_registers_position() -> None:
     assert config is not None
     assert config.stop_loss == Decimal(str(decision.stop_loss))
     assert config.take_profit == Decimal(str(decision.take_profit))
+
+
+def test_execute_approved_plan_maps_be_sl_offset_from_fill_price_not_decision_entry() -> None:
+    """be_sl_offset se calcula sobre el fill_price real (post-slippage), no sobre el
+    entry_price de la decisión: con PAPER, la orden MARKET sufre 2 BPS de slippage
+    adverso (SlippageModel), así que difieren y hay que probar que se usa el correcto."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, _order_repo = _engine(adapter)
+    decision = _make_decision(move_to_break_even=True)
+    risk_result = _make_risk_result(decision)
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.fill_price is not None
+    assert result.order_result.fill_price != Decimal(str(decision.entry_price))
+
+    config = engine._position_manager.get_config(decision.symbol)  # type: ignore[attr-defined]
+    assert config is not None
+    be_sl_offset_percent = Decimal(str(load_config().position_management.be_sl_offset_percent))
+    assert config.be_sl_offset == result.order_result.fill_price * be_sl_offset_percent
+
+
+def test_execute_approved_plan_raises_on_filled_without_fill_price() -> None:
+    """Guard defensivo de engine.py: si el adapter devolviera FILLED sin fill_price
+    (violación de su propia invariante), no debe registrarse un PositionManager con
+    entry_price desconocido — mejor fallar ruidosamente.
+
+    La orden ya fue colocada en el exchange en este punto, así que el order_row
+    tiene que quedar persistido (commit) ANTES del raise: sin fila en `orders`,
+    un retry del mismo decision_id no la encontraría vía get_by_client_order_id
+    y colocaría una segunda orden real (rompe idempotencia) además de dejar una
+    ejecución sin registro auditable."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    bad_result = OrderResult(
+        client_order_id="test-client-order-id",
+        symbol=decision.symbol,
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        status=OrderStatus.FILLED,
+        quantity_requested=Decimal("1"),
+        quantity_filled=Decimal("1"),
+        fill_price=None,
+        is_simulated=True,
+        timestamp_utc=_NOW,
+    )
+    engine._adapter.place_order = Mock(return_value=bad_result)  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="FILLED sin fill_price"):
+        engine.execute_approved_plan(decision, risk_result)
+
+    order_repo.save.assert_called_once()
+    persisted_order = order_repo.save.call_args[0][0]
+    assert persisted_order.client_order_id == "test-client-order-id"
+    session.commit.assert_called_once()
+    assert engine._position_manager.get_config(decision.symbol) is None  # type: ignore[attr-defined]
 
 
 def test_execute_approved_plan_uses_adjusted_parameters_not_original() -> None:

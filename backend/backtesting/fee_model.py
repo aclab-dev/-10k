@@ -12,8 +12,8 @@ from typing import Literal
 
 OrderType = Literal["MARKET", "LIMIT", "STOP"]
 
-_DEFAULT_TAKER_RATE = Decimal("0.0005")
-_DEFAULT_MAKER_RATE = Decimal("0.0002")
+DEFAULT_TAKER_RATE = Decimal("0.0005")
+DEFAULT_MAKER_RATE = Decimal("0.0002")
 _QUANT = Decimal("0.00000001")
 
 _TAKER_TYPES: frozenset[str] = frozenset({"MARKET", "STOP"})
@@ -30,8 +30,8 @@ class FeeModel:
 
     def __init__(
         self,
-        taker_rate: Decimal = _DEFAULT_TAKER_RATE,
-        maker_rate: Decimal = _DEFAULT_MAKER_RATE,
+        taker_rate: Decimal = DEFAULT_TAKER_RATE,
+        maker_rate: Decimal = DEFAULT_MAKER_RATE,
     ) -> None:
         self._taker_rate = taker_rate
         self._maker_rate = maker_rate

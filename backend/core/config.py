@@ -325,6 +325,14 @@ class PositionManagementConfig(BaseModel):
     # ATR-based y no un delta absoluto porque el mismo número no significa lo mismo en
     # BTC (~50k) que en XRP (~2), ni en régimen calmo que en alta volatilidad.
     be_trigger_atr_multiplier: float
+    # Buffer del break-even para cubrir el costo redondo de la operación (F14):
+    # be_sl_offset = entry_price * este porcentaje, en vez de mover el SL exacto a
+    # entry (offset=0, insuficiente: un stop-out ahí todavía pierde ~2x fee taker +
+    # slippage). Porcentaje del precio y no múltiplo de ATR porque el costo de fees
+    # es proporcional al notional, no a la volatilidad: en régimen calmo un offset
+    # ATR-based podría quedar por debajo del costo real. build_position_config lo
+    # clampea para no violar be_sl_offset < be_trigger_delta.
+    be_sl_offset_percent: float
 
     @field_validator("trailing_default_mode")
     @classmethod
@@ -368,6 +376,17 @@ class PositionManagementConfig(BaseModel):
         # explotar la construcción del PositionConfig al abrir la posición.
         if v <= 0.0:
             raise ConfigError(f"be_trigger_atr_multiplier={v} debe ser > 0.")
+        return v
+
+    @field_validator("be_sl_offset_percent")
+    @classmethod
+    def be_sl_offset_percent_in_open_unit_interval(cls, v: float) -> float:
+        # Intervalo abierto a propósito: 0 no está permitido. No hay forma de
+        # desactivar el buffer de fees por config sin apagar break_even_enabled
+        # entero — no es un off-by-one, es la política (F14: el SL de break-even
+        # nunca debe volver a quedar exacto en entry).
+        if not 0.0 < v < 1.0:
+            raise ConfigError(f"be_sl_offset_percent={v} debe estar en (0, 1).")
         return v
 
 

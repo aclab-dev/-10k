@@ -69,6 +69,27 @@ def test_trailing_defaults_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert pm.trailing_default_atr_multiplier == 2.5
 
 
+def test_be_sl_offset_default_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch)
+    assert cfg.position_management.be_sl_offset_percent == 0.0015
+
+
+def test_be_sl_offset_percent_covers_round_trip_taker_fees(monkeypatch: pytest.MonkeyPatch) -> None:
+    """be_sl_offset_percent existe para cubrir el fee de entrada + salida de un stop-out
+    en break-even (ver F14). Si el taker rate del fee model sube y nadie actualiza este
+    default, el break-even vuelve a perder plata en cada stop-out — este test lo detecta.
+
+    Nota: esto valida contra el fee model de PAPER/backtesting (fee_model.DEFAULT_TAKER_RATE).
+    Cuando entre el adapter de BingX (F16/F17) con tasas reales de exchange, este default
+    hay que revalidarlo contra esas tasas, que pueden no coincidir con el fee model simulado.
+    """
+    from backend.backtesting.fee_model import DEFAULT_TAKER_RATE
+
+    cfg = _load(monkeypatch)
+    round_trip_taker_rate = float(DEFAULT_TAKER_RATE) * 2
+    assert cfg.position_management.be_sl_offset_percent >= round_trip_taker_rate
+
+
 def test_blocks_invalid_trailing_mode() -> None:
     from backend.core.config import PositionManagementConfig
 
@@ -82,6 +103,7 @@ def test_blocks_invalid_trailing_mode() -> None:
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
             be_trigger_atr_multiplier=1.0,
+            be_sl_offset_percent=0.0015,
         )
 
 
@@ -100,6 +122,7 @@ def test_blocks_fixed_trailing_mode_at_boot() -> None:
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
             be_trigger_atr_multiplier=1.0,
+            be_sl_offset_percent=0.0015,
         )
 
 
@@ -116,6 +139,7 @@ def test_blocks_trailing_percent_out_of_range() -> None:
             trailing_default_percent=1.5,
             trailing_default_atr_multiplier=2.5,
             be_trigger_atr_multiplier=1.0,
+            be_sl_offset_percent=0.0015,
         )
 
 
@@ -134,6 +158,24 @@ def test_blocks_non_positive_be_trigger_atr_multiplier() -> None:
             trailing_default_percent=0.02,
             trailing_default_atr_multiplier=2.5,
             be_trigger_atr_multiplier=0.0,
+            be_sl_offset_percent=0.0015,
+        )
+
+
+def test_blocks_be_sl_offset_percent_out_of_range() -> None:
+    from backend.core.config import PositionManagementConfig
+
+    with pytest.raises(ConfigError, match="be_sl_offset_percent"):
+        PositionManagementConfig(
+            partial_close_enabled_mvp=False,
+            partial_close_enabled_future_phase=True,
+            break_even_enabled=True,
+            trailing_stop_enabled=True,
+            trailing_default_mode="ATR",
+            trailing_default_percent=0.02,
+            trailing_default_atr_multiplier=2.5,
+            be_trigger_atr_multiplier=1.0,
+            be_sl_offset_percent=1.5,
         )
 
 
