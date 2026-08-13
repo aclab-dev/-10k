@@ -2,6 +2,7 @@
 
 **Estado**: Aceptada  
 **Fecha**: 2026-07-27  
+**Actualizada**: 2026-08-13 — se agrega la sección "Desviación respecto de la spec (§4.11)" ([153](https://trello.com/c/jWofqdS8/153-153-f15-alinear-el-scaffolding-del-frontend-con-el-adr-f15-01))  
 **Epic**: F15 — Dashboard  
 
 ---
