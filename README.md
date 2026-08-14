@@ -43,6 +43,11 @@ El script imprime `DASHBOARD_PASSWORD_HASH` y `DASHBOARD_SECRET_KEY` para pegar 
 `.env`, junto con `DASHBOARD_USERNAME`. **La app no levanta si falta alguna de las
 tres** (fail-closed). Para desarrollo local sin auth: `BOT__DASHBOARD_AUTH__ENABLED=false`.
 
+`DASHBOARD_PASSWORD_HASH` sale del script con cada `$` ya escapado como `$$`
+(pegalo tal cual): Docker Compose interpola `.env` y sin ese escape corrompe el
+hash, dejando `cryptobot-app` en crash-loop. Ver el comentario junto a la
+variable en `.env.example` para el detalle.
+
 Obtener un token:
 
 ```bash
