@@ -2,6 +2,7 @@
 
 **Estado**: Aceptada  
 **Fecha**: 2026-07-27  
+**Actualizada**: 2026-08-13 — se agrega la sección "Desviación respecto de la spec (§4.11)" ([153](https://trello.com/c/jWofqdS8/153-153-f15-alinear-el-scaffolding-del-frontend-con-el-adr-f15-01))  
 **Epic**: F15 — Dashboard  
 
 ---
@@ -85,6 +86,10 @@ El trade-off es aceptable dado que el dashboard es una épica discreta (F15) con
   vite.config.ts
   tsconfig.json
 ```
+
+### Desviación respecto de la spec (Fase 1, §4.11)
+
+La sección 4.11 de la spec ("Estructura de carpetas propuesta") lista `dashboard/` con `package.json`, `next.config.js` y `src/` — un placeholder anterior a esta decisión, creado en el commit inicial de estructura del repo (antes de evaluar el stack). Esta ADR lo reemplaza: el directorio real es `/frontend`, no `dashboard/`, y el stack es React + Vite, no Next.js, por las razones detalladas en Justificación. Los placeholders vacíos de `dashboard/` (`package.json`, `next.config.js`) fueron eliminados al crear el scaffold real en `/frontend`.
 
 ### Integración con FastAPI
 
