@@ -173,6 +173,12 @@ class Orchestrator:
             self._resolve_carried_over_state(db_session) if self._owns_state_machine else None
         )
 
+        # Tambien antes de crear el bot_run nuevo, para no cerrarlo a el: los
+        # RUNNING que sobrevivieron a un SIGKILL se cierran aca, no se dejan
+        # convivir con el run nuevo. No interfiere con el carry-over de arriba,
+        # que se resuelve por bot_state y por started_at, no por status.
+        self._close_orphan_runs(db_session)
+
         bot_run = BotRun(
             environment=environment.value,
             app_version=APP_VERSION,
@@ -213,6 +219,31 @@ class Orchestrator:
         db_session.commit()
 
         return adapter, db_session, bot_run, cfg
+
+    @staticmethod
+    def _close_orphan_runs(db_session: Session) -> None:
+        """Marca CRASHED los BotRun que quedaron en RUNNING de arranques anteriores.
+
+        Sin esto, cada worker que muere por SIGKILL deja una fila RUNNING que no
+        se cierra nunca, y el kill switch de F15 puede terminar escribiendo el
+        bot_state de una corrida que ya no existe mientras el worker vivo
+        sincroniza contra la suya (ver el comentario de get_active()).
+
+        Se loguea cada huerfano: dos corridas en RUNNING significan que la
+        anterior no hizo shutdown limpio, y eso amerita mirar por que murio.
+        """
+        orphans = BotRunRepository(db_session).close_orphan_running(
+            reason=(
+                f"Cerrado como CRASHED por el arranque del worker {APP_VERSION}: "
+                "quedo en RUNNING sin shutdown limpio (probable SIGKILL)."
+            )
+        )
+        for orphan in orphans:
+            log.warning(
+                "orchestrator.orphan_bot_run_closed",
+                orphan_bot_run_id=orphan.id,
+                orphan_started_at=orphan.started_at.isoformat(),
+            )
 
     def _resolve_carried_over_state(self, db_session: Session) -> BotRun | None:
         """Si el ultimo BotRun no quedo corriendo (kill switch o HALTED), este arranca igual.

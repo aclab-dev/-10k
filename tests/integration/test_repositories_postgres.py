@@ -10,7 +10,7 @@ Ejecutar con: pytest -m integration
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -129,6 +129,35 @@ class TestBotRunRepositoryPostgres:
         active = repo.get_active()
         assert active is not None
         assert active.id == run.id
+
+    def test_get_active_returns_most_recent_running(self, pg_session: Session) -> None:
+        """Con dos filas RUNNING gana la mas nueva por started_at.
+
+        En Postgres es donde importa: sin order_by, cual devuelve el limit(1)
+        lo elige el planner y puede cambiar entre llamadas. SQLite no reproduce
+        esa libertad, asi que el caso vive tambien aca.
+        """
+        repo = BotRunRepository(pg_session)
+        older = _bot_run(pg_session)
+        older.started_at = _now() - timedelta(hours=2)
+        newest = _bot_run(pg_session)
+        newest.started_at = _now()
+        pg_session.flush()
+
+        active = repo.get_active()
+        assert active is not None
+        assert active.id == newest.id
+
+    def test_close_orphan_running_marks_crashed(self, pg_session: Session) -> None:
+        repo = BotRunRepository(pg_session)
+        orphan = _bot_run(pg_session)
+        closed_ids = {run.id for run in repo.close_orphan_running(reason="murio feo")}
+
+        assert orphan.id in closed_ids
+        assert orphan.status == "CRASHED"
+        assert orphan.ended_at is not None
+        assert orphan.notes == "murio feo"
+        assert repo.get_active() is None
 
     def test_close_sets_status_and_ended_at(self, pg_session: Session) -> None:
         repo = BotRunRepository(pg_session)
