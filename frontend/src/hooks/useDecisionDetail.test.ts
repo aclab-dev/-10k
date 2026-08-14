@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useDecisionDetail } from './useDecisionDetail'
 import { ApiError, getDecision, type DecisionOut } from '../api/client'
@@ -112,7 +112,12 @@ describe('useDecisionDetail', () => {
     await waitFor(() => expect(result.current.decision?.id).toBe('dec-2'))
 
     // Si la respuesta de dec-1 pisara el estado tras la de dec-2, decision volvería a dec-1.
-    resolveFirst?.()
+    // El setTimeout real fuerza el flush del .then()/.finally() del hook antes del assert:
+    // resolver la promesa solo encola el callback como microtask, no lo ejecuta en el acto.
+    await act(async () => {
+      resolveFirst?.()
+      await new Promise((r) => setTimeout(r, 0))
+    })
 
     expect(result.current.decision?.id).toBe('dec-2')
   })

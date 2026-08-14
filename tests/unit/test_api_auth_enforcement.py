@@ -10,6 +10,7 @@ no detecta (nadie escribe el test 401 para la ruta que se olvidó de proteger).
 from __future__ import annotations
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -56,11 +57,12 @@ def test_all_dashboard_routes_require_auth() -> None:
     """
     checked = 0
     for route in app.routes:
-        path = getattr(route, "path", None)
-        if path is None or not path.startswith("/api") or path in _PUBLIC_API_PATHS:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.path.startswith("/api") or route.path in _PUBLIC_API_PATHS:
             continue
         dependant_names = {dep.call.__name__ for dep in route.dependant.dependencies}
-        assert "require_auth" in dependant_names, f"{path} no exige require_auth"
+        assert "require_auth" in dependant_names, f"{route.path} no exige require_auth"
         checked += 1
 
     assert checked >= len(_PROTECTED_ENDPOINTS)
