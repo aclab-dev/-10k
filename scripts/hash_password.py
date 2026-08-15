@@ -22,6 +22,14 @@ from backend.auth.hashing import hash_password  # noqa: E402
 _MIN_PASSWORD_LENGTH = 12
 
 
+def escape_dollar_for_dotenv(value: str) -> str:
+    """Escapa `$` como `$$` para que Docker Compose no lo trate como referencia
+    a otra variable al interpolar `.env` (ver docker-compose.yml y .env.example).
+    El hash scrypt tiene 5 `$` literales como separadores de campo; sin escapar,
+    Compose reemplaza cada segmento posterior por string vacío."""
+    return value.replace("$", "$$")
+
+
 def main() -> int:
     password = getpass.getpass("Password del dashboard: ")
     if len(password) < _MIN_PASSWORD_LENGTH:
@@ -35,9 +43,16 @@ def main() -> int:
         print("Las passwords no coinciden.", file=sys.stderr)
         return 1
 
+    escaped_hash = escape_dollar_for_dotenv(hash_password(password))
+
     print("\nAgregar a .env (sin comillas):\n")
-    print(f"DASHBOARD_PASSWORD_HASH={hash_password(password)}")
+    print(f"DASHBOARD_PASSWORD_HASH={escaped_hash}")
     print(f"DASHBOARD_SECRET_KEY={secrets.token_urlsafe(48)}")
+    print(
+        "\nEl hash de arriba ya viene con cada '$' escapado como '$$': Docker Compose "
+        "interpola .env y sin escapar trata cada segmento después de un '$' como "
+        "variable, corrompiendo el hash. No lo desescapes al pegarlo."
+    )
     print("\nLa secret key de arriba es nueva: al cambiarla, las sesiones activas se invalidan.")
     return 0
 
