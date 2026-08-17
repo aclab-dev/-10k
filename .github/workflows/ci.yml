@@ -40,6 +40,13 @@ jobs:
       - name: Tests (unit only)
         run: uv run pytest -m "not integration"
 
+      - name: Build app image
+        # Requerido por tests/integration/test_docker_compose_env_interpolation.py:
+        # ese test corre `docker compose run app printenv ...` y espera la imagen ya
+        # buildeada. Sin este paso, Compose la buildea al vuelo y el progreso de
+        # BuildKit se mezcla con el stdout que el test lee, rompiendo la aserción.
+        run: docker compose build app
+
       - name: Integration tests (Postgres + BingX demo)
         env:
           BINGX_API_KEY: ${{ secrets.BINGX_API_KEY }}

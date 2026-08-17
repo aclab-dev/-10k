@@ -67,7 +67,12 @@ def _resolved_dashboard_password_hash(env_path: Path) -> str:
         text=True,
         check=True,
     )
-    return result.stdout.strip()
+    # Si la imagen no está prebuildeada (o quedó desactualizada), `docker compose run`
+    # la construye al vuelo y el progreso de BuildKit se intercala en stdout antes del
+    # valor real de printenv. Nos quedamos con la última línea no vacía para no
+    # depender de que el caller haya corrido `docker compose build app` antes.
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return lines[-1].strip() if lines else ""
 
 
 def test_escaped_hash_survives_compose_interpolation(tmp_path: Path) -> None:
