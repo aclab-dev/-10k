@@ -41,6 +41,7 @@ from typing import Any
 import httpx
 import structlog
 
+from backend.core.bingx_http import is_retryable_bingx_error
 from backend.core.config import Environment, MarginType
 from backend.core.retry import (
     CircuitBreaker,
@@ -108,18 +109,6 @@ _MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
 # propagan igual que antes de F16. place_order/cancel_order siguen siendo seguros ante
 # estos reintentos porque BingX dedupe por clientOrderID (ver docstring del módulo).
 _RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
-
-
-def is_retryable_bingx_error(exc: Exception) -> bool:
-    """True solo para fallos de transporte: sin respuesta, timeout, o 5xx.
-
-    httpx.TimeoutException es subclase de httpx.RequestError, así que un solo
-    isinstance cubre ambos. httpx.HTTPStatusError es un tipo hermano (no hereda de
-    RequestError) y se evalúa aparte por status_code.
-    """
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code >= 500
-    return isinstance(exc, httpx.RequestError)
 
 
 def _to_bingx_symbol(symbol: str) -> str:
@@ -304,7 +293,26 @@ class BingXAdapter(ExchangeAdapter):
         if request.stop_price is not None:
             params["stopPrice"] = str(request.stop_price)
 
-        data: dict[str, Any] = self._signed_request("POST", "/openApi/swap/v2/trade/order", params)
+        try:
+            data: dict[str, Any] = self._signed_request(
+                "POST", "/openApi/swap/v2/trade/order", params
+            )
+        except BingXApiError:
+            # El retry interno de transporte (_signed_request) puede haber reenviado
+            # un POST que ya había tenido éxito en BingX (timeout de cliente tras un
+            # 2xx real). BingX rechaza el clientOrderID duplicado con un error de
+            # negocio que llega acá como BingXApiError. Antes de propagarlo como un
+            # fallo real, re-consultamos si la orden ya existe.
+            existing_after_retry = self._query_order(request.symbol, request.client_order_id)
+            if existing_after_retry is not None:
+                _log.info(
+                    "bingx_adapter.idempotent_order_after_retry",
+                    client_order_id=request.client_order_id,
+                    symbol=request.symbol,
+                )
+                self._order_symbol_cache[existing_after_retry.client_order_id] = request.symbol
+                return existing_after_retry
+            raise
         # Sin fallback: si BingX no devuelve "order", queremos un KeyError claro acá
         # en vez de un fallo opaco más adelante en _parse_order.
         raw_order: dict[str, Any] = data["order"]
@@ -337,10 +345,25 @@ class BingXAdapter(ExchangeAdapter):
                 },
             )
         except BingXApiError as exc:
+            # El retry interno de transporte (_signed_request) puede haber reenviado
+            # un DELETE que ya había tenido éxito en BingX (timeout de cliente tras un
+            # 2xx real); acá llegaría como "order not found"/error de negocio. Antes
+            # de reportar el cancel como fallido, re-consultamos el estado real de la
+            # orden: si ya no está PENDING/PARTIALLY_FILLED, sí fue cancelada.
+            status_after_retry = self.get_order_status(client_order_id)
+            if status_after_retry is not None and status_after_retry.status not in (
+                OrderStatus.PENDING,
+                OrderStatus.PARTIALLY_FILLED,
+            ):
+                _log.info(
+                    "bingx_adapter.cancel_order_confirmed_after_retry",
+                    client_order_id=client_order_id,
+                )
+                return True
             _log.warning(
                 "bingx_adapter.cancel_order_failed",
                 client_order_id=client_order_id,
-                error=str(exc),
+                error_type=type(exc).__name__,
             )
             return False
 
@@ -481,12 +504,20 @@ class BingXAdapter(ExchangeAdapter):
             return body["data"]
 
         def _on_retry(attempt: int, delay: float, exc: Exception) -> None:
+            # No loguear str(exc): para httpx.HTTPStatusError incluye la URL
+            # completa de la request, con el query string firmado (timestamp +
+            # signature). No es el api_secret en crudo, pero es material de firma
+            # derivado que no debería quedar en logs.
+            status_code = (
+                exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            )
             _log.info(
                 "bingx_adapter.retry",
                 attempt=attempt,
                 delay_seconds=delay,
                 path=path,
-                error=str(exc),
+                error_type=type(exc).__name__,
+                status_code=status_code,
             )
 
         try:

@@ -587,6 +587,61 @@ def test_place_order_is_idempotent_by_client_order_id() -> None:
     assert not _order_post_calls(calls), "no debe haber POST a /trade/order si la orden ya existe"
 
 
+def test_place_order_recovers_when_post_retry_causes_duplicate_client_order_id_error() -> None:
+    """Si el retry interno de _signed_request reenvía un POST que ya había tenido éxito
+    en BingX (timeout de cliente tras un 2xx real), BingX rechaza el clientOrderID
+    duplicado con un error de negocio. place_order debe re-consultar la orden en vez
+    de propagar el error como si nunca se hubiera colocado (hallazgo 1a de Agustín)."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440010"
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if "/trade/order" in request.url.path and request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                # Pre-check dentro de place_order: la orden todavía no existe.
+                return httpx.Response(200, json={"code": 100400, "msg": "not found", "data": {}})
+            # Re-consulta tras el error de negocio: la orden sí se colocó.
+            return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 100412, "msg": "clientOrderID duplicado"})
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    result = adapter.place_order(_order_request(client_order_id=client_oid))
+    assert result.client_order_id == client_oid
+    assert result.status == OrderStatus.FILLED
+    assert get_calls == 2
+
+
+def test_place_order_raises_when_no_matching_order_found_after_business_error() -> None:
+    """Si tras el error de negocio la re-consulta no encuentra la orden, el fallo es
+    real y debe propagarse (no hay duplicado silencioso que enmascarar)."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440010"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/trade/order" in request.url.path and request.method == "GET":
+            return httpx.Response(200, json={"code": 100400, "msg": "not found", "data": {}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id=client_oid))
+
+
 # ---------------------------------------------------------------------------
 # cancel_order — tarjeta [99]
 # ---------------------------------------------------------------------------
@@ -650,6 +705,33 @@ def test_cancel_order_returns_false_when_delete_fails() -> None:
     adapter._order_symbol_cache[client_oid] = "BTCUSDT"
 
     assert adapter.cancel_order(client_oid) is False
+
+
+def test_cancel_order_recovers_when_delete_retry_causes_order_not_found_error() -> None:
+    """Si el retry interno de _signed_request reenvía un DELETE que ya había tenido
+    éxito en BingX (timeout de cliente tras un 2xx real), la respuesta llega como un
+    error de negocio ("order not found"). cancel_order debe re-consultar el estado
+    real de la orden antes de reportar el cancel como fallido (hallazgo 1b de
+    Agustín): si ya no está PENDING/PARTIALLY_FILLED, sí fue cancelada."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+            cancelled_order = {**_OPEN_ORDER, "status": "CANCELED"}
+            return httpx.Response(200, json={"code": 0, "data": cancelled_order})
+        return httpx.Response(200, json={"code": 100400, "msg": "order does not exist"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is True
+    assert get_calls == 2
 
 
 def test_cancel_order_returns_true_when_partially_filled() -> None:

@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 import structlog
 
+from backend.core.bingx_http import is_retryable_bingx_error
 from backend.core.config import Environment
 from backend.core.retry import (
     CircuitBreaker,
@@ -24,7 +25,6 @@ from backend.core.retry import (
     RetryConfig,
     retry_async,
 )
-from backend.exchange_adapters.bingx_adapter import is_retryable_bingx_error
 from backend.market_data.fetcher import DataFetcher
 from backend.market_data.schemas import (
     CandleData,
