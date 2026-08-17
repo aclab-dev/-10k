@@ -12,12 +12,14 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
 from backend.core.config import Environment, MarginType
+from backend.core.retry import CircuitBreaker, CircuitBreakerConfig
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.bingx_adapter import BingXAdapter, BingXApiError
 from backend.exchange_adapters.paper_adapter import PaperAdapter
@@ -795,3 +797,153 @@ def test_place_order_aborts_on_http_error_during_idempotency_check() -> None:
         adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
 
     assert not _order_post_calls(calls), "no debe POST cuando el GET de idempotencia falla"
+
+
+# ---------------------------------------------------------------------------
+# Retry de transporte y circuit breaker (F16)
+# ---------------------------------------------------------------------------
+
+
+def test_signed_request_retries_on_timeout_then_succeeds() -> None:
+    """httpx.TimeoutException en el primer intento se reintenta y el segundo pega."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.TimeoutException("timed out")
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "balance": {
+                        "asset": "USDT",
+                        "balance": "100",
+                        "equity": "100",
+                        "availableMargin": "100",
+                        "usedMargin": "0",
+                    }
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        adapter.get_account_state()
+
+    assert call_count == 2
+
+
+def test_signed_request_retries_on_5xx_then_succeeds() -> None:
+    """5xx se reintenta con backoff; el segundo intento devuelve 200 → éxito."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(502, json={})
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "balance": {
+                        "asset": "USDT",
+                        "balance": "100",
+                        "equity": "100",
+                        "availableMargin": "100",
+                        "usedMargin": "0",
+                    }
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        adapter.get_account_state()
+
+    assert call_count == 2
+
+
+def test_signed_request_does_not_retry_on_4xx() -> None:
+    """4xx no es transitorio: no se reintenta, una sola llamada HTTP."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(400, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.get_account_state()
+
+    assert call_count == 1
+
+
+def test_signed_request_does_not_retry_on_business_error() -> None:
+    """BingXApiError (`code != 0`) no es transitorio: no se reintenta."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"code": 100413, "msg": "Signature verification failed"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with pytest.raises(BingXApiError):
+        adapter.get_account_state()
+
+    assert call_count == 1
+
+
+def test_signed_request_exhausts_retries_and_raises() -> None:
+    """5xx persistente agota los reintentos y propaga el HTTPStatusError."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(503, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        with pytest.raises(httpx.HTTPStatusError):
+            adapter.get_account_state()
+
+    # _RETRY_CONFIG.max_attempts = 4 (ver bingx_adapter.py).
+    assert call_count == 4
+
+
+def test_signed_request_circuit_breaker_opens_after_consecutive_failures() -> None:
+    """Tras suficientes fallos consecutivos, el breaker corta antes de pegarle a la red."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(503, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._circuit_breaker = CircuitBreaker(
+        CircuitBreakerConfig(failure_threshold=1, reset_timeout_seconds=60.0)
+    )
+
+    with patch("time.sleep"):
+        with pytest.raises(BingXApiError):
+            adapter.get_account_state()
+        calls_after_first = call_count
+        with pytest.raises(BingXApiError):
+            adapter.get_account_state()
+
+    # La segunda llamada fue cortada por el circuit breaker: no generó tráfico nuevo.
+    assert call_count == calls_after_first

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
 from backend.core.config import Environment
+from backend.core.retry import CircuitBreaker, CircuitBreakerConfig
 from backend.market_data.bingx_fetcher import BingXDataFetcher
 from backend.market_data.fetcher import DataFetcher
 from backend.market_data.schemas import CoherenceStatus, DataFreshnessStatus, Exchange
@@ -168,3 +170,72 @@ async def test_fetch_snapshot_all_symbols() -> None:
     for symbol in ("BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"):
         snapshot = await fetcher.fetch_snapshot(symbol=symbol, account_balance_usdt=Decimal("1000"))
         assert snapshot.symbol == symbol
+
+
+# ---------------------------------------------------------------------------
+# Retry de transporte y circuit breaker (F16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_retries_on_timeout_then_succeeds() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.TimeoutException("timed out")
+        return httpx.Response(200, json={"code": 0, "data": _TICKER})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = BingXDataFetcher(environment=Environment.TESTNET, http_client=client)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await fetcher._get("/openApi/swap/v2/quote/ticker", {"symbol": "BTC-USDT"})
+
+    assert result == _TICKER
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_does_not_retry_on_business_error() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"code": 80001, "msg": "invalid symbol"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = BingXDataFetcher(environment=Environment.TESTNET, http_client=client)
+
+    with pytest.raises(RuntimeError, match="80001"):
+        await fetcher._get("/openApi/swap/v2/quote/ticker", {"symbol": "BTC-USDT"})
+
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_circuit_breaker_opens_after_consecutive_failures() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(503, json={})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = BingXDataFetcher(environment=Environment.TESTNET, http_client=client)
+    fetcher._circuit_breaker = CircuitBreaker(
+        CircuitBreakerConfig(failure_threshold=1, reset_timeout_seconds=60.0)
+    )
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(RuntimeError):
+            await fetcher._get("/openApi/swap/v2/quote/ticker", {"symbol": "BTC-USDT"})
+        calls_after_first = call_count
+        with pytest.raises(RuntimeError, match="circuit breaker"):
+            await fetcher._get("/openApi/swap/v2/quote/ticker", {"symbol": "BTC-USDT"})
+
+    assert call_count == calls_after_first
