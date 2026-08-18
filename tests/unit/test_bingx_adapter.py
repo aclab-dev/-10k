@@ -712,7 +712,7 @@ def test_cancel_order_recovers_when_delete_retry_causes_order_not_found_error() 
     éxito en BingX (timeout de cliente tras un 2xx real), la respuesta llega como un
     error de negocio ("order not found"). cancel_order debe re-consultar el estado
     real de la orden antes de reportar el cancel como fallido (hallazgo 1b de
-    Agustín): si ya no está PENDING/PARTIALLY_FILLED, sí fue cancelada."""
+    Agustín): si quedó CANCELLED, sí fue cancelada."""
     client_oid = _OPEN_ORDER["clientOrderId"]
     get_calls = 0
 
@@ -731,6 +731,33 @@ def test_cancel_order_recovers_when_delete_retry_causes_order_not_found_error() 
     adapter._order_symbol_cache[client_oid] = "BTCUSDT"
 
     assert adapter.cancel_order(client_oid) is True
+    assert get_calls == 2
+
+
+def test_cancel_order_does_not_report_success_when_order_filled_after_retry() -> None:
+    """Si hubo una carrera real entre la ejecución y el cancel, la orden puede haber
+    quedado FILLED en vez de CANCELLED. cancel_order no debe reportar esto como
+    cancelación exitosa — el caller quedaría creyendo que no hay posición abierta
+    cuando en realidad la orden sí se ejecutó (comentario de seguimiento de
+    Agustín sobre el fix del hallazgo 1b)."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+            filled_order = {**_OPEN_ORDER, "status": "FILLED", "executedQty": "0.001"}
+            return httpx.Response(200, json={"code": 0, "data": filled_order})
+        return httpx.Response(200, json={"code": 100400, "msg": "order does not exist"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is False
     assert get_calls == 2
 
 

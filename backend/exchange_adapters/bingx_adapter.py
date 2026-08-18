@@ -349,11 +349,15 @@ class BingXAdapter(ExchangeAdapter):
             # un DELETE que ya había tenido éxito en BingX (timeout de cliente tras un
             # 2xx real); acá llegaría como "order not found"/error de negocio. Antes
             # de reportar el cancel como fallido, re-consultamos el estado real de la
-            # orden: si ya no está PENDING/PARTIALLY_FILLED, sí fue cancelada.
+            # orden. Se compara específicamente contra CANCELLED (no "not in
+            # PENDING/PARTIALLY_FILLED"): si hubo una carrera real entre la ejecución
+            # y el cancel, la orden puede haber quedado FILLED — reportar eso como
+            # cancelación exitosa haría creer al caller que no hay posición abierta
+            # cuando en realidad sí se ejecutó.
             status_after_retry = self.get_order_status(client_order_id)
-            if status_after_retry is not None and status_after_retry.status not in (
-                OrderStatus.PENDING,
-                OrderStatus.PARTIALLY_FILLED,
+            if (
+                status_after_retry is not None
+                and status_after_retry.status == OrderStatus.CANCELLED
             ):
                 _log.info(
                     "bingx_adapter.cancel_order_confirmed_after_retry",
