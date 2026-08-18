@@ -211,6 +211,11 @@ class Orchestrator:
             db_session.flush()
         except IntegrityError as exc:
             db_session.rollback()
+            # Solo cerramos la sesion si la creamos nosotros (session=None en
+            # el constructor): si el caller la inyecto, sigue siendo dueño de
+            # su ciclo de vida y puede seguir usandola despues de este error.
+            if session is None:
+                db_session.close()
             raise BotRunAlreadyActiveError(
                 "Ya existe un BotRun RUNNING — probable arranque concurrente del worker. "
                 "No se crea un segundo BotRun activo."

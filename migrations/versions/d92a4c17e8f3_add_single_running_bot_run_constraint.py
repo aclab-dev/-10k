@@ -26,6 +26,27 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Backfill antes del índice: un ambiente viejo puede tener mas de un
+    # RUNNING acumulado (huerfanos de crashes que nunca vieron un restart
+    # posterior que los cerrara via close_orphan_running()). Sin esto,
+    # create_index falla con UniqueViolation contra datos preexistentes.
+    # Mismo criterio que close_orphan_running(): se conserva el mas nuevo por
+    # started_at, el resto pasa a CRASHED (no STOPPED, no hubo shutdown limpio).
+    op.execute(
+        """
+        UPDATE bot_runs
+        SET status = 'CRASHED',
+            ended_at = now(),
+            notes = CASE
+                WHEN notes IS NULL THEN 'Cerrado por la migracion d92a4c17e8f3: RUNNING duplicado preexistente al agregar uq_bot_runs_single_running.'
+                ELSE notes || E'\\nCerrado por la migracion d92a4c17e8f3: RUNNING duplicado preexistente al agregar uq_bot_runs_single_running.'
+            END
+        WHERE status = 'RUNNING'
+          AND id NOT IN (
+              SELECT id FROM bot_runs WHERE status = 'RUNNING' ORDER BY started_at DESC LIMIT 1
+          )
+        """
+    )
     op.create_index(
         "uq_bot_runs_single_running",
         "bot_runs",
