@@ -509,3 +509,63 @@ class TestGPTClientWithAudit:
         )
         assert len(req_records) == 1
         assert req_records[0].request_hash is not None
+
+    async def test_retry_does_not_duplicate_persisted_model_request(
+        self, session: Session, bot_run: BotRun
+    ) -> None:
+        """Reintentos internos de _call_with_retry (F16 [113]) no duplican el audit.
+
+        _persist_audit_request corre una sola vez, antes de _call_with_retry —
+        dos timeouts transitorios seguidos de un éxito deben dejar exactamente
+        1 ModelRequest (y 1 ModelResponse), no 3.
+        """
+        from unittest.mock import patch
+
+        from sqlalchemy import select
+
+        client = _make_gpt_client(max_retries=2)
+        req = _make_req()
+        content = json.dumps(_valid_decision_dict())
+        mock_resp = _openai_response(content)
+        call_count = 0
+
+        async def _post_with_recovery(*args: Any, **kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise httpx.TimeoutException("timed out")
+            return mock_resp
+
+        with (
+            patch.object(
+                client._http_client, "post", new_callable=AsyncMock, side_effect=_post_with_recovery
+            ),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await client.request(
+                req,
+                RequestPurpose.NEW_ENTRY,
+                session=session,
+                bot_run_id=bot_run.id,
+                symbol="XRPUSDT",
+            )
+
+        assert isinstance(result, ModelDecision)
+        assert call_count == 3
+
+        req_records = list(
+            session.scalars(
+                select(ModelRequest).where(
+                    ModelRequest.bot_run_id == bot_run.id,
+                    ModelRequest.symbol == "XRPUSDT",
+                )
+            )
+        )
+        assert len(req_records) == 1
+
+        resp_records = list(
+            session.scalars(
+                select(ModelResponse).where(ModelResponse.model_request_id == req_records[0].id)
+            )
+        )
+        assert len(resp_records) == 1
