@@ -17,7 +17,14 @@ from typing import Any
 import httpx
 import structlog
 
+from backend.core.bingx_http import is_retryable_bingx_error
 from backend.core.config import Environment
+from backend.core.retry import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    RetryConfig,
+    retry_async,
+)
 from backend.market_data.fetcher import DataFetcher
 from backend.market_data.schemas import (
     CandleData,
@@ -32,6 +39,10 @@ _log = structlog.get_logger(__name__)
 
 _BASE_URL = "https://open-api.bingx.com"
 _TIMEOUT = httpx.Timeout(10.0)
+
+# Retry de transporte (F16): mismo criterio que BingXAdapter — solo fallos de
+# red/timeout/5xx, nunca errores de negocio (`code != 0`).
+_RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
 
 # Intervalos BingX → campo en Candles, cantidad de velas de 5m que representa
 _TIMEFRAMES: list[tuple[str, str, int]] = [
@@ -58,6 +69,7 @@ class BingXDataFetcher(DataFetcher):
     ) -> None:
         self._environment = environment
         self._http = http_client or httpx.AsyncClient(timeout=_TIMEOUT)
+        self._circuit_breaker = CircuitBreaker()
 
     async def fetch_snapshot(
         self,
@@ -163,13 +175,42 @@ class BingXDataFetcher(DataFetcher):
             return False
 
     async def _get(self, path: str, params: dict[str, str]) -> Any:
-        """GET público sin autenticación."""
-        response = await self._http.get(f"{_BASE_URL}{path}", params=params)
-        response.raise_for_status()
-        body: dict[str, Any] = response.json()
-        if body.get("code", -1) != 0:
-            raise RuntimeError(f"BingX error {body.get('code')}: {body.get('msg', '')} — {path}")
-        return body["data"]
+        """GET público sin autenticación.
+
+        Reintenta con backoff exponencial + jitter (F16) solo ante fallos de
+        transporte (sin respuesta, timeout, 5xx). Errores de negocio (`code != 0`)
+        se propagan de inmediato, sin reintento.
+        """
+
+        async def _do_get() -> Any:
+            response = await self._http.get(f"{_BASE_URL}{path}", params=params)
+            response.raise_for_status()
+            body: dict[str, Any] = response.json()
+            if body.get("code", -1) != 0:
+                raise RuntimeError(
+                    f"BingX error {body.get('code')}: {body.get('msg', '')} — {path}"
+                )
+            return body["data"]
+
+        def _on_retry(attempt: int, delay: float, exc: Exception) -> None:
+            _log.info(
+                "bingx_fetcher.retry",
+                attempt=attempt,
+                delay_seconds=delay,
+                path=path,
+                error=str(exc),
+            )
+
+        try:
+            return await retry_async(
+                _do_get,
+                config=_RETRY_CONFIG,
+                is_retryable=is_retryable_bingx_error,
+                circuit_breaker=self._circuit_breaker,
+                on_retry=_on_retry,
+            )
+        except CircuitBreakerOpenError as exc:
+            raise RuntimeError(f"BingX circuit breaker abierto — {path}: {exc}") from exc
 
 
 def _parse_candle(raw: list[Any], n_candles: int) -> CandleData:

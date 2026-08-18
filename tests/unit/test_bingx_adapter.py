@@ -12,12 +12,14 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
 from backend.core.config import Environment, MarginType
+from backend.core.retry import CircuitBreaker, CircuitBreakerConfig
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.bingx_adapter import BingXAdapter, BingXApiError
 from backend.exchange_adapters.paper_adapter import PaperAdapter
@@ -585,6 +587,61 @@ def test_place_order_is_idempotent_by_client_order_id() -> None:
     assert not _order_post_calls(calls), "no debe haber POST a /trade/order si la orden ya existe"
 
 
+def test_place_order_recovers_when_post_retry_causes_duplicate_client_order_id_error() -> None:
+    """Si el retry interno de _signed_request reenvía un POST que ya había tenido éxito
+    en BingX (timeout de cliente tras un 2xx real), BingX rechaza el clientOrderID
+    duplicado con un error de negocio. place_order debe re-consultar la orden en vez
+    de propagar el error como si nunca se hubiera colocado (hallazgo 1a de Agustín)."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440010"
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if "/trade/order" in request.url.path and request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                # Pre-check dentro de place_order: la orden todavía no existe.
+                return httpx.Response(200, json={"code": 100400, "msg": "not found", "data": {}})
+            # Re-consulta tras el error de negocio: la orden sí se colocó.
+            return httpx.Response(200, json={"code": 0, "data": {"order": _PLACED_MARKET_ORDER}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 100412, "msg": "clientOrderID duplicado"})
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    result = adapter.place_order(_order_request(client_order_id=client_oid))
+    assert result.client_order_id == client_oid
+    assert result.status == OrderStatus.FILLED
+    assert get_calls == 2
+
+
+def test_place_order_raises_when_no_matching_order_found_after_business_error() -> None:
+    """Si tras el error de negocio la re-consulta no encuentra la orden, el fallo es
+    real y debe propagarse (no hay duplicado silencioso que enmascarar)."""
+    client_oid = "650e8400-e29b-41d4-a716-446655440010"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/trade/order" in request.url.path and request.method == "GET":
+            return httpx.Response(200, json={"code": 100400, "msg": "not found", "data": {}})
+        if "/trade/order" in request.url.path and request.method == "POST":
+            return httpx.Response(200, json={"code": 100413, "msg": "signature error"})
+        account_setup_paths = ("v1/positionSide/dual", "/trade/marginType")
+        if any(p in request.url.path for p in account_setup_paths):
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected call"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+
+    with pytest.raises(BingXApiError):
+        adapter.place_order(_order_request(client_order_id=client_oid))
+
+
 # ---------------------------------------------------------------------------
 # cancel_order — tarjeta [99]
 # ---------------------------------------------------------------------------
@@ -648,6 +705,60 @@ def test_cancel_order_returns_false_when_delete_fails() -> None:
     adapter._order_symbol_cache[client_oid] = "BTCUSDT"
 
     assert adapter.cancel_order(client_oid) is False
+
+
+def test_cancel_order_recovers_when_delete_retry_causes_order_not_found_error() -> None:
+    """Si el retry interno de _signed_request reenvía un DELETE que ya había tenido
+    éxito en BingX (timeout de cliente tras un 2xx real), la respuesta llega como un
+    error de negocio ("order not found"). cancel_order debe re-consultar el estado
+    real de la orden antes de reportar el cancel como fallido (hallazgo 1b de
+    Agustín): si quedó CANCELLED, sí fue cancelada."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+            cancelled_order = {**_OPEN_ORDER, "status": "CANCELED"}
+            return httpx.Response(200, json={"code": 0, "data": cancelled_order})
+        return httpx.Response(200, json={"code": 100400, "msg": "order does not exist"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is True
+    assert get_calls == 2
+
+
+def test_cancel_order_does_not_report_success_when_order_filled_after_retry() -> None:
+    """Si hubo una carrera real entre la ejecución y el cancel, la orden puede haber
+    quedado FILLED en vez de CANCELLED. cancel_order no debe reportar esto como
+    cancelación exitosa — el caller quedaría creyendo que no hay posición abierta
+    cuando en realidad la orden sí se ejecutó (comentario de seguimiento de
+    Agustín sobre el fix del hallazgo 1b)."""
+    client_oid = _OPEN_ORDER["clientOrderId"]
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls
+        if request.method == "GET":
+            get_calls += 1
+            if get_calls == 1:
+                return httpx.Response(200, json={"code": 0, "data": _OPEN_ORDER})
+            filled_order = {**_OPEN_ORDER, "status": "FILLED", "executedQty": "0.001"}
+            return httpx.Response(200, json={"code": 0, "data": filled_order})
+        return httpx.Response(200, json={"code": 100400, "msg": "order does not exist"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._order_symbol_cache[client_oid] = "BTCUSDT"
+
+    assert adapter.cancel_order(client_oid) is False
+    assert get_calls == 2
 
 
 def test_cancel_order_returns_true_when_partially_filled() -> None:
@@ -795,3 +906,153 @@ def test_place_order_aborts_on_http_error_during_idempotency_check() -> None:
         adapter.place_order(_order_request(client_order_id="650e8400-e29b-41d4-a716-446655440010"))
 
     assert not _order_post_calls(calls), "no debe POST cuando el GET de idempotencia falla"
+
+
+# ---------------------------------------------------------------------------
+# Retry de transporte y circuit breaker (F16)
+# ---------------------------------------------------------------------------
+
+
+def test_signed_request_retries_on_timeout_then_succeeds() -> None:
+    """httpx.TimeoutException en el primer intento se reintenta y el segundo pega."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.TimeoutException("timed out")
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "balance": {
+                        "asset": "USDT",
+                        "balance": "100",
+                        "equity": "100",
+                        "availableMargin": "100",
+                        "usedMargin": "0",
+                    }
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        adapter.get_account_state()
+
+    assert call_count == 2
+
+
+def test_signed_request_retries_on_5xx_then_succeeds() -> None:
+    """5xx se reintenta con backoff; el segundo intento devuelve 200 → éxito."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return httpx.Response(502, json={})
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "balance": {
+                        "asset": "USDT",
+                        "balance": "100",
+                        "equity": "100",
+                        "availableMargin": "100",
+                        "usedMargin": "0",
+                    }
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        adapter.get_account_state()
+
+    assert call_count == 2
+
+
+def test_signed_request_does_not_retry_on_4xx() -> None:
+    """4xx no es transitorio: no se reintenta, una sola llamada HTTP."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(400, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.get_account_state()
+
+    assert call_count == 1
+
+
+def test_signed_request_does_not_retry_on_business_error() -> None:
+    """BingXApiError (`code != 0`) no es transitorio: no se reintenta."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"code": 100413, "msg": "Signature verification failed"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with pytest.raises(BingXApiError):
+        adapter.get_account_state()
+
+    assert call_count == 1
+
+
+def test_signed_request_exhausts_retries_and_raises() -> None:
+    """5xx persistente agota los reintentos y propaga el HTTPStatusError."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(503, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    with patch("time.sleep"):
+        with pytest.raises(httpx.HTTPStatusError):
+            adapter.get_account_state()
+
+    # _RETRY_CONFIG.max_attempts = 4 (ver bingx_adapter.py).
+    assert call_count == 4
+
+
+def test_signed_request_circuit_breaker_opens_after_consecutive_failures() -> None:
+    """Tras suficientes fallos consecutivos, el breaker corta antes de pegarle a la red."""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(503, json={})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = BingXAdapter(api_key="k", api_secret="s", http_client=client)
+    adapter._circuit_breaker = CircuitBreaker(
+        CircuitBreakerConfig(failure_threshold=1, reset_timeout_seconds=60.0)
+    )
+
+    with patch("time.sleep"):
+        with pytest.raises(BingXApiError):
+            adapter.get_account_state()
+        calls_after_first = call_count
+        with pytest.raises(BingXApiError):
+            adapter.get_account_state()
+
+    # La segunda llamada fue cortada por el circuit breaker: no generó tráfico nuevo.
+    assert call_count == calls_after_first

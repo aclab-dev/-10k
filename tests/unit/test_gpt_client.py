@@ -359,6 +359,38 @@ async def test_exhausted_retries_server_error_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tests: circuit breaker (F16)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_opens_after_consecutive_failures() -> None:
+    """Tras N fallos consecutivos, la siguiente llamada no pega a la red."""
+    config = GPTClientConfig(
+        max_retries=0,
+        base_delay_seconds=0.0,
+        max_delay_seconds=10.0,
+        circuit_breaker_failure_threshold=1,
+        circuit_breaker_reset_seconds=60.0,
+    )
+    client = GPTClient(config=config, failure_policy=_POLICY_DEFAULT, api_key=_TEST_API_KEY)
+
+    with patch.object(
+        client._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=_error_response(503),
+    ) as mock_post:
+        with pytest.raises(GPTClientError):
+            await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+        with pytest.raises(GPTClientError):
+            await client.request(_make_request(), RequestPurpose.NEW_ENTRY)
+
+    # La segunda llamada fue cortada por el circuit breaker: nunca llegó a la red.
+    assert mock_post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Tests: errores no reintentables
 # ---------------------------------------------------------------------------
 

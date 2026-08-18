@@ -8,7 +8,6 @@ se incluye en logs.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -21,6 +20,13 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import FailurePolicyConfig, get_config
+from backend.core.retry import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpenError,
+    RetryConfig,
+    retry_async,
+)
 from backend.decision_engine.invalid_response_handler import handle_invalid_response
 from backend.decision_engine.schema_guard import (
     SchemaGuardResult,
@@ -84,6 +90,9 @@ class GPTClientConfig:
     max_retries: int = 3
     base_delay_seconds: float = 1.0
     max_delay_seconds: float = 60.0
+    jitter_ratio: float = 0.2
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_reset_seconds: float = 30.0
     max_tokens: int = 2000
     temperature: float = 0.1
     api_base_url: str = _DEFAULT_API_BASE_URL
@@ -185,6 +194,12 @@ class GPTClient:
         self._api_key = resolved_key
         self._http_client = httpx.AsyncClient(timeout=self._config.timeout_seconds)
         self._budget_manager = budget_manager
+        self._circuit_breaker = CircuitBreaker(
+            CircuitBreakerConfig(
+                failure_threshold=self._config.circuit_breaker_failure_threshold,
+                reset_timeout_seconds=self._config.circuit_breaker_reset_seconds,
+            )
+        )
 
     async def aclose(self) -> None:
         """Cierra el connection pool. Llamar al apagar el proceso."""
@@ -356,43 +371,43 @@ class GPTClient:
 
     async def _call_with_retry(self, req: GPTRequest) -> _RawCallResult:
         cfg = self._config
-        last_exc: GPTClientError | None = None
-        next_delay: float = 0.0
+        retry_config = RetryConfig(
+            max_attempts=cfg.max_retries + 1,
+            base_delay_seconds=cfg.base_delay_seconds,
+            max_delay_seconds=cfg.max_delay_seconds,
+            jitter_ratio=cfg.jitter_ratio,
+        )
 
-        for attempt in range(cfg.max_retries + 1):
-            if attempt > 0:
-                _log.info(
-                    "gpt_client.retry",
-                    attempt=attempt,
-                    delay_seconds=next_delay,
-                    model=cfg.model,
-                    prompt_version=req.prompt_version,
-                )
-                await asyncio.sleep(next_delay)
+        def _is_retryable(exc: Exception) -> bool:
+            if isinstance(exc, GPTAuthError | GPTResponseValidationError):
+                return False
+            return isinstance(exc, GPTClientError)
 
-            try:
-                return await self._call_once(req)
-            except (GPTAuthError, GPTResponseValidationError):
-                raise  # No reintentable
-            except GPTRateLimitError as exc:
-                last_exc = exc
-                if exc.retry_after_seconds is not None:
-                    next_delay = min(exc.retry_after_seconds, cfg.max_delay_seconds)
-                else:
-                    next_delay = min(
-                        cfg.base_delay_seconds * (2**attempt),
-                        cfg.max_delay_seconds,
-                    )
-            except GPTClientError as exc:
-                last_exc = exc
-                next_delay = min(
-                    cfg.base_delay_seconds * (2**attempt),
-                    cfg.max_delay_seconds,
-                )
+        def _get_retry_after(exc: Exception) -> float | None:
+            if isinstance(exc, GPTRateLimitError):
+                return exc.retry_after_seconds
+            return None
 
-        if last_exc is None:
-            raise GPTClientError("Retry loop terminó sin excepción ni resultado")
-        raise last_exc
+        def _on_retry(attempt: int, delay: float, exc: Exception) -> None:
+            _log.info(
+                "gpt_client.retry",
+                attempt=attempt,
+                delay_seconds=delay,
+                model=cfg.model,
+                prompt_version=req.prompt_version,
+            )
+
+        try:
+            return await retry_async(
+                lambda: self._call_once(req),
+                config=retry_config,
+                is_retryable=_is_retryable,
+                circuit_breaker=self._circuit_breaker,
+                get_retry_after=_get_retry_after,
+                on_retry=_on_retry,
+            )
+        except CircuitBreakerOpenError as exc:
+            raise GPTClientError(str(exc)) from exc
 
     # ------------------------------------------------------------------
     # Single HTTP call
