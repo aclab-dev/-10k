@@ -360,6 +360,39 @@ def test_startup_closes_orphan_running_bot_run(sqlite_session: Session) -> None:
     assert active.id == second_id
 
 
+def test_prepare_paper_context_raises_when_bot_run_insert_violates_running_constraint(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El IntegrityError de uq_bot_runs_single_running (F16 [114]) al insertar el
+    BotRun nuevo debe traducirse a BotRunAlreadyActiveError explícito, no propagar
+    crudo. El disparo real de la constraint bajo concurrencia se valida contra
+    Postgres real en tests/integration/test_bot_run_concurrency.py (SQLite es de
+    una sola conexión, no sirve para simular dos procesos corriendo a la vez);
+    acá se mockea puntualmente el flush que persiste el BotRun nuevo para aislar
+    la lógica de traducción de la excepción.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.storage.models import BotRun
+    from backend.trading_core.orchestrator import BotRunAlreadyActiveError
+
+    original_flush = sqlite_session.flush
+
+    def _flush_raising_for_new_bot_run() -> None:
+        if any(isinstance(obj, BotRun) for obj in sqlite_session.new):
+            raise IntegrityError(
+                "INSERT INTO bot_runs ...",
+                {},
+                Exception("UNIQUE constraint failed: bot_runs.status"),
+            )
+        original_flush()
+
+    monkeypatch.setattr(sqlite_session, "flush", _flush_raising_for_new_bot_run)
+
+    with pytest.raises(BotRunAlreadyActiveError):
+        Orchestrator(session=sqlite_session)
+
+
 def test_startup_carries_over_kill_switch_from_orphan_run(sqlite_session: Session) -> None:
     """Cerrar el huerfano no debe romper el carry-over: el estado se arrastra por
     bot_state del run mas reciente, no por su status."""

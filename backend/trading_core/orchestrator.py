@@ -14,6 +14,7 @@ from decimal import Decimal
 from types import FrameType
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
@@ -36,6 +37,15 @@ from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner, parse_interval_from_env
 
 log = structlog.get_logger(__name__)
+
+
+class BotRunAlreadyActiveError(Exception):
+    """Otro BotRun sigue RUNNING — el índice único parcial de DB rechazó el insert.
+
+    Señala una race de arranque concurrente (F16 [114]), no un error transitorio:
+    el caller no debe reintentar automáticamente, tiene que investigar por qué
+    hay dos workers arrancando a la vez.
+    """
 
 
 class Orchestrator:
@@ -191,7 +201,20 @@ class Orchestrator:
         # el bot_run nuevo ya existe en la DB pero sin estado de kill switch
         # arrastrado (un crash justo ahi haria que el proximo arranque no
         # encuentre nada que arrastrar y quede en ACTIVE).
-        db_session.flush()
+        #
+        # _close_orphan_runs() de arriba no elimina la race real: dos workers
+        # arrancando a la vez (ej. ventana de un rolling restart) pueden pasar
+        # ambos ese chequeo antes de que cualquiera inserte. El índice único
+        # parcial uq_bot_runs_single_running (migración d92a4c17e8f3) es el
+        # backstop de DB — igual patrón que uq_orders_client_order_id en Order.
+        try:
+            db_session.flush()
+        except IntegrityError as exc:
+            db_session.rollback()
+            raise BotRunAlreadyActiveError(
+                "Ya existe un BotRun RUNNING — probable arranque concurrente del worker. "
+                "No se crea un segundo BotRun activo."
+            ) from exc
         self._bot_run = bot_run
         self._db_session = db_session
 
