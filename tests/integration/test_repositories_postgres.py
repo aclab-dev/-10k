@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -155,6 +156,30 @@ class TestBotRunRepositoryPostgres:
         with pytest.raises(IntegrityError):
             pg_session.flush()
         pg_session.rollback()
+
+    def test_get_active_tie_breaks_by_started_at_without_the_constraint(
+        self, pg_session: Session
+    ) -> None:
+        """Defensa de get_active() para un ambiente sin uq_bot_runs_single_running
+        aplicada todavía (migración d92a4c17e8f3 no corrida, o un schema viejo).
+
+        Sin el índice único nada impide dos RUNNING, y el order_by por started_at
+        es lo único que decide cuál gana. Se dropea el índice dentro de la misma
+        transacción del test -- Postgres soporta DDL transaccional, así que el
+        rollback del fixture lo restaura para el resto de la suite.
+        """
+        pg_session.execute(text("DROP INDEX uq_bot_runs_single_running"))
+
+        repo = BotRunRepository(pg_session)
+        older = _bot_run(pg_session)
+        older.started_at = _now() - timedelta(hours=2)
+        newest = _bot_run(pg_session)
+        newest.started_at = _now()
+        pg_session.flush()
+
+        active = repo.get_active()
+        assert active is not None
+        assert active.id == newest.id
 
     def test_close_orphan_running_marks_crashed(self, pg_session: Session) -> None:
         repo = BotRunRepository(pg_session)

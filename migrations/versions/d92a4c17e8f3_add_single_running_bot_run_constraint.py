@@ -4,12 +4,17 @@ Revision ID: d92a4c17e8f3
 Revises: b4d17a90c3e5
 Create Date: 2026-08-18
 
-Idempotencia de ciclo (F16 [114]): "a lo sumo un BotRun RUNNING" era hasta ahora
-solo una convención de aplicación (BotRunRepository.get_active()/
-close_orphan_running()), sin nada que lo garantice en DB ante dos arranques
-concurrentes del worker (ej. ventana de un deploy con rolling restart). Un
-índice único parcial lo convierte en invariante real: Postgres rechaza el
-segundo INSERT con status='RUNNING' mientras el primero siga en ese estado.
+Idempotencia de ciclo (F16 [114]). El porqué de la constraint vive en
+backend/storage/models.py (BotRun.__table_args__, uq_bot_runs_single_running) —
+no se repite acá.
+
+El backfill de abajo NO reusa BotRunRepository.close_orphan_running() a propósito:
+una migración tiene que quedar autocontenida y reproducible tal cual fue escrita,
+incluso si ese código de aplicación cambia de forma más adelante. Por eso reescribe
+la regla en SQL crudo en vez de importarla — es una decisión de negocio parecida
+pero no idéntica (close_orphan_running() cierra TODOS los RUNNING porque asume que
+un run nuevo está por arrancar; este backfill conserva el más nuevo porque corre
+una sola vez, sin un run nuevo esperando).
 """
 
 from __future__ import annotations
@@ -30,8 +35,9 @@ def upgrade() -> None:
     # RUNNING acumulado (huerfanos de crashes que nunca vieron un restart
     # posterior que los cerrara via close_orphan_running()). Sin esto,
     # create_index falla con UniqueViolation contra datos preexistentes.
-    # Mismo criterio que close_orphan_running(): se conserva el mas nuevo por
-    # started_at, el resto pasa a CRASHED (no STOPPED, no hubo shutdown limpio).
+    # Se conserva el mas nuevo por started_at, el resto pasa a CRASHED (no
+    # STOPPED, no hubo shutdown limpio) — ver docstring del modulo para por
+    # que esto no reusa close_orphan_running() directamente.
     op.execute(
         """
         UPDATE bot_runs

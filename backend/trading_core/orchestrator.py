@@ -187,7 +187,12 @@ class Orchestrator:
         # RUNNING que sobrevivieron a un SIGKILL se cierran aca, no se dejan
         # convivir con el run nuevo. No interfiere con el carry-over de arriba,
         # que se resuelve por bot_state y por started_at, no por status.
+        #
+        # Flush propio, separado del insert de mas abajo: si ese insert choca
+        # contra la constraint de concurrencia y se revierte, este cleanup ya
+        # esta aplicado dentro de la transaccion y no se pierde con el.
         self._close_orphan_runs(db_session)
+        db_session.flush()
 
         bot_run = BotRun(
             environment=environment.value,
@@ -195,30 +200,34 @@ class Orchestrator:
             config_snapshot=cfg.model_dump(mode="json"),
             status="RUNNING",
         )
-        db_session.add(bot_run)
-        # flush (no commit): el id queda disponible para la fila de bot_state
-        # de abajo sin dejar, entre dos commits separados, una ventana donde
-        # el bot_run nuevo ya existe en la DB pero sin estado de kill switch
-        # arrastrado (un crash justo ahi haria que el proximo arranque no
-        # encuentre nada que arrastrar y quede en ACTIVE).
+        # _close_orphan_runs() de arriba no elimina la race real entre dos
+        # arranques concurrentes — ver uq_bot_runs_single_running en
+        # backend/storage/models.py (BotRun.__table_args__) para el porqué.
         #
-        # _close_orphan_runs() de arriba no elimina la race real: dos workers
-        # arrancando a la vez (ej. ventana de un rolling restart) pueden pasar
-        # ambos ese chequeo antes de que cualquiera inserte. El índice único
-        # parcial uq_bot_runs_single_running (migración d92a4c17e8f3) es el
-        # backstop de DB — igual patrón que uq_orders_client_order_id en Order.
+        # El insert va en su propio savepoint (mismo patrón que
+        # LoginLockoutRepository.get_or_create en backend/storage/repositories/
+        # auth.py): si choca, solo se revierte este insert, no el flush de
+        # arriba. Y el choque se re-verifica antes de traducirlo: un
+        # IntegrityError con otro origen (no la carrera esperada) se relanza
+        # tal cual, no se reinterpreta a ciegas como BotRunAlreadyActiveError.
         try:
-            db_session.flush()
+            with db_session.begin_nested():
+                db_session.add(bot_run)
+                db_session.flush()
         except IntegrityError as exc:
-            db_session.rollback()
+            concurrent_active = BotRunRepository(db_session).get_active()
+            if concurrent_active is None:
+                # No fue la carrera que este except cubre: no hay otro RUNNING
+                # que explique el choque, asi que no hay nada que traducir.
+                raise
             # Solo cerramos la sesion si la creamos nosotros (session=None en
             # el constructor): si el caller la inyecto, sigue siendo dueño de
             # su ciclo de vida y puede seguir usandola despues de este error.
             if session is None:
                 db_session.close()
             raise BotRunAlreadyActiveError(
-                "Ya existe un BotRun RUNNING — probable arranque concurrente del worker. "
-                "No se crea un segundo BotRun activo."
+                f"Ya existe un BotRun RUNNING ({concurrent_active.id}) — probable arranque "
+                "concurrente del worker. No se crea un segundo BotRun activo."
             ) from exc
         self._bot_run = bot_run
         self._db_session = db_session
