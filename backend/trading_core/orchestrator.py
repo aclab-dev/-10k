@@ -27,6 +27,7 @@ from backend.market_data.analysis_service import MarketAnalysisService
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
+from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import get_session_factory
@@ -96,6 +97,9 @@ class Orchestrator:
                 position_tick_service: PositionTickService | None = (
                     self._build_position_tick_service(mds, self._position_manager)
                 )
+                orphan_order_scanner: OrphanOrderScanner | None = self._build_orphan_order_scanner(
+                    adapter, self._position_manager, db_session, bot_run
+                )
                 gpt_client, prompt_builder, aggregator = self._build_decision_components(cfg)
                 decision_session: Session | None = db_session
                 decision_bot_run_id: str | None = str(bot_run.id)
@@ -108,6 +112,7 @@ class Orchestrator:
                 mds = market_data_service
                 exec_engine = execution_engine
                 position_tick_service = None
+                orphan_order_scanner = None
                 gpt_client, prompt_builder, aggregator = None, None, None
                 decision_session = None
                 decision_bot_run_id = None
@@ -116,6 +121,7 @@ class Orchestrator:
                 self._state_machine,
                 interval_seconds=interval,
                 position_tick_service=position_tick_service,
+                orphan_order_scanner=orphan_order_scanner,
                 market_data_service=mds,
                 execution_engine=exec_engine,
                 gpt_client=gpt_client,
@@ -392,6 +398,25 @@ class Orchestrator:
             return price
 
         return PositionTickService(position_manager, get_mark_price=get_mark_price)
+
+    def _build_orphan_order_scanner(
+        self,
+        adapter: PaperAdapter,
+        position_manager: PositionManager,
+        db_session: Session,
+        bot_run: BotRun,
+    ) -> OrphanOrderScanner:
+        """Arma el OrphanOrderScanner (F16 [115]) con el adapter y PositionManager
+        compartidos de ExecutionEngine — mismo criterio que _build_position_tick_service:
+        reusar el estado real en vez de instanciar uno divergente.
+        """
+        return OrphanOrderScanner(
+            adapter=adapter,
+            position_manager=position_manager,
+            state_machine=self._state_machine,
+            session=db_session,
+            bot_run_id=bot_run.id,
+        )
 
     @property
     def state_machine(self) -> BotStateMachine:

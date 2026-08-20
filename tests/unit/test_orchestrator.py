@@ -17,6 +17,7 @@ from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.fetcher import MockDataFetcher
+from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import Base
@@ -141,6 +142,31 @@ def test_position_tick_service_is_none_when_market_data_service_injected() -> No
         execution_engine=Mock(spec=ExecutionEngine),
     )
     assert orch.cycle_runner._position_tick_service is None  # type: ignore[attr-defined]
+
+
+def test_default_construction_wires_orphan_order_scanner(sqlite_session: Session) -> None:
+    """Sin nada inyectado, arma un OrphanOrderScanner (F16 [115]) atado al mismo
+    adapter/PositionManager/state_machine/bot_run que el resto del pipeline —
+    mismo criterio que PositionTickService: reusar el estado real compartido,
+    no instanciar uno divergente."""
+    orch = Orchestrator(session=sqlite_session)
+
+    scanner = orch.cycle_runner._orphan_order_scanner  # type: ignore[attr-defined]
+    assert isinstance(scanner, OrphanOrderScanner)
+    assert scanner._adapter is orch.position_manager._adapter  # type: ignore[attr-defined]
+    assert scanner._position_manager is orch.position_manager  # type: ignore[attr-defined]
+    assert scanner._state_machine is orch.state_machine  # type: ignore[attr-defined]
+    assert scanner._bot_run_id == orch._bot_run.id  # type: ignore[attr-defined]
+
+
+def test_orphan_order_scanner_is_none_when_market_data_service_injected() -> None:
+    """Mismo criterio que position_tick_service: si el caller inyecta su propio
+    market_data_service/execution_engine, es dueno de ese ciclo de vida."""
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
+    assert orch.cycle_runner._orphan_order_scanner is None  # type: ignore[attr-defined]
 
 
 def test_only_market_data_service_injected_raises() -> None:

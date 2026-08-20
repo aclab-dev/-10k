@@ -36,13 +36,14 @@ from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.schemas import MarketSnapshot
 from backend.market_regime.engine import MarketRegimeEngine
+from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.tick_service import PositionTickService
 from backend.quant_signals.engine import compute_quant_signals
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
-from backend.trading_core.bot_state_machine import BotState, BotStateMachine
+from backend.trading_core.bot_state_machine import BotStateMachine, resolve_persisted_state
 from backend.volatility.engine import compute_volatility_assessment
 
 log = structlog.get_logger(__name__)
@@ -64,6 +65,7 @@ class CycleRunner:
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
         position_tick_service: PositionTickService | None = None,
+        orphan_order_scanner: OrphanOrderScanner | None = None,
         market_data_service: MarketDataCycleService | None = None,
         execution_engine: ExecutionEngine | None = None,
         gpt_client: GPTClient | None = None,
@@ -79,6 +81,7 @@ class CycleRunner:
         self._interval_seconds = interval_seconds
         self._heartbeat_file = heartbeat_file
         self._position_tick_service = position_tick_service
+        self._orphan_order_scanner = orphan_order_scanner
         self._market_data_service = market_data_service
         self._execution_engine = execution_engine
         self._shutdown_event = threading.Event()
@@ -191,9 +194,8 @@ class CycleRunner:
             return
         if latest is None:
             return
-        try:
-            persisted = BotState(latest.state)
-        except ValueError:
+        persisted = resolve_persisted_state(latest.state)
+        if persisted is None:
             # Fail-open a proposito, asimetrico respecto del endpoint (que
             # devuelve 500 ante el mismo dato corrupto en
             # routes_kill_switch._current_bot_state): frenar el tick acá
@@ -217,6 +219,9 @@ class CycleRunner:
         para que cada capa trabaje con el snapshot mas reciente. MarketDataCycleService
         y PositionTickService aislan fallas por simbolo internamente. El pipeline
         de decision también aísla fallas por símbolo para mantener el heartbeat vivo.
+        El scanner de ordenes huerfanas corre despues de tickear posiciones (F16
+        [115]): reconcilia contra el estado ya actualizado de ese ciclo, y aisla
+        fallas por simbolo internamente igual que los demas servicios tickeados.
         """
         self._heartbeat_file.touch(exist_ok=True)
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
@@ -226,6 +231,8 @@ class CycleRunner:
             snapshots = self._market_data_service.tick_all()
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
+        if self._orphan_order_scanner is not None:
+            self._orphan_order_scanner.scan_and_enforce()
 
         if self._decision_pipeline_ready and snapshots:
             asyncio.run(self._run_decision_pipeline(snapshots))
@@ -255,6 +262,13 @@ class CycleRunner:
         disparado mientras el simbolo anterior estaba en medio de su llamada
         a GPT. Es un SELECT extra por simbolo contra una tabla indexada por
         bot_run_id — al lado de una llamada a GPT no se nota.
+
+        can_trade() se chequea aparte de is_running() (PDF 4.8: solo ACTIVE abre
+        posiciones nuevas; SAFE_MODE administra las existentes pero no abre otras).
+        A diferencia de is_running(), que aborta el resto del tick entero, un
+        can_trade()==False solo saltea ese simbolo y sigue con el resto: SAFE_MODE
+        no detiene el loop (is_running() sigue True), asi que PositionTickService
+        debe seguir gestionando salidas de simbolos posteriores en el mismo tick.
         """
         assert self._session is not None
         for snapshot in snapshots:
@@ -266,6 +280,13 @@ class CycleRunner:
                     remaining_symbol=snapshot.symbol,
                 )
                 return
+            if not self._state_machine.can_trade():
+                log.info(
+                    "cycle_runner.new_entries_blocked_by_state",
+                    state=self._state_machine.state.value,
+                    symbol=snapshot.symbol,
+                )
+                continue
             try:
                 with self._session.begin_nested():
                     await self._process_symbol(snapshot)

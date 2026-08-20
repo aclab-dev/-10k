@@ -107,6 +107,18 @@ class OrderRepository(BaseRepository[Order]):
         )
         return list(self._session.scalars(stmt))
 
+    def list_known_client_order_ids(self, client_order_ids: list[str]) -> set[str]:
+        """Subconjunto de `client_order_ids` que existen en la tabla, en una sola query.
+
+        Pensado para reconciliacion contra el exchange (OrphanOrderScanner): evita
+        N llamadas a get_by_client_order_id, una por orden activa devuelta por el
+        adapter.
+        """
+        if not client_order_ids:
+            return set()
+        stmt = select(Order.client_order_id).where(Order.client_order_id.in_(client_order_ids))
+        return set(self._session.scalars(stmt))
+
 
 class PositionRepository(BaseRepository[Position]):
     model = Position

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
+from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.tick_service import PositionTickService
 from backend.storage.database import Base
 from backend.storage.models import BotRun
@@ -176,6 +177,49 @@ def test_tick_calls_market_data_before_position_tick_service(heartbeat_file: Pat
     runner._tick()  # type: ignore[attr-defined]
 
     assert call_order == ["market_data", "position"]
+
+
+def test_tick_calls_orphan_order_scanner_when_provided(heartbeat_file: Path) -> None:
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    scanner = Mock(spec=OrphanOrderScanner)
+    runner = CycleRunner(
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, orphan_order_scanner=scanner
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    scanner.scan_and_enforce.assert_called_once()
+
+
+def test_tick_without_orphan_order_scanner_still_heartbeats(heartbeat_file: Path) -> None:
+    """Compat: orphan_order_scanner es opcional y default None."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert heartbeat_file.exists()
+
+
+def test_tick_calls_position_tick_service_before_orphan_order_scanner(heartbeat_file: Path) -> None:
+    """El scanner reconcilia contra el estado de posiciones ya actualizado del ciclo."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    call_order: list[str] = []
+    tick_service = Mock(spec=PositionTickService)
+    tick_service.tick_all.side_effect = lambda: call_order.append("position")
+    scanner = Mock(spec=OrphanOrderScanner)
+    scanner.scan_and_enforce.side_effect = lambda: call_order.append("orphan_scan")
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        position_tick_service=tick_service,
+        orphan_order_scanner=scanner,
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert call_order == ["position", "orphan_scan"]
 
 
 def test_execution_engine_is_stored_and_exposed_but_not_auto_invoked(
@@ -390,3 +434,57 @@ def test_run_decision_pipeline_aborts_remaining_symbols_after_kill_switch(
 
     assert processed == ["BTCUSDT"]
     assert sm.state == BotState.KILL_SWITCH_TRIGGERED
+
+
+def test_run_decision_pipeline_skips_new_entries_in_safe_mode_but_keeps_looping(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """F16 [115]: SAFE_MODE administra posiciones existentes pero no abre nuevas
+    (BotStateMachine.can_trade()). A diferencia de is_running()==False (que aborta
+    el resto del tick), SAFE_MODE debe seguir evaluando los simbolos siguientes —
+    is_running() sigue True, asi que PositionTickService debe seguir gestionando
+    salidas del resto de simbolos en el mismo tick."""
+    bot_run = _make_bot_run(db_session)
+    db_session.add(
+        BotStateRow(
+            bot_run_id=bot_run.id,
+            state="SAFE_MODE",
+            previous_state="ACTIVE",
+            reason="ordenes huerfanas detectadas",
+        )
+    )
+    db_session.commit()
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    processed: list[str] = []
+
+    async def fake_process_symbol(snapshot: Mock) -> None:
+        processed.append(snapshot.symbol)
+
+    runner._process_symbol = fake_process_symbol  # type: ignore[method-assign]
+
+    sync_calls = 0
+    original_sync = runner._sync_state_from_db
+
+    def spy_sync() -> None:
+        nonlocal sync_calls
+        sync_calls += 1
+        original_sync()
+
+    runner._sync_state_from_db = spy_sync  # type: ignore[method-assign]
+
+    snapshots = [Mock(symbol="BTCUSDT"), Mock(symbol="ETHUSDT")]
+    asyncio.run(runner._run_decision_pipeline(snapshots))  # type: ignore[attr-defined]
+
+    assert processed == []
+    assert sm.state == BotState.SAFE_MODE
+    # Se resincronizo y evaluo cada simbolo (no aborto tras el primero, a
+    # diferencia del caso KILL_SWITCH_TRIGGERED de arriba).
+    assert sync_calls == 2
