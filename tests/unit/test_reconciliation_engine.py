@@ -12,9 +12,12 @@ from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import (
     OrderRequest,
     OrderSide,
+    OrderStatus,
     OrderType,
 )
-from backend.paper.reconciliation import (
+from backend.position_manager.manager import PositionManager
+from backend.position_manager.schemas import PositionConfig
+from backend.reconciliation.engine import (
     DiscrepancyType,
     ReconciliationEngine,
 )
@@ -33,24 +36,28 @@ def _make_engine(
     adapter: PaperAdapter,
     db_positions: list | None = None,
     db_pending: list | None = None,
-    db_filled: list | None = None,
-    db_cancelled: list | None = None,
+    position_manager: PositionManager | None = None,
     decimal_tolerance: Decimal | None = None,
 ) -> ReconciliationEngine:
     position_repo = MagicMock()
     position_repo.list_open.return_value = db_positions or []
 
+    db_pending = db_pending or []
     order_repo = MagicMock()
-    order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: {
-        "PENDING": db_pending or [],
-        "FILLED": db_filled or [],
-        "CANCELLED": db_cancelled or [],
-    }.get(status, [])
+    order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: (
+        db_pending if status == "PENDING" else []
+    )
+    known_ids_by_coid = {o.client_order_id for o in db_pending}
+    order_repo.list_known_client_order_ids.side_effect = lambda coids: {
+        c for c in coids if c in known_ids_by_coid
+    }
 
     kwargs = {}
     if decimal_tolerance is not None:
         kwargs["decimal_tolerance"] = decimal_tolerance
-    return ReconciliationEngine(adapter, position_repo, order_repo, **kwargs)
+    return ReconciliationEngine(
+        adapter, position_repo, order_repo, position_manager=position_manager, **kwargs
+    )
 
 
 def _market_buy(
@@ -109,12 +116,11 @@ def test_consistent_position_matches_db(adapter: PaperAdapter) -> None:
     req = _market_buy(price=Decimal("50000"), quantity=Decimal("0.01"))
     adapter.place_order(req)
 
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
     db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
 
-    db_ord = _db_order(req.client_order_id, "BTCUSDT", "FILLED")
-
-    engine = _make_engine(adapter, db_positions=[db_pos], db_filled=[db_ord])
+    engine = _make_engine(adapter, db_positions=[db_pos])
     report = engine.reconcile(BOT_RUN_ID)
     assert report.is_consistent
 
@@ -170,7 +176,8 @@ def test_position_missing_in_adapter(adapter: PaperAdapter) -> None:
 def test_position_quantity_mismatch(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(quantity=Decimal("0.01"), price=Decimal("50000")))
 
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
     db_pos = _db_position("BTCUSDT", pos.quantity * 2, pos.entry_price)
 
     engine = _make_engine(adapter, db_positions=[db_pos])
@@ -190,7 +197,8 @@ def test_position_quantity_mismatch(adapter: PaperAdapter) -> None:
 def test_position_price_mismatch(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
 
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
     db_pos = _db_position("BTCUSDT", pos.quantity, Decimal("45000"))
 
     engine = _make_engine(adapter, db_positions=[db_pos])
@@ -209,7 +217,8 @@ def test_position_price_mismatch(adapter: PaperAdapter) -> None:
 def test_position_side_mismatch(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
 
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
     # DB registra SELL, adapter tiene BUY
     db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price, direction="SELL")
 
@@ -229,7 +238,8 @@ def test_position_side_mismatch(adapter: PaperAdapter) -> None:
 def test_position_multiple_discrepancies_same_symbol(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(quantity=Decimal("0.01"), price=Decimal("50000")))
 
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
     db_pos = _db_position("BTCUSDT", pos.quantity * 2, Decimal("45000"))
 
     engine = _make_engine(adapter, db_positions=[db_pos])
@@ -244,7 +254,8 @@ def test_multiple_symbols_independent(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy("BTCUSDT", price=Decimal("50000")))
     adapter.place_order(_market_buy("ETHUSDT", price=Decimal("3000")))
 
-    btc_pos = adapter._positions["BTCUSDT"]
+    btc_pos = adapter.get_position("BTCUSDT")
+    assert btc_pos is not None
     db_btc = _db_position("BTCUSDT", btc_pos.quantity, btc_pos.entry_price)
     # ETH is missing in DB
     engine = _make_engine(adapter, db_positions=[db_btc])
@@ -256,15 +267,115 @@ def test_multiple_symbols_independent(adapter: PaperAdapter) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Protecciones (PositionManager)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_protection_without_position_manager_is_noop(adapter: PaperAdapter) -> None:
+    """Sin PositionManager inyectado, no se chequea protección (compatibilidad)."""
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    engine = _make_engine(adapter, db_positions=[db_pos])
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
+def test_missing_protection_detected(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)  # sin config para BTCUSDT
+    engine = _make_engine(adapter, db_positions=[db_pos], position_manager=position_manager)
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert not report.is_consistent
+    disc = next(
+        d
+        for d in report.position_discrepancies
+        if d.discrepancy_type == DiscrepancyType.MISSING_PROTECTION
+    )
+    assert disc.symbol == "BTCUSDT"
+
+
+def test_protection_present_no_discrepancy(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)
+    position_manager.set_config(
+        PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000"), take_profit=Decimal("55000"))
+    )
+    engine = _make_engine(adapter, db_positions=[db_pos], position_manager=position_manager)
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
+def test_manual_sl_change_detected_when_adapter_reports_it(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)
+    position_manager.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+    # PaperAdapter nunca reporta stop_loss propio: simulamos un adapter real que sí lo hace.
+    adapter.get_position = MagicMock(  # type: ignore[method-assign]
+        return_value=pos.model_copy(update={"stop_loss": Decimal("47000")})
+    )
+
+    engine = _make_engine(adapter, db_positions=[db_pos], position_manager=position_manager)
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert not report.is_consistent
+    disc = next(
+        d
+        for d in report.position_discrepancies
+        if d.discrepancy_type == DiscrepancyType.MANUAL_SL_TP_CHANGE
+    )
+    assert disc.symbol == "BTCUSDT"
+    assert disc.adapter_stop_loss == Decimal("47000")
+    assert disc.config_stop_loss == Decimal("48000")
+
+
+def test_manual_sl_change_not_flagged_when_adapter_silent(adapter: PaperAdapter) -> None:
+    """PaperAdapter no reporta SL propio: no debe compararse contra PositionConfig."""
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)
+    position_manager.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+    engine = _make_engine(adapter, db_positions=[db_pos], position_manager=position_manager)
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
+# ---------------------------------------------------------------------------
 # Discrepancias de órdenes
 # ---------------------------------------------------------------------------
 
 
 def test_order_missing_in_db(adapter: PaperAdapter) -> None:
-    req = _market_buy(price=Decimal("50000"))
-    adapter.place_order(req)
+    req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.01"),
+        price=Decimal("48000"),
+    )
+    adapter.place_order(req)  # queda PENDING (LIMIT) y visible via get_open_orders
 
-    engine = _make_engine(adapter, db_positions=[], db_filled=[], db_pending=[], db_cancelled=[])
+    engine = _make_engine(adapter, db_positions=[], db_pending=[])
     report = engine.reconcile(BOT_RUN_ID)
 
     order_discs = [
@@ -272,7 +383,7 @@ def test_order_missing_in_db(adapter: PaperAdapter) -> None:
     ]
     assert len(order_discs) == 1
     assert order_discs[0].client_order_id == req.client_order_id
-    assert order_discs[0].adapter_status == "FILLED"
+    assert order_discs[0].adapter_status == "PENDING"
 
 
 def test_order_missing_in_adapter(adapter: PaperAdapter) -> None:
@@ -292,25 +403,7 @@ def test_order_missing_in_adapter(adapter: PaperAdapter) -> None:
     assert discs[0].db_status == "PENDING"
 
 
-def test_order_status_mismatch_filled_vs_pending(adapter: PaperAdapter) -> None:
-    req = _market_buy(price=Decimal("50000"))
-    adapter.place_order(req)  # status=FILLED in adapter
-
-    db_ord = _db_order(req.client_order_id, "BTCUSDT", "PENDING")
-    engine = _make_engine(adapter, db_pending=[db_ord])
-    report = engine.reconcile(BOT_RUN_ID)
-
-    discs = [
-        d
-        for d in report.order_discrepancies
-        if d.discrepancy_type == DiscrepancyType.STATUS_MISMATCH
-    ]
-    assert len(discs) == 1
-    assert discs[0].adapter_status == "FILLED"
-    assert discs[0].db_status == "PENDING"
-
-
-def test_order_status_mismatch_cancelled_vs_pending(adapter: PaperAdapter) -> None:
+def test_order_consistent_pending_matches_db(adapter: PaperAdapter) -> None:
     req = OrderRequest(
         symbol="BTCUSDT",
         side=OrderSide.BUY,
@@ -319,37 +412,39 @@ def test_order_status_mismatch_cancelled_vs_pending(adapter: PaperAdapter) -> No
         price=Decimal("48000"),
     )
     adapter.place_order(req)
-    adapter.cancel_order(req.client_order_id)  # status=CANCELLED in adapter
 
     db_ord = _db_order(req.client_order_id, "BTCUSDT", "PENDING")
     engine = _make_engine(adapter, db_pending=[db_ord])
-    report = engine.reconcile(BOT_RUN_ID)
-
-    discs = [
-        d
-        for d in report.order_discrepancies
-        if d.discrepancy_type == DiscrepancyType.STATUS_MISMATCH
-    ]
-    assert len(discs) == 1
-    assert discs[0].adapter_status == "CANCELLED"
-    assert discs[0].db_status == "PENDING"
-
-
-def test_order_consistent_cancelled_matches_db(adapter: PaperAdapter) -> None:
-    req = OrderRequest(
-        symbol="BTCUSDT",
-        side=OrderSide.BUY,
-        order_type=OrderType.LIMIT,
-        quantity=Decimal("0.01"),
-        price=Decimal("48000"),
-    )
-    adapter.place_order(req)
-    adapter.cancel_order(req.client_order_id)
-
-    db_ord = _db_order(req.client_order_id, "BTCUSDT", "CANCELLED")
-    engine = _make_engine(adapter, db_cancelled=[db_ord])
     report = engine.reconcile(BOT_RUN_ID)
     assert report.is_consistent
+
+
+def test_partial_fill_detected(adapter: PaperAdapter) -> None:
+    req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.01"),
+        price=Decimal("48000"),
+    )
+    adapter.place_order(req)
+    db_ord = _db_order(req.client_order_id, "BTCUSDT", "PENDING")
+
+    partial_order = adapter.get_open_orders("BTCUSDT")[0].model_copy(
+        update={"status": OrderStatus.PARTIALLY_FILLED, "quantity_filled": Decimal("0.004")}
+    )
+    adapter.get_open_orders = MagicMock(return_value=[partial_order])  # type: ignore[method-assign]
+
+    engine = _make_engine(adapter, db_pending=[db_ord])
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert not report.is_consistent
+    disc = next(
+        d for d in report.order_discrepancies if d.discrepancy_type == DiscrepancyType.PARTIAL_FILL
+    )
+    assert disc.client_order_id == req.client_order_id
+    assert disc.quantity_filled == Decimal("0.004")
+    assert disc.quantity_requested == Decimal("0.01")
 
 
 # ---------------------------------------------------------------------------
@@ -366,70 +461,47 @@ def test_report_is_consistent_property_with_discrepancies(adapter: PaperAdapter)
 
 
 def test_report_total_discrepancies_sums_both(adapter: PaperAdapter) -> None:
-    adapter.place_order(_market_buy(price=Decimal("50000")))
-    # Position missing AND order missing → 2 discrepancies
-    engine = _make_engine(adapter, db_positions=[], db_filled=[], db_pending=[], db_cancelled=[])
+    adapter.place_order(
+        OrderRequest(
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("0.01"),
+            price=Decimal("48000"),
+        )
+    )
+    # Position missing (n/a, LIMIT no abre posicion) AND order missing → 1 discrepancy de orden
+    engine = _make_engine(adapter, db_positions=[], db_pending=[])
     report = engine.reconcile(BOT_RUN_ID)
-    assert report.total_discrepancies == 2
+    assert report.total_discrepancies == 1
 
 
 def test_decimal_tolerance_prevents_false_positive(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
 
     # Price differs by less than default tolerance — should not flag
     tiny_diff = Decimal("0.000000001")
     db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price + tiny_diff)
 
-    req = next(iter(adapter._orders.values()))
-    db_ord = _db_order(req.client_order_id, "BTCUSDT", req.status.value)
-    engine = _make_engine(adapter, db_positions=[db_pos], db_filled=[db_ord])
+    engine = _make_engine(adapter, db_positions=[db_pos])
     report = engine.reconcile(BOT_RUN_ID)
     assert report.is_consistent
 
 
 def test_custom_decimal_tolerance_constructor(adapter: PaperAdapter) -> None:
     adapter.place_order(_market_buy(price=Decimal("50000")))
-    pos = adapter._positions["BTCUSDT"]
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
 
     # With a very loose tolerance, a 1-unit price diff should pass
     db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price + Decimal("0.5"))
-    req = next(iter(adapter._orders.values()))
-    db_ord = _db_order(req.client_order_id, "BTCUSDT", req.status.value)
 
     engine = _make_engine(
         adapter,
         db_positions=[db_pos],
-        db_filled=[db_ord],
         decimal_tolerance=Decimal("1"),
     )
     report = engine.reconcile(BOT_RUN_ID)
     assert report.is_consistent
-
-
-def test_order_fetch_limit_warning_emitted(adapter: PaperAdapter) -> None:
-    """Cuando list_by_status retorna exactamente el límite, se emite un warning estructurado."""
-    from unittest.mock import patch
-
-    from backend.paper.reconciliation import _ORDER_FETCH_LIMIT
-
-    limit_rows = [
-        _db_order(str(uuid.uuid4()), "BTCUSDT", "FILLED") for _ in range(_ORDER_FETCH_LIMIT)
-    ]
-
-    position_repo = MagicMock()
-    position_repo.list_open.return_value = []
-
-    order_repo = MagicMock()
-    order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: (
-        limit_rows if status == "FILLED" else []
-    )
-
-    engine = ReconciliationEngine(adapter, position_repo, order_repo)
-
-    with patch("backend.paper.reconciliation._log") as mock_log:
-        engine.reconcile(BOT_RUN_ID)
-
-    mock_log.warning.assert_called_once()
-    call_args = mock_log.warning.call_args
-    assert call_args[0][0] == "reconciliation.order_fetch_limit_reached"
