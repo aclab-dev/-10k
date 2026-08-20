@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -130,13 +131,45 @@ class TestBotRunRepositoryPostgres:
         assert active is not None
         assert active.id == run.id
 
-    def test_get_active_returns_most_recent_running(self, pg_session: Session) -> None:
-        """Con dos filas RUNNING gana la mas nueva por started_at.
+    def test_second_running_bot_run_violates_single_running_constraint(
+        self, pg_session: Session
+    ) -> None:
+        """F16 [114]: uq_bot_runs_single_running impide una segunda fila RUNNING.
 
-        En Postgres es donde importa: sin order_by, cual devuelve el limit(1)
-        lo elige el planner y puede cambiar entre llamadas. SQLite no reproduce
-        esa libertad, asi que el caso vive tambien aca.
+        Antes de esta constraint, get_active() dependia de un order_by por
+        started_at para desempatar entre dos RUNNING conviviendo — ese escenario
+        ahora es imposible en Postgres: el segundo insert falla en la DB antes de
+        que get_active() tenga que elegir. Concurrencia real (dos transacciones a
+        la vez) se cubre en tests/integration/test_bot_run_concurrency.py.
         """
+        older = _bot_run(pg_session)
+        older.started_at = _now() - timedelta(hours=2)
+        pg_session.flush()
+
+        newest = BotRun(
+            environment="PAPER",
+            app_version="0.1.0",
+            config_snapshot={"test": True},
+            status="RUNNING",
+        )
+        pg_session.add(newest)
+        with pytest.raises(IntegrityError):
+            pg_session.flush()
+        pg_session.rollback()
+
+    def test_get_active_tie_breaks_by_started_at_without_the_constraint(
+        self, pg_session: Session
+    ) -> None:
+        """Defensa de get_active() para un ambiente sin uq_bot_runs_single_running
+        aplicada todavía (migración d92a4c17e8f3 no corrida, o un schema viejo).
+
+        Sin el índice único nada impide dos RUNNING, y el order_by por started_at
+        es lo único que decide cuál gana. Se dropea el índice dentro de la misma
+        transacción del test -- Postgres soporta DDL transaccional, así que el
+        rollback del fixture lo restaura para el resto de la suite.
+        """
+        pg_session.execute(text("DROP INDEX uq_bot_runs_single_running"))
+
         repo = BotRunRepository(pg_session)
         older = _bot_run(pg_session)
         older.started_at = _now() - timedelta(hours=2)

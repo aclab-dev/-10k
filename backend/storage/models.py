@@ -29,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,6 +61,35 @@ class BotRun(Base):
     config_snapshot: Mapped[dict[str, Any]] = mapped_column(PgJSON, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="RUNNING")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # A lo sumo un BotRun RUNNING a la vez (F16 [114], migración d92a4c17e8f3): sin
+    # esto, la convención "a lo sumo un RUNNING" de BotRunRepository.get_active()
+    # solo vive en la app y no resiste dos arranques concurrentes del worker (ej.
+    # ventana de un rolling restart). Este docstring es la fuente única de la
+    # explicación — orchestrator.py y BotRunAlreadyActiveError solo referencian
+    # esta constraint por nombre, no repiten el porqué.
+    #
+    # _SINGLE_RUNNING_PREDICATE va en las dos ramas (Postgres real y el SQLite
+    # in-memory de los tests unitarios) porque sin sqlite_where, `unique=True` se
+    # aplica igual en SQLite pero como índice COMPLETO, no parcial — rechazaría
+    # dos bot_runs con el mismo status cualquiera (ej. dos STOPPED), no solo dos
+    # RUNNING. Ver https://docs.sqlalchemy.org/en/20/dialects/sqlite.html#partial-indexes.
+    #
+    # La migración repite este predicado como string literal en vez de importarlo
+    # de acá: una migración de Alembic tiene que quedar autocontenida y reproducible
+    # tal cual fue escrita, incluso si este modelo cambia de forma más adelante —
+    # importar código de aplicación en curso rompería esa garantía.
+    _SINGLE_RUNNING_PREDICATE = text("status = 'RUNNING'")
+
+    __table_args__ = (
+        Index(
+            "uq_bot_runs_single_running",
+            "status",
+            unique=True,
+            postgresql_where=_SINGLE_RUNNING_PREDICATE,
+            sqlite_where=_SINGLE_RUNNING_PREDICATE,
+        ),
+    )
 
     # relationships
     bot_states: Mapped[list[BotState]] = relationship(back_populates="bot_run")

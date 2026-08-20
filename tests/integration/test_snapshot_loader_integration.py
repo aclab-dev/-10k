@@ -21,12 +21,12 @@ from backend.storage.models import BotRun, MarketSnapshot
 # ---------------------------------------------------------------------------
 
 
-def _bot_run(session: Session) -> BotRun:
+def _bot_run(session: Session, status: str = "RUNNING") -> BotRun:
     run = BotRun(
         environment="PAPER",
         app_version="0.1.0",
         config_snapshot={"test": True},
-        status="RUNNING",
+        status=status,
     )
     session.add(run)
     session.flush()
@@ -150,7 +150,7 @@ class TestSnapshotLoaderIntegration:
 
     def test_load_with_bot_run_id_filter(self, pg_session: Session) -> None:
         run_a = _bot_run(pg_session)
-        run_b = _bot_run(pg_session)
+        run_b = _bot_run(pg_session, status="STOPPED")
         base = datetime(2026, 6, 1, tzinfo=UTC)
         _snapshot(pg_session, run_a.id, "BTCUSDT", base)
         _snapshot(pg_session, run_b.id, "BTCUSDT", base + timedelta(minutes=1))

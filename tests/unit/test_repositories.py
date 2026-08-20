@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.core.config import Environment
@@ -143,18 +144,20 @@ class TestBotRunRepository:
         assert active is not None
         assert active.id == run.id
 
-    def test_get_active_returns_most_recent_running(self, session: Session) -> None:
-        """Con dos RUNNING gana el mas nuevo por started_at, no el orden de insercion.
+    def test_second_running_bot_run_violates_single_running_constraint(
+        self, session: Session
+    ) -> None:
+        """F16 [114]: uq_bot_runs_single_running impide un segundo RUNNING en la DB.
 
-        El viejo se inserta primero a proposito: un limit(1) sin order_by lo
-        devolveria a el, que es exactamente el bug.
+        Antes de esta constraint, get_active() dependia de un order_by por
+        started_at para desempatar entre dos RUNNING conviviendo (ver docstring
+        del metodo) — ese escenario ahora es imposible: el segundo insert falla
+        en la DB, no llega a convivir para que get_active() tenga que elegir.
         """
-        repo = BotRunRepository(session)
         _bot_run(session, status="RUNNING", started_at=_now() - timedelta(hours=2))
-        newest = _bot_run(session, status="RUNNING", started_at=_now())
-        active = repo.get_active()
-        assert active is not None
-        assert active.id == newest.id
+        with pytest.raises(IntegrityError):
+            _bot_run(session, status="RUNNING", started_at=_now())
+        session.rollback()
 
     def test_get_active_ignores_non_running(self, session: Session) -> None:
         repo = BotRunRepository(session)
@@ -561,7 +564,7 @@ class TestModelResponseRepository:
     def test_list_by_bot_run_uses_join(self, session: Session) -> None:
         """list_by_bot_run hace JOIN via model_requests; verificar aislamiento por run."""
         run_a = _bot_run(session)
-        run_b = _bot_run(session)
+        run_b = _bot_run(session, status="STOPPED")
         self._request_and_response(session, run_a)
         self._request_and_response(session, run_a)
         self._request_and_response(session, run_b)

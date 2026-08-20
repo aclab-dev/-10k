@@ -360,6 +360,78 @@ def test_startup_closes_orphan_running_bot_run(sqlite_session: Session) -> None:
     assert active.id == second_id
 
 
+def _mock_flush_raising_integrity_error(sqlite_session: Session) -> None:
+    """Reemplaza flush() para que falle sólo al intentar insertar el BotRun
+    nuevo (no en autoflushes previos de _resolve_carried_over_state/
+    _close_orphan_runs), simulando el IntegrityError de
+    uq_bot_runs_single_running sin depender de que SQLite lo aplique de
+    verdad (para eso está tests/integration/test_bot_run_concurrency.py,
+    contra Postgres real)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.storage.models import BotRun
+
+    original_flush = sqlite_session.flush
+
+    def _flush(*args: object, **kwargs: object) -> None:
+        if any(isinstance(obj, BotRun) for obj in sqlite_session.new):
+            raise IntegrityError(
+                "INSERT INTO bot_runs ...",
+                {},
+                Exception("UNIQUE constraint failed: bot_runs.status"),
+            )
+        original_flush()
+
+    sqlite_session.flush = _flush  # type: ignore[method-assign]
+
+
+def test_prepare_paper_context_raises_when_bot_run_insert_violates_running_constraint(
+    sqlite_session: Session,
+) -> None:
+    """El IntegrityError de uq_bot_runs_single_running (F16 [114]) al insertar el
+    BotRun nuevo debe traducirse a BotRunAlreadyActiveError sólo después de
+    re-verificar que hay otro BotRun activo — no a ciegas por el solo hecho de
+    haber capturado un IntegrityError (ver el test hermano más abajo para el
+    caso en que esa verificación NO confirma la carrera).
+    """
+    from unittest.mock import MagicMock, patch
+
+    from backend.storage.models import BotRun
+    from backend.storage.repositories.bot import BotRunRepository
+    from backend.trading_core.orchestrator import BotRunAlreadyActiveError
+
+    _mock_flush_raising_integrity_error(sqlite_session)
+
+    concurrent = MagicMock(spec=BotRun)
+    concurrent.id = "concurrent-run-id"
+
+    with patch.object(BotRunRepository, "get_active", return_value=concurrent):
+        with pytest.raises(BotRunAlreadyActiveError, match="concurrent-run-id"):
+            Orchestrator(session=sqlite_session)
+
+
+def test_prepare_paper_context_reraises_integrity_error_when_no_concurrent_run_found(
+    sqlite_session: Session,
+) -> None:
+    """Un IntegrityError que NO sea la carrera de uq_bot_runs_single_running (ej.
+    otra constraint, un bug) no debe reinterpretarse como
+    BotRunAlreadyActiveError: si la re-verificación (get_active()) no encuentra
+    otro BotRun activo que explique el choque, el error original se relanza
+    tal cual — no se lo puede confundir con un caso que no es.
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.storage.repositories.bot import BotRunRepository
+
+    _mock_flush_raising_integrity_error(sqlite_session)
+
+    with patch.object(BotRunRepository, "get_active", return_value=None):
+        with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
+            Orchestrator(session=sqlite_session)
+
+
 def test_startup_carries_over_kill_switch_from_orphan_run(sqlite_session: Session) -> None:
     """Cerrar el huerfano no debe romper el carry-over: el estado se arrastra por
     bot_state del run mas reciente, no por su status."""

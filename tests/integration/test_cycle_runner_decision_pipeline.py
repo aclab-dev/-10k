@@ -565,3 +565,43 @@ class TestDecisionPipelineMultiSymbolIsolation:
             "La ModelRequest de BTCUSDT debe sobrevivir al rollback del savepoint de ETHUSDT"
         )
         _close_bot_run(pg_session, bot_run)
+
+
+@pytest.mark.integration
+class TestDecisionPipelineRetryIdempotency:
+    """Idempotencia end-to-end (F16 [114]): un reintento del mismo ciclo no duplica Order/Trade.
+
+    Simula el escenario de un retry a nivel de ciclo (ej. el worker reprocesa el mismo
+    tick tras un crash antes de que el resultado se reporte) invocando `_tick()` dos
+    veces con el mismo ModelDecision (mismo decision_id) devuelto por GPT. La cadena
+    completa Aggregator → RiskEngine → ExecutionEngine debe volver a evaluar sin
+    romper, pero ExecutionEngine debe detectar el client_order_id ya persistido
+    (== decision_id) y no insertar una segunda Order/Trade.
+    """
+
+    def test_second_tick_with_same_decision_does_not_duplicate_order(
+        self, pg_session: Session
+    ) -> None:
+        from backend.storage.repositories.trades import OrderRepository
+
+        bot_run = _build_bot_run(pg_session)
+        gpt_decision = _make_gpt_decision(DecisionType.LONG)
+        runner = _build_pipeline(pg_session, bot_run, gpt_decision)
+
+        strong_quant = _make_strong_quant_signals()
+        with patch(
+            "backend.trading_core.cycle_runner.compute_quant_signals",
+            return_value=strong_quant,
+        ):
+            runner._tick()
+            runner._tick()
+
+        orders = OrderRepository(pg_session).get_by_client_order_id(gpt_decision.decision_id)
+        assert orders is not None
+
+        trades = TradeRepository(pg_session).list_open(bot_run.id)
+        assert len(trades) == 1, "El segundo tick con el mismo decision_id no debe duplicar Trade"
+        assert trades[0].symbol == _SYMBOL
+
+        assert runner._gpt_client.request.call_count == 2  # type: ignore[union-attr]
+        _close_bot_run(pg_session, bot_run)

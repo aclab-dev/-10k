@@ -16,15 +16,17 @@ class BotRunRepository(BaseRepository[BotRun]):
     def get_active(self) -> BotRun | None:
         """Devuelve el BotRun RUNNING mas reciente, si existe.
 
-        El invariante es "a lo sumo un RUNNING" y lo sostiene
-        close_orphan_running() al arrancar el worker, pero el order_by no es
-        redundante: entre que un worker nuevo cierra los huerfanos y termina de
-        insertar su propio bot_run hay una ventana en la que un lector podria
-        ver dos filas RUNNING. Sin orden explicito, cual de las dos gana lo
-        decide el planner de Postgres y puede cambiar entre llamadas — y la API
-        (get_current_bot_run) y el worker tienen que coincidir en que bot_run
-        miran, o el kill switch escribe el estado de un run que nadie sincroniza.
-        Mismo criterio que get_most_recent(): gana el mas nuevo.
+        El invariante "a lo sumo un RUNNING" lo sostiene la DB: el indice unico
+        parcial uq_bot_runs_single_running (migracion d92a4c17e8f3, F16 [114])
+        rechaza cualquier segundo insert con status='RUNNING' mientras el
+        primero siga en ese estado, asi que en operacion normal nunca hay mas
+        de una fila para desempatar aca.
+
+        El order_by no es redundante igual: es defensa ante datos de antes de
+        esa migracion (un ambiente viejo con RUNNING duplicados que la
+        migracion no haya limpiado) y deja a get_active() con el mismo
+        criterio de desempate que get_most_recent() — gana el mas nuevo — en
+        vez de dejarlo en manos del planner de Postgres.
         """
         stmt = (
             select(BotRun)
