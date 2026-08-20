@@ -1,10 +1,19 @@
 """OrphanOrderScanner — reconciliación periódica exchange vs. estado local (F16 [115]).
 
 Compara, símbolo por símbolo, lo que el exchange reporta (vía ExchangeAdapter)
-contra lo que el bot espera localmente (PositionManager). Dos casos de orfandad:
+contra lo que el bot espera localmente (PositionManager + tabla `orders`). Dos
+casos de orfandad:
 
-- UNEXPLAINED_ORDER: hay órdenes activas en el exchange sin una posición que
-  las explique.
+- UNEXPLAINED_ORDER: hay órdenes activas en el exchange sin ninguna fila local
+  en `orders` (por client_order_id) que las explique. No alcanza con "sin
+  posición abierta": una entrada LIMIT legítima (ExecutionEngine._build_order_request,
+  decision.entry_type == EntryType.LIMIT) queda PENDING en el exchange hasta
+  que se llena — PaperAdapter no simula el fill de non-MARKET (_register_pending_order) —
+  y sin este cruce el scanner la marcaría huérfana en el tick siguiente a
+  colocarla, disparando SAFE_MODE sobre una entrada normal del propio bot.
+  ExecutionEngine persiste una fila `Order` con `client_order_id=decision.decision_id`
+  para toda orden que coloca (engine.py linea 313), así que cualquier orden que
+  el bot reconoce tiene esa fila — lo que no la tiene es genuinamente ajeno.
 - UNPROTECTED_POSITION: hay una posición abierta en el exchange pero
   PositionManager no tiene un PositionConfig vigilándola. En este sistema el
   SL/TP nunca se materializa como orden STOP resting en el exchange (se
@@ -35,6 +44,7 @@ from backend.storage.models import BotRun, SystemEvent
 from backend.storage.models import BotState as BotStateRow
 from backend.storage.repositories.audit import SystemEventRepository
 from backend.storage.repositories.bot import BotStateRepository
+from backend.storage.repositories.trades import OrderRepository
 from backend.trading_core.bot_state_machine import (
     BotState,
     BotStateMachine,
@@ -67,10 +77,16 @@ class OrphanOrderScanner:
         self._session = session
         self._bot_run_id = bot_run_id
         self._symbols = tuple(sorted(symbols or ALLOWED_SYMBOLS))
+        self._order_repo = OrderRepository(session)
 
     def scan_all(self) -> list[OrphanFinding]:
         """Escanea todos los símbolos configurados. Aísla fallas por símbolo:
         un error de transporte en uno no interrumpe el resto del escaneo.
+
+        Nota de I/O: get_by_client_order_id() es una lectura a DB por orden
+        abierta, además de las dos llamadas al adapter por símbolo. Con a lo
+        sumo unas pocas órdenes activas por símbolo entre los 5 pares
+        permitidos, el costo es marginal frente al intervalo de tick (10s+).
         """
         findings: list[OrphanFinding] = []
         for symbol in self._symbols:
@@ -81,13 +97,19 @@ class OrphanOrderScanner:
                 _log.error("orphan_order_scanner.symbol_scan_failed", symbol=symbol, exc_info=True)
                 continue
 
-            if orders and position is None:
+            unrecognized = [
+                o
+                for o in orders
+                if self._order_repo.get_by_client_order_id(o.client_order_id) is None
+            ]
+            if unrecognized:
                 findings.append(
                     OrphanFinding(
                         symbol=symbol,
                         reason=OrphanReason.UNEXPLAINED_ORDER,
                         detail=(
-                            f"{len(orders)} orden(es) activa(s) en el exchange sin posicion abierta"
+                            f"{len(unrecognized)} orden(es) activa(s) en el exchange sin fila "
+                            "local en 'orders' (client_order_id desconocido)"
                         ),
                     )
                 )

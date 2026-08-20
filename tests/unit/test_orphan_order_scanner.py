@@ -12,7 +12,7 @@ from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
 from backend.orphan_order_scanner import OrphanOrderScanner, OrphanReason
 from backend.position_manager import PositionConfig, PositionManager
 from backend.storage.models import BotState as BotStateRow
-from backend.storage.models import SystemEvent
+from backend.storage.models import Order, SystemEvent
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from tests.unit.conftest import make_bot_run, make_bot_state
 
@@ -34,10 +34,14 @@ def _open_long(adapter: PaperAdapter, symbol: str, qty: Decimal, price: Decimal)
     )
 
 
-def _place_pending_limit(adapter: PaperAdapter, symbol: str, qty: Decimal, price: Decimal) -> None:
-    """LIMIT muy por debajo del mercado: queda PENDING sin autofill (ver PaperAdapter)."""
+def _place_pending_limit(adapter: PaperAdapter, symbol: str, qty: Decimal, price: Decimal) -> str:
+    """LIMIT muy por debajo del mercado: queda PENDING sin autofill (ver PaperAdapter).
+
+    Devuelve el client_order_id, para que el caller decida si lo persiste como
+    fila local `Order` (entrada reconocida) o lo deja sin registrar (huerfana).
+    """
     adapter.set_leverage(symbol, 1)
-    adapter.place_order(
+    result = adapter.place_order(
         OrderRequest(
             symbol=symbol,
             side=OrderSide.BUY,
@@ -46,6 +50,28 @@ def _place_pending_limit(adapter: PaperAdapter, symbol: str, qty: Decimal, price
             price=price,
         )
     )
+    return result.client_order_id
+
+
+def _persist_local_order(
+    session: Session, bot_run_id: str, *, client_order_id: str, symbol: str, quantity: Decimal
+) -> Order:
+    """Simula lo que ExecutionEngine.execute_approved_plan persiste al colocar una
+    orden (engine.py linea 313): la fila que hace que el scanner reconozca la
+    orden como propia en vez de marcarla huerfana."""
+    order = Order(
+        bot_run_id=bot_run_id,
+        client_order_id=client_order_id,
+        symbol=symbol,
+        environment="PAPER",
+        order_type="LIMIT",
+        side="BUY",
+        quantity=quantity,
+        status="PENDING",
+    )
+    session.add(order)
+    session.flush()
+    return order
 
 
 class _FlakyPositionAdapter(PaperAdapter):
@@ -108,6 +134,28 @@ class TestScanAll:
         assert len(findings) == 1
         assert findings[0].symbol == "BTCUSDT"
         assert findings[0].reason == OrphanReason.UNEXPLAINED_ORDER
+
+    def test_does_not_flag_a_known_pending_limit_entry(self, session: Session) -> None:
+        """Regresion: una entrada LIMIT legitima del propio bot (GPT eligiendo
+        EntryType.LIMIT) queda PENDING en el exchange hasta que se llena —
+        PaperAdapter no simula fills de non-MARKET. Sin cruzar contra la fila
+        local `orders` (lo que persiste ExecutionEngine al colocarla), el scanner
+        la marcaria huerfana en el primer tick posterior y dispararia SAFE_MODE
+        sobre una entrada normal, no una orfandad real."""
+        bot_run = make_bot_run(session)
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("5000"))
+        client_order_id = _place_pending_limit(adapter, "BTCUSDT", Decimal("1"), Decimal("1"))
+        _persist_local_order(
+            session,
+            bot_run.id,
+            client_order_id=client_order_id,
+            symbol="BTCUSDT",
+            quantity=Decimal("1"),
+        )
+        pm = PositionManager(adapter)
+        scanner = _scanner(adapter, pm, session, bot_run.id)
+
+        assert scanner.scan_all() == []
 
     def test_detects_unprotected_position_without_config(self, session: Session) -> None:
         bot_run = make_bot_run(session)
