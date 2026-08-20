@@ -25,7 +25,10 @@ casos de orfandad:
 
 Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE replicando el
 patrón de routes_kill_switch.py (lock de fila del BotRun, transición validada
-por la state machine, persistencia atómica de BotState + SystemEvent).
+por la state machine, persistencia atómica de BotState + SystemEvent). El
+estado en memoria se muta recién después de que el commit tiene éxito, no
+antes: si la persistencia falla, memoria y DB no deben divergir (ver
+_trigger_safe_mode).
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ from backend.storage.repositories.trades import OrderRepository
 from backend.trading_core.bot_state_machine import (
     BotState,
     BotStateMachine,
-    InvalidStateTransitionError,
+    resolve_persisted_state,
 )
 
 _log = structlog.get_logger(__name__)
@@ -82,11 +85,6 @@ class OrphanOrderScanner:
     def scan_all(self) -> list[OrphanFinding]:
         """Escanea todos los símbolos configurados. Aísla fallas por símbolo:
         un error de transporte en uno no interrumpe el resto del escaneo.
-
-        Nota de I/O: get_by_client_order_id() es una lectura a DB por orden
-        abierta, además de las dos llamadas al adapter por símbolo. Con a lo
-        sumo unas pocas órdenes activas por símbolo entre los 5 pares
-        permitidos, el costo es marginal frente al intervalo de tick (10s+).
         """
         findings: list[OrphanFinding] = []
         for symbol in self._symbols:
@@ -97,11 +95,11 @@ class OrphanOrderScanner:
                 _log.error("orphan_order_scanner.symbol_scan_failed", symbol=symbol, exc_info=True)
                 continue
 
-            unrecognized = [
-                o
-                for o in orders
-                if self._order_repo.get_by_client_order_id(o.client_order_id) is None
-            ]
+            # Una sola query por símbolo (IN) en vez de una por orden activa.
+            known_ids = self._order_repo.list_known_client_order_ids(
+                [o.client_order_id for o in orders]
+            )
+            unrecognized = [o for o in orders if o.client_order_id not in known_ids]
             if unrecognized:
                 findings.append(
                     OrphanFinding(
@@ -161,6 +159,11 @@ class OrphanOrderScanner:
     def _trigger_safe_mode(self, findings: list[OrphanFinding]) -> None:
         # Lock de fila: evita una carrera con un kill switch manual disparado desde
         # la API en el mismo instante (mismo criterio que routes_kill_switch.py).
+        # A partir de acá, TODO return debe soltar la transaccion (rollback): sin
+        # eso el lock FOR UPDATE queda abierto hasta el proximo commit en esta
+        # misma sesion de larga vida del worker, y puede bloquear indefinidamente
+        # al kill switch manual, que toma el mismo lock sobre el mismo BotRun
+        # (review PR #121).
         bot_run = self._session.get(BotRun, self._bot_run_id, with_for_update=True)
         if bot_run is None or bot_run.status != "RUNNING":
             _log.warning(
@@ -168,49 +171,52 @@ class OrphanOrderScanner:
                 bot_run_id=self._bot_run_id,
                 status=bot_run.status if bot_run else None,
             )
+            self._session.rollback()
             return
 
         latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
-        if latest is None:
-            current = BotState.ACTIVE
-        else:
-            try:
-                current = BotState(latest.state)
-            except ValueError:
-                # Dato corrupto en bot_state: no hay forma segura de mapearlo a una
-                # transicion valida (mismo criterio que routes_kill_switch._current_bot_state,
-                # que ante esto devuelve 500 en vez de fabricar un estado falso). Acá no hay
-                # HTTP al que responder — el caller es CycleRunner._tick(), sin try/except
-                # propio — asi que la falla debe quedar contenida acá: loguear y no disparar,
-                # en vez de dejar el ValueError sin atrapar y tumbar el loop del worker entero.
-                _log.error(
-                    "orphan_order_scanner.unknown_persisted_state",
-                    bot_run_id=self._bot_run_id,
-                    state=latest.state,
-                )
-                return
+        current = resolve_persisted_state(latest.state if latest is not None else None)
+        if current is None:
+            # Dato corrupto en bot_state: no hay forma segura de mapearlo a una
+            # transicion valida (mismo criterio que routes_kill_switch._current_bot_state,
+            # que ante esto devuelve 500 en vez de fabricar un estado falso). Acá no hay
+            # HTTP al que responder — el caller es CycleRunner._tick(), sin try/except
+            # propio — asi que la falla debe quedar contenida acá: loguear y no disparar,
+            # en vez de dejar el ValueError sin atrapar y tumbar el loop del worker entero.
+            _log.error(
+                "orphan_order_scanner.unknown_persisted_state",
+                bot_run_id=self._bot_run_id,
+                state=latest.state if latest is not None else None,
+            )
+            self._session.rollback()
+            return
         if current != self._state_machine.state:
             self._state_machine.force_set(current, reason="orphan_scanner_resync")
         if current != BotState.ACTIVE:
             # El estado cambio (ej. kill switch manual) entre el ultimo _sync_state_from_db
             # del ciclo y este lock. No hay nada que disparar: ya no esta ACTIVE.
             _log.warning("orphan_order_scanner.state_changed_before_lock", state=current.value)
+            self._session.rollback()
+            return
+
+        if not self._state_machine.can_transition_to(BotState.SAFE_MODE):
+            # En la practica inalcanzable (ACTIVE -> SAFE_MODE es incondicional en
+            # _ALLOWED_TRANSITIONS), pero valida ANTES de escribir nada: fallar acá
+            # evita persistir una fila bot_state para una transicion que después
+            # rechazaria transition_to(), lo que dejaria DB y memoria divergiendo
+            # (ver el bug de orden persist/mutate mas abajo).
+            _log.error("orphan_order_scanner.invalid_transition", current=current.value)
+            self._session.rollback()
             return
 
         reason = "Ordenes huerfanas detectadas: " + "; ".join(
             f"{f.symbol}:{f.reason.value}" for f in findings
         )
-        try:
-            self._state_machine.transition_to(BotState.SAFE_MODE, reason=reason)
-        except InvalidStateTransitionError:
-            _log.error("orphan_order_scanner.invalid_transition", current=current.value)
-            return
-
         now = datetime.now(UTC)
         BotStateRepository(self._session).save(
             BotStateRow(
                 bot_run_id=self._bot_run_id,
-                state=self._state_machine.state.value,
+                state=BotState.SAFE_MODE.value,
                 previous_state=current.value,
                 reason=reason,
                 created_at=now,
@@ -227,6 +233,17 @@ class OrphanOrderScanner:
             )
         )
         self._session.commit()
+        # El estado en memoria se refleja SOLO despues de que el commit tuvo
+        # exito (review PR #121): si el persist fallara arriba, self._state_machine
+        # debe seguir en ACTIVE para no divergir de la DB — antes se llamaba
+        # transition_to() previo al commit, y un fallo de persistencia dejaba la
+        # memoria en SAFE_MODE mientras la DB seguia en ACTIVE, revertida en
+        # silencio por el proximo _sync_state_from_db. force_set() en vez de
+        # transition_to() porque la validez de la transicion ya se confirmo
+        # arriba con can_transition_to(); no hay camino de excepcion acá, y uno
+        # nuevo (InvalidStateTransitionError post-commit) seria peor: DB ya en
+        # SAFE_MODE con memoria sin actualizar.
+        self._state_machine.force_set(BotState.SAFE_MODE, reason=reason)
         _log.warning(
             "orphan_order_scanner.safe_mode_triggered",
             reason=reason,
