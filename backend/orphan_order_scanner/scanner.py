@@ -171,7 +171,24 @@ class OrphanOrderScanner:
             return
 
         latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
-        current = BotState(latest.state) if latest is not None else BotState.ACTIVE
+        if latest is None:
+            current = BotState.ACTIVE
+        else:
+            try:
+                current = BotState(latest.state)
+            except ValueError:
+                # Dato corrupto en bot_state: no hay forma segura de mapearlo a una
+                # transicion valida (mismo criterio que routes_kill_switch._current_bot_state,
+                # que ante esto devuelve 500 en vez de fabricar un estado falso). Acá no hay
+                # HTTP al que responder — el caller es CycleRunner._tick(), sin try/except
+                # propio — asi que la falla debe quedar contenida acá: loguear y no disparar,
+                # en vez de dejar el ValueError sin atrapar y tumbar el loop del worker entero.
+                _log.error(
+                    "orphan_order_scanner.unknown_persisted_state",
+                    bot_run_id=self._bot_run_id,
+                    state=latest.state,
+                )
+                return
         if current != self._state_machine.state:
             self._state_machine.force_set(current, reason="orphan_scanner_resync")
         if current != BotState.ACTIVE:

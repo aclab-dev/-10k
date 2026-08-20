@@ -292,3 +292,29 @@ class TestScanAndEnforce:
         # No se persistio nada: el bot_run no estaba RUNNING.
         assert session.scalars(select(BotStateRow)).first() is None
         assert session.scalars(select(SystemEvent)).first() is None
+
+    def test_survives_corrupt_persisted_state_without_raising(self, session: Session) -> None:
+        """Regresion: un valor en bot_state.state fuera del enum BotState (dato
+        corrupto) no debe propagar ValueError hacia CycleRunner._tick() — ese
+        loop no tiene try/except propio, asi que una excepcion sin atrapar acá
+        tumbaria el worker entero. Mismo criterio de fail-safe que
+        routes_kill_switch._current_bot_state (que ante esto devuelve 500 en vez
+        de fabricar un estado falso), adaptado a que acá no hay HTTP al que
+        responder: loguear y no disparar."""
+        bot_run = make_bot_run(session, status="RUNNING")
+        make_bot_state(session, bot_run, state="GARBAGE_STATE", previous_state="ACTIVE")
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("5000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        scanner = _scanner(adapter, pm, session, bot_run.id, state_machine=sm)
+
+        findings = scanner.scan_and_enforce()  # no debe lanzar
+
+        assert len(findings) == 1
+        assert sm.state == BotState.ACTIVE  # no se toco: nunca se pudo determinar el actual
+        stored = session.scalars(
+            select(BotStateRow).where(BotStateRow.bot_run_id == bot_run.id)
+        ).all()
+        assert len(stored) == 1  # solo la fila corrupta preexistente, no se agrego nada
+        assert session.scalars(select(SystemEvent)).first() is None

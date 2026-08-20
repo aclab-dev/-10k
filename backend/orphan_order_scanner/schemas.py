@@ -10,8 +10,10 @@ from pydantic import BaseModel
 class OrphanReason(StrEnum):
     """Motivo por el que un símbolo se marca como huérfano."""
 
-    # Hay órdenes activas en el exchange para el símbolo pero ninguna posición
-    # abierta que las explique.
+    # Hay órdenes activas en el exchange para el símbolo sin ninguna fila local
+    # en la tabla `orders` (por client_order_id) que las explique. Ver
+    # scanner.py::scan_all() — no es "sin posición abierta" a secas: eso
+    # marcaría huérfana cualquier entrada LIMIT propia todavía sin llenar.
     UNEXPLAINED_ORDER = "UNEXPLAINED_ORDER"
     # Hay una posición abierta en el exchange pero PositionManager no tiene un
     # PositionConfig activo vigilándola (SL/TP no monitoreado).
