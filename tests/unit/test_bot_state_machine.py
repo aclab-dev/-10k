@@ -8,6 +8,7 @@ from backend.trading_core.bot_state_machine import (
     BotState,
     BotStateMachine,
     InvalidStateTransitionError,
+    resolve_persisted_state,
 )
 
 
@@ -91,3 +92,18 @@ def test_invalid_transition_error_carries_state_info() -> None:
         sm.transition_to(BotState.SAFE_MODE)
     assert exc_info.value.current == BotState.HALTED
     assert exc_info.value.target == BotState.SAFE_MODE
+
+
+class TestResolvePersistedState:
+    """Helper compartido por CycleRunner._sync_state_from_db y
+    OrphanOrderScanner._trigger_safe_mode (antes duplicado en los dos)."""
+
+    def test_none_raw_state_defaults_to_active(self) -> None:
+        assert resolve_persisted_state(None) == BotState.ACTIVE
+
+    @pytest.mark.parametrize("state", list(BotState))
+    def test_known_state_maps_to_itself(self, state: BotState) -> None:
+        assert resolve_persisted_state(state.value) == state
+
+    def test_unknown_raw_state_returns_none(self) -> None:
+        assert resolve_persisted_state("GARBAGE_STATE") is None
