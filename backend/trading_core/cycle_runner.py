@@ -43,7 +43,7 @@ from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
-from backend.trading_core.bot_state_machine import BotState, BotStateMachine
+from backend.trading_core.bot_state_machine import BotStateMachine, resolve_persisted_state
 from backend.volatility.engine import compute_volatility_assessment
 
 log = structlog.get_logger(__name__)
@@ -194,9 +194,8 @@ class CycleRunner:
             return
         if latest is None:
             return
-        try:
-            persisted = BotState(latest.state)
-        except ValueError:
+        persisted = resolve_persisted_state(latest.state)
+        if persisted is None:
             # Fail-open a proposito, asimetrico respecto del endpoint (que
             # devuelve 500 ante el mismo dato corrupto en
             # routes_kill_switch._current_bot_state): frenar el tick acá

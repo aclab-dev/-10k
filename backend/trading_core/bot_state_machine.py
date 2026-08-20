@@ -134,3 +134,27 @@ class BotStateMachine:
     def is_running(self) -> bool:
         """HALTED y KILL_SWITCH_TRIGGERED detienen el ciclo. El resto continua."""
         return self._state not in {BotState.HALTED, BotState.KILL_SWITCH_TRIGGERED}
+
+
+def resolve_persisted_state(raw_state: str | None) -> BotState | None:
+    """Mapea el string crudo de la ultima fila `bot_state.state` a BotState.
+
+    Contrato compartido por todo caller que relee estado persistido (hoy
+    CycleRunner._sync_state_from_db y OrphanOrderScanner._trigger_safe_mode;
+    antes vivia duplicado en los dos):
+    - raw_state=None (no hay fila persistida todavia) -> BotState.ACTIVE, el
+      default del sistema.
+    - raw_state fuera del enum (dato corrupto) -> None. Fail-open explicito:
+      no hay forma segura de mapearlo a una transicion valida (mismo criterio
+      que routes_kill_switch._current_bot_state, que ante esto responde 500
+      en vez de fabricar un estado falso). El caller decide como reaccionar
+      -seguir con el ultimo estado en memoria, o abortar la accion en curso-
+      pero ninguno debe fabricar un estado falso ni dejar el ValueError
+      escapar sin atrapar.
+    """
+    if raw_state is None:
+        return BotState.ACTIVE
+    try:
+        return BotState(raw_state)
+    except ValueError:
+        return None
