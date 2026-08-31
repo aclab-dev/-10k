@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -236,3 +237,77 @@ class TestCheckAndEnforce:
         # Fail-open: el estado en memoria no debe divergir de la DB si el
         # persist fallo.
         assert sm.state == BotState.ACTIVE
+
+    def test_no_action_when_bot_run_not_running(self, session: Session) -> None:
+        bot_run = make_bot_run(session, status="STOPPED")
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        monitor = _monitor(session, bot_run.id, state_machine=sm)
+
+        findings = monitor.check_and_enforce([_snapshot(symbol="BTCUSDT")])  # ETHUSDT falta
+
+        assert len(findings) == 1
+        # No se persistio nada: el bot_run no estaba RUNNING.
+        assert session.scalars(select(BotStateRow)).first() is None
+        assert session.scalars(select(SystemEvent)).first() is None
+
+    def test_survives_corrupt_persisted_state_without_raising(self, session: Session) -> None:
+        """Regresion: un valor en bot_state.state fuera del enum BotState (dato
+        corrupto) no debe propagar ValueError hacia CycleRunner._tick() — ese loop
+        no tiene try/except propio, asi que una excepcion sin atrapar acá tumbaria
+        el worker entero. Mismo criterio de fail-safe que OrphanOrderScanner
+        (adaptado del mismo bug/fix, PR #121): loguear y no disparar."""
+        bot_run = make_bot_run(session, status="RUNNING")
+        make_bot_state(session, bot_run, state="GARBAGE_STATE", previous_state="ACTIVE")
+        # commit explicito: la fila corrupta debe sobrevivir al rollback() que
+        # _trigger_safe_mode hace para soltar el lock FOR UPDATE.
+        session.commit()
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        monitor = _monitor(session, bot_run.id, state_machine=sm)
+
+        findings = monitor.check_and_enforce([_snapshot(symbol="BTCUSDT")])  # no debe lanzar
+
+        assert len(findings) == 1
+        assert sm.state == BotState.ACTIVE  # no se toco: nunca se pudo determinar el actual
+        stored = session.scalars(
+            select(BotStateRow).where(BotStateRow.bot_run_id == bot_run.id)
+        ).all()
+        assert len(stored) == 1  # solo la fila corrupta preexistente, no se agrego nada
+        assert session.scalars(select(SystemEvent)).first() is None
+
+    def test_releases_row_lock_on_every_early_return(self, session: Session) -> None:
+        """Regresion (mismo bug/fix que OrphanOrderScanner, PR #121): session.get(
+        ..., with_for_update=True) abre una transaccion con lock FOR UPDATE sobre
+        BotRun. Si un early-return posterior no hace rollback/commit, esa
+        transaccion (y el lock) queda abierta hasta el proximo commit en esta
+        misma sesion de larga vida del worker — puede bloquear indefinidamente al
+        kill switch manual, que toma el mismo lock. Cubre las 3 ramas de
+        early-return post-lock: bot_run no RUNNING, estado corrupto, y estado ya
+        no-ACTIVE."""
+        # Rama 1: bot_run no RUNNING.
+        stopped_run = make_bot_run(session, status="STOPPED")
+        session.commit()
+        monitor1 = _monitor(session, stopped_run.id)
+        monitor1.check_and_enforce([_snapshot(symbol="BTCUSDT")])
+        assert session.in_transaction() is False
+
+        # Rama 2 y 3 comparten un unico bot_run RUNNING (el indice unico parcial
+        # uq_bot_runs_single_running solo permite uno a la vez).
+        running_run = make_bot_run(session, status="RUNNING")
+        session.commit()
+
+        # Rama 2: estado corrupto en bot_state.
+        make_bot_state(session, running_run, state="GARBAGE_STATE", previous_state="ACTIVE")
+        session.commit()
+        monitor2 = _monitor(session, running_run.id)
+        monitor2.check_and_enforce([_snapshot(symbol="BTCUSDT")])
+        assert session.in_transaction() is False
+
+        # Rama 3: estado ya no-ACTIVE (releido de DB, no del cache en memoria).
+        make_bot_state(session, running_run, state="KILL_SWITCH_TRIGGERED", previous_state="ACTIVE")
+        session.commit()
+        # state_machine local queda desactualizado a proposito: fuerza a
+        # _trigger_safe_mode a re-leer la DB y descubrir el cambio recien ahi.
+        sm3 = BotStateMachine(initial=BotState.ACTIVE)
+        monitor3 = _monitor(session, running_run.id, state_machine=sm3)
+        monitor3.check_and_enforce([_snapshot(symbol="BTCUSDT")])
+        assert session.in_transaction() is False
