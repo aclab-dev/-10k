@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.gpt_client import GPTAuthError, GPTClient
@@ -100,6 +101,9 @@ class Orchestrator:
                 orphan_order_scanner: OrphanOrderScanner | None = self._build_orphan_order_scanner(
                     adapter, self._position_manager, db_session, bot_run
                 )
+                connection_health_monitor: ConnectionHealthMonitor | None = (
+                    self._build_connection_health_monitor(db_session, bot_run, cfg)
+                )
                 gpt_client, prompt_builder, aggregator = self._build_decision_components(cfg)
                 decision_session: Session | None = db_session
                 decision_bot_run_id: str | None = str(bot_run.id)
@@ -113,6 +117,7 @@ class Orchestrator:
                 exec_engine = execution_engine
                 position_tick_service = None
                 orphan_order_scanner = None
+                connection_health_monitor = None
                 gpt_client, prompt_builder, aggregator = None, None, None
                 decision_session = None
                 decision_bot_run_id = None
@@ -122,6 +127,7 @@ class Orchestrator:
                 interval_seconds=interval,
                 position_tick_service=position_tick_service,
                 orphan_order_scanner=orphan_order_scanner,
+                connection_health_monitor=connection_health_monitor,
                 market_data_service=mds,
                 execution_engine=exec_engine,
                 gpt_client=gpt_client,
@@ -416,6 +422,23 @@ class Orchestrator:
             state_machine=self._state_machine,
             session=db_session,
             bot_run_id=bot_run.id,
+        )
+
+    def _build_connection_health_monitor(
+        self, db_session: Session, bot_run: BotRun, cfg: AppConfig
+    ) -> ConnectionHealthMonitor:
+        """Arma el ConnectionHealthMonitor (F16 [117]) con la misma state_machine/
+        sesion/bot_run que el resto del pipeline — mismo criterio que
+        _build_orphan_order_scanner: reusar el estado real, no instanciar uno
+        divergente.
+        """
+        return ConnectionHealthMonitor(
+            state_machine=self._state_machine,
+            session=db_session,
+            bot_run_id=bot_run.id,
+            max_clock_skew_ms=cfg.connection_health.max_clock_skew_ms,
+            max_latency_ms=cfg.connection_health.max_latency_ms,
+            symbols=frozenset(cfg.trading.allowed_symbols),
         )
 
     @property

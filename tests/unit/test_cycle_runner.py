@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.orphan_order_scanner.scanner import OrphanOrderScanner
@@ -177,6 +178,49 @@ def test_tick_calls_market_data_before_position_tick_service(heartbeat_file: Pat
     runner._tick()  # type: ignore[attr-defined]
 
     assert call_order == ["market_data", "position"]
+
+
+def test_tick_calls_connection_health_monitor_when_provided(heartbeat_file: Path) -> None:
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    monitor = Mock(spec=ConnectionHealthMonitor)
+    runner = CycleRunner(
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, connection_health_monitor=monitor
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    monitor.check_and_enforce.assert_called_once()
+
+
+def test_tick_without_connection_health_monitor_still_heartbeats(heartbeat_file: Path) -> None:
+    """Compat: connection_health_monitor es opcional y default None."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert heartbeat_file.exists()
+
+
+def test_tick_calls_market_data_before_connection_health_monitor(heartbeat_file: Path) -> None:
+    """El monitor de salud de conexion evalua los snapshots del mismo ciclo."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    call_order: list[str] = []
+    market_data_service = Mock(spec=MarketDataCycleService)
+    market_data_service.tick_all.side_effect = lambda: call_order.append("market_data") or []
+    monitor = Mock(spec=ConnectionHealthMonitor)
+    monitor.check_and_enforce.side_effect = lambda snapshots: call_order.append("connection_health")
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        market_data_service=market_data_service,
+        connection_health_monitor=monitor,
+    )
+
+    runner._tick()  # type: ignore[attr-defined]
+
+    assert call_order == ["market_data", "connection_health"]
 
 
 def test_tick_calls_orphan_order_scanner_when_provided(heartbeat_file: Path) -> None:

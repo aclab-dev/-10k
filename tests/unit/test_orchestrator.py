@@ -12,7 +12,8 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.core.config import Environment
+from backend.connection_health.monitor import ConnectionHealthMonitor
+from backend.core.config import Environment, get_config
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
@@ -167,6 +168,32 @@ def test_orphan_order_scanner_is_none_when_market_data_service_injected() -> Non
         execution_engine=Mock(spec=ExecutionEngine),
     )
     assert orch.cycle_runner._orphan_order_scanner is None  # type: ignore[attr-defined]
+
+
+def test_default_construction_wires_connection_health_monitor(sqlite_session: Session) -> None:
+    """Sin nada inyectado, arma un ConnectionHealthMonitor (F16 [117]) atado a la
+    misma state_machine/sesion/bot_run que el resto del pipeline — mismo
+    criterio que OrphanOrderScanner: reusar el estado real compartido."""
+    orch = Orchestrator(session=sqlite_session)
+
+    monitor = orch.cycle_runner._connection_health_monitor  # type: ignore[attr-defined]
+    assert isinstance(monitor, ConnectionHealthMonitor)
+    assert monitor._state_machine is orch.state_machine  # type: ignore[attr-defined]
+    assert monitor._bot_run_id == orch._bot_run.id  # type: ignore[attr-defined]
+
+    cfg = get_config()
+    assert monitor._max_clock_skew_ms == cfg.connection_health.max_clock_skew_ms  # type: ignore[attr-defined]
+    assert monitor._max_latency_ms == cfg.connection_health.max_latency_ms  # type: ignore[attr-defined]
+
+
+def test_connection_health_monitor_is_none_when_market_data_service_injected() -> None:
+    """Mismo criterio que orphan_order_scanner: si el caller inyecta su propio
+    market_data_service/execution_engine, es dueno de ese ciclo de vida."""
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
+    assert orch.cycle_runner._connection_health_monitor is None  # type: ignore[attr-defined]
 
 
 def test_only_market_data_service_injected_raises() -> None:
