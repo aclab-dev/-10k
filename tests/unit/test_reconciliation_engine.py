@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,9 +15,11 @@ from backend.exchange_adapters.schemas import (
     OrderStatus,
     OrderType,
 )
+from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.schemas import PositionConfig
 from backend.reconciliation.engine import (
+    _ORDER_FETCH_LIMIT,
     DiscrepancyType,
     ReconciliationEngine,
 )
@@ -36,7 +38,9 @@ def _make_engine(
     adapter: PaperAdapter,
     db_positions: list | None = None,
     db_pending: list | None = None,
+    db_known: list | None = None,
     position_manager: PositionManager | None = None,
+    symbols: frozenset[str] | None = None,
     decimal_tolerance: Decimal | None = None,
 ) -> ReconciliationEngine:
     position_repo = MagicMock()
@@ -45,18 +49,25 @@ def _make_engine(
     db_pending = db_pending or []
     order_repo = MagicMock()
     order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: (
-        db_pending if status == "PENDING" else []
+        list(db_pending) if status == "PENDING" else []
     )
-    known_ids_by_coid = {o.client_order_id for o in db_pending}
-    order_repo.list_known_client_order_ids.side_effect = lambda coids: {
-        c for c in coids if c in known_ids_by_coid
-    }
+    # Filas completas por client_order_id: los tests pasan sus filas "conocidas"
+    # vía db_pending (y db_known para status no-PENDING).
+    known_rows = list(db_pending) + list(db_known or [])
+    order_repo.list_by_client_order_ids.side_effect = lambda coids: [
+        o for o in known_rows if o.client_order_id in set(coids)
+    ]
 
     kwargs = {}
     if decimal_tolerance is not None:
         kwargs["decimal_tolerance"] = decimal_tolerance
     return ReconciliationEngine(
-        adapter, position_repo, order_repo, position_manager=position_manager, **kwargs
+        adapter,
+        position_repo,
+        order_repo,
+        position_manager=position_manager,
+        symbols=symbols,
+        **kwargs,
     )
 
 
@@ -360,6 +371,65 @@ def test_manual_sl_change_not_flagged_when_adapter_silent(adapter: PaperAdapter)
     assert report.is_consistent
 
 
+def test_manual_tp_change_detected_when_adapter_reports_it(adapter: PaperAdapter) -> None:
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)
+    position_manager.set_config(PositionConfig(symbol="BTCUSDT", take_profit=Decimal("55000")))
+
+    adapter.get_position = MagicMock(  # type: ignore[method-assign]
+        return_value=pos.model_copy(update={"take_profit": Decimal("60000")})
+    )
+
+    engine = _make_engine(
+        adapter,
+        db_positions=[db_pos],
+        position_manager=position_manager,
+        symbols=frozenset({"BTCUSDT"}),
+    )
+    report = engine.reconcile(BOT_RUN_ID)
+
+    disc = next(
+        d
+        for d in report.position_discrepancies
+        if d.discrepancy_type == DiscrepancyType.MANUAL_SL_TP_CHANGE
+    )
+    assert disc.adapter_take_profit == Decimal("60000")
+    assert disc.config_take_profit == Decimal("55000")
+
+
+def test_manual_sl_change_compares_against_effective_sl_not_static_config(
+    adapter: PaperAdapter,
+) -> None:
+    """Tras update_sl(), el SL efectivo diverge de config.stop_loss de forma legítima:
+    si el exchange reporta el SL efectivo, NO debe marcarse como cambio manual."""
+    adapter.place_order(_market_buy(price=Decimal("50000")))
+    pos = adapter.get_position("BTCUSDT")
+    assert pos is not None
+    db_pos = _db_position("BTCUSDT", pos.quantity, pos.entry_price)
+
+    position_manager = PositionManager(adapter)
+    position_manager.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+    position_manager.update_sl("BTCUSDT", Decimal("49000"))  # SL efectivo ahora 49000
+
+    # El adapter real reporta el SL efectivo (49000), no el estático de config (48000).
+    adapter.get_position = MagicMock(  # type: ignore[method-assign]
+        return_value=pos.model_copy(update={"stop_loss": Decimal("49000")})
+    )
+
+    engine = _make_engine(
+        adapter,
+        db_positions=[db_pos],
+        position_manager=position_manager,
+        symbols=frozenset({"BTCUSDT"}),
+    )
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
 # ---------------------------------------------------------------------------
 # Discrepancias de órdenes
 # ---------------------------------------------------------------------------
@@ -445,6 +515,136 @@ def test_partial_fill_detected(adapter: PaperAdapter) -> None:
     assert disc.client_order_id == req.client_order_id
     assert disc.quantity_filled == Decimal("0.004")
     assert disc.quantity_requested == Decimal("0.01")
+
+
+def test_status_mismatch_order_alive_on_exchange_but_resolved_locally(
+    adapter: PaperAdapter,
+) -> None:
+    """La orden sigue viva en el exchange (PENDING) pero localmente quedó FAILED
+    (ej. timeout de confirmación). Debe levantar STATUS_MISMATCH, no pasar en silencio."""
+    req = OrderRequest(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.01"),
+        price=Decimal("48000"),
+    )
+    adapter.place_order(req)  # PENDING en el adapter, visible vía get_open_orders
+
+    # Fila local conocida pero con status resuelto (no PENDING) → va en db_known.
+    db_ord = _db_order(req.client_order_id, "BTCUSDT", "FAILED")
+    engine = _make_engine(adapter, db_pending=[], db_known=[db_ord])
+    report = engine.reconcile(BOT_RUN_ID)
+
+    disc = next(
+        d
+        for d in report.order_discrepancies
+        if d.discrepancy_type == DiscrepancyType.STATUS_MISMATCH
+    )
+    assert disc.client_order_id == req.client_order_id
+    assert disc.adapter_status == "PENDING"
+    assert disc.db_status == "FAILED"
+
+
+def test_order_fetch_limit_warning_emitted(adapter: PaperAdapter) -> None:
+    """Si list_by_status devuelve exactamente el límite, se emite un warning estructurado."""
+    limit_rows = [
+        _db_order(str(uuid.uuid4()), "BTCUSDT", "PENDING") for _ in range(_ORDER_FETCH_LIMIT)
+    ]
+
+    position_repo = MagicMock()
+    position_repo.list_open.return_value = []
+
+    order_repo = MagicMock()
+    order_repo.list_by_status.side_effect = lambda bot_run_id, status, **_: (
+        list(limit_rows) if status == "PENDING" else []
+    )
+    order_repo.list_by_client_order_ids.side_effect = lambda coids: []
+
+    engine = ReconciliationEngine(adapter, position_repo, order_repo)
+
+    with patch("backend.reconciliation.engine._log") as mock_log:
+        engine.reconcile(BOT_RUN_ID)
+
+    mock_log.warning.assert_called_once()
+    assert mock_log.warning.call_args[0][0] == "reconciliation.order_fetch_limit_reached"
+
+
+# ---------------------------------------------------------------------------
+# Símbolos fuera de la lista configurada (symbols=)
+# ---------------------------------------------------------------------------
+
+
+def test_db_position_on_unconfigured_symbol_is_still_reconciled(adapter: PaperAdapter) -> None:
+    """Una posición OPEN en DB cuyo símbolo no está en symbols= igual debe chequearse."""
+    db_pos = _db_position("ETHUSDT", Decimal("1"), Decimal("3000"))
+    engine = _make_engine(adapter, db_positions=[db_pos], symbols=frozenset({"BTCUSDT"}))
+    report = engine.reconcile(BOT_RUN_ID)
+
+    disc = next(
+        d
+        for d in report.position_discrepancies
+        if d.discrepancy_type == DiscrepancyType.MISSING_IN_ADAPTER
+    )
+    assert disc.symbol == "ETHUSDT"
+
+
+def test_db_pending_order_on_unconfigured_symbol_is_not_false_flagged(
+    adapter: PaperAdapter,
+) -> None:
+    """Una orden PENDING en DB de un símbolo fuera de symbols= no debe marcarse
+    MISSING_IN_ADAPTER si en realidad sigue viva en el exchange."""
+    req = OrderRequest(
+        symbol="ETHUSDT",
+        side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        quantity=Decimal("0.1"),
+        price=Decimal("2800"),
+    )
+    adapter.place_order(req)
+    db_ord = _db_order(req.client_order_id, "ETHUSDT", "PENDING")
+
+    engine = _make_engine(adapter, db_pending=[db_ord], symbols=frozenset({"BTCUSDT"}))
+    report = engine.reconcile(BOT_RUN_ID)
+    assert report.is_consistent
+
+
+# ---------------------------------------------------------------------------
+# Reporte parcial (fallas de fetch por símbolo)
+# ---------------------------------------------------------------------------
+
+
+def test_report_incomplete_and_not_consistent_when_all_fetches_fail(
+    adapter: PaperAdapter,
+) -> None:
+    boom = RuntimeError("exchange API down")
+    adapter.get_position = MagicMock(side_effect=boom)  # type: ignore[method-assign]
+    adapter.get_open_orders = MagicMock(side_effect=boom)  # type: ignore[method-assign]
+
+    engine = _make_engine(adapter)
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert not report.is_complete
+    assert not report.is_consistent  # parcial → no se puede afirmar consistencia
+    assert set(report.failed_symbols) == set(ALLOWED_SYMBOLS)
+    assert report.total_discrepancies == 0
+
+
+def test_failed_symbol_does_not_produce_false_missing_in_adapter(adapter: PaperAdapter) -> None:
+    """Si get_open_orders falla para un símbolo, sus PENDING locales no deben marcarse
+    MISSING_IN_ADAPTER: no se pudo consultar al exchange."""
+    ghost = _db_order(str(uuid.uuid4()), "BTCUSDT", "PENDING")
+    adapter.get_open_orders = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("timeout")
+    )
+
+    engine = _make_engine(adapter, db_pending=[ghost])
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert "BTCUSDT" in report.failed_symbols
+    assert not any(
+        d.discrepancy_type == DiscrepancyType.MISSING_IN_ADAPTER for d in report.order_discrepancies
+    )
 
 
 # ---------------------------------------------------------------------------

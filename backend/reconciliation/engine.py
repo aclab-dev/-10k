@@ -12,23 +12,32 @@ Scope:
   (ver OrphanOrderScanner para el caso de posiciones sin protección y órdenes
   huérfanas).
 - Posiciones: se comparan todas las posiciones OPEN en DB contra
-  `adapter.get_position(symbol)` para cada símbolo configurado.
+  `adapter.get_position(symbol)`. Se recorren los símbolos configurados más
+  cualquier símbolo con posición OPEN en DB (una posición vieja cuyo símbolo
+  ya no está en la lista no debe quedar invisible).
 - Órdenes: `get_open_orders(symbol)` solo devuelve órdenes vivas (PENDING) —
   a diferencia de un `PaperAdapter` standalone, un exchange real no expone
-  historial de órdenes ya resueltas (FILLED/CANCELLED) por esta vía. Por eso
-  el scope de órdenes se limita a: huérfanas en el exchange (sin fila local) y
-  huérfanas en DB (PENDING localmente pero ya no vivas en el exchange — se
-  resolvieron fuera del bot). Fills parciales se detectan comparando
-  `quantity_filled` contra `quantity_requested` en las que sí aparecen en
-  ambos lados.
+  historial de órdenes ya resueltas (FILLED/CANCELLED) por esta vía. El scope
+  de órdenes cubre: huérfanas en el exchange (sin fila local → MISSING_IN_DB),
+  huérfanas en DB (PENDING localmente pero ya no vivas en el exchange →
+  MISSING_IN_ADAPTER), fills parciales (PARTIAL_FILL) y divergencia de status
+  (STATUS_MISMATCH) — incluye el caso peligroso de una orden dada por resuelta
+  localmente (FAILED/CANCELLED/FILLED) que el exchange todavía reporta abierta.
 - Protecciones: si se inyecta un `PositionManager`, se valida que toda
   posición abierta tenga un `PositionConfig` activo vigilándola (mismo
   criterio que `UNPROTECTED_POSITION` en OrphanOrderScanner) y que, cuando el
   adapter reporta un stop_loss/take_profit propio (algunos exchanges reales
-  lo hacen; PaperAdapter nunca), coincida con el configurado localmente — una
-  discrepancia ahí implica que alguien lo cambió manualmente en el exchange.
+  lo hacen; PaperAdapter nunca), coincida con el SL/TP *efectivo* local
+  (`get_effective_sl/tp`, que ya incorpora break-even y updates dinámicos;
+  fallback al valor de `PositionConfig`) — una discrepancia ahí implica que
+  alguien lo cambió manualmente en el exchange.
 - Discrepancias numéricas se evalúan con una tolerancia configurable para
   evitar falsos positivos por redondeo (aplica a precios, cantidades y SL/TP).
+- Aislamiento de fallas: un error de transporte al consultar un símbolo se
+  loguea y ese símbolo se agrega a `ReconciliationReport.failed_symbols`. Un
+  reporte con símbolos fallidos es *parcial*: `is_consistent` devuelve False
+  aunque no haya discrepancias (no hay base para afirmar consistencia);
+  `is_complete` distingue "todo verificado y OK" de "no se pudo verificar".
 """
 
 from __future__ import annotations
@@ -52,6 +61,11 @@ _log = structlog.get_logger(__name__)
 
 # Tolerancia por defecto para comparar precios, cantidades y SL/TP.
 _DEFAULT_DECIMAL_TOLERANCE = Decimal("0.00000001")
+
+# Límite de órdenes PENDING traídas de la DB por bot_run. Si se alcanza, el
+# resto queda sin reconciliar: se emite un warning estructurado en vez de
+# truncar en silencio (mismo criterio que el módulo previo backend/paper/).
+_ORDER_FETCH_LIMIT = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +130,26 @@ class ReconciliationReport(BaseModel):
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     position_discrepancies: list[PositionDiscrepancy] = Field(default_factory=list)
     order_discrepancies: list[OrderDiscrepancy] = Field(default_factory=list)
+    # Símbolos donde get_position/get_open_orders lanzó: no se pudo comparar nada
+    # para ellos y el reporte es parcial.
+    failed_symbols: list[str] = Field(default_factory=list)
 
     model_config = {"frozen": True}
 
     @property
+    def is_complete(self) -> bool:
+        """True si se pudo consultar el exchange para todos los símbolos."""
+        return not self.failed_symbols
+
+    @property
     def is_consistent(self) -> bool:
-        """True si no se encontró ninguna discrepancia."""
-        return not self.position_discrepancies and not self.order_discrepancies
+        """True solo si la reconciliación fue completa y no encontró discrepancias.
+
+        Un reporte parcial (algún símbolo falló su fetch) nunca es "consistente":
+        no hay base para afirmarlo. Usar is_complete para distinguir "todo
+        verificado y OK" de "no se pudo verificar".
+        """
+        return self.is_complete and not self.position_discrepancies and not self.order_discrepancies
 
     @property
     def total_discrepancies(self) -> int:
@@ -167,19 +194,22 @@ class ReconciliationEngine:
         1. Posiciones abiertas en el exchange vs posiciones OPEN en DB (+ protección).
         2. Órdenes vivas en el exchange vs órdenes PENDING registradas en DB.
         """
-        pos_discrepancies = self._reconcile_positions(bot_run_id)
-        order_discrepancies = self._reconcile_orders(bot_run_id)
+        pos_discrepancies, pos_failed = self._reconcile_positions(bot_run_id)
+        order_discrepancies, order_failed = self._reconcile_orders(bot_run_id)
 
         report = ReconciliationReport(
             bot_run_id=bot_run_id,
             position_discrepancies=pos_discrepancies,
             order_discrepancies=order_discrepancies,
+            failed_symbols=sorted(set(pos_failed) | set(order_failed)),
         )
 
         _log.info(
             "reconciliation.complete",
             bot_run_id=bot_run_id,
             is_consistent=report.is_consistent,
+            is_complete=report.is_complete,
+            failed_symbols=report.failed_symbols,
             position_discrepancies=len(pos_discrepancies),
             order_discrepancies=len(order_discrepancies),
         )
@@ -189,15 +219,22 @@ class ReconciliationEngine:
     # Reconciliación de posiciones
     # ------------------------------------------------------------------
 
-    def _reconcile_positions(self, bot_run_id: str) -> list[PositionDiscrepancy]:
+    def _reconcile_positions(self, bot_run_id: str) -> tuple[list[PositionDiscrepancy], list[str]]:
         discrepancies: list[PositionDiscrepancy] = []
+        failed: list[str] = []
         db_positions = {p.symbol: p for p in self._position_repo.list_open(bot_run_id)}
 
-        for symbol in self._symbols:
+        # Símbolos configurados + cualquiera con posición OPEN en DB: una posición
+        # cuyo símbolo ya no está en la lista (removido de ALLOWED_SYMBOLS o
+        # subconjunto explícito via symbols=) igual debe reconciliarse.
+        symbols = sorted(set(self._symbols) | db_positions.keys())
+
+        for symbol in symbols:
             try:
                 adapter_pos = self._adapter.get_position(symbol)
             except Exception:
                 _log.error("reconciliation.position_fetch_failed", symbol=symbol, exc_info=True)
+                failed.append(symbol)
                 continue
 
             db_pos = db_positions.get(symbol)
@@ -237,7 +274,7 @@ class ReconciliationEngine:
             discrepancies.extend(self._compare_position(symbol, adapter_pos, db_pos))
             discrepancies.extend(self._check_protection(symbol, adapter_pos))
 
-        return discrepancies
+        return discrepancies, failed
 
     def _compare_position(
         self,
@@ -319,14 +356,25 @@ class ReconciliationEngine:
             )
             return found
 
+        # SL/TP efectivo: incorpora break-even y update_sl/update_tp dinámicos.
+        # Fallback al valor estático de PositionConfig si el efectivo no está
+        # seteado (ej. sin SL configurado).
+        effective_sl = self._position_manager.get_effective_sl(symbol)
+        effective_tp = self._position_manager.get_effective_tp(symbol)
         found.extend(
             self._check_manual_sl_tp_change(
-                symbol, "stop_loss", adapter_pos.stop_loss, config.stop_loss
+                symbol,
+                "stop_loss",
+                adapter_pos.stop_loss,
+                effective_sl if effective_sl is not None else config.stop_loss,
             )
         )
         found.extend(
             self._check_manual_sl_tp_change(
-                symbol, "take_profit", adapter_pos.take_profit, config.take_profit
+                symbol,
+                "take_profit",
+                adapter_pos.take_profit,
+                effective_tp if effective_tp is not None else config.take_profit,
             )
         )
         return found
@@ -339,7 +387,8 @@ class ReconciliationEngine:
         config_value: Decimal | None,
     ) -> list[PositionDiscrepancy]:
         # Solo aplica cuando el exchange reporta un valor propio para ese campo
-        # (algunos adapters reales lo hacen; PaperAdapter nunca).
+        # (algunos adapters reales lo hacen; PaperAdapter nunca). `config_value`
+        # acá ya es el SL/TP efectivo local (ver _check_protection).
         if adapter_value is None:
             return []
         if (
@@ -367,36 +416,57 @@ class ReconciliationEngine:
     # Reconciliación de órdenes
     # ------------------------------------------------------------------
 
-    def _reconcile_orders(self, bot_run_id: str) -> list[OrderDiscrepancy]:
+    def _reconcile_orders(self, bot_run_id: str) -> tuple[list[OrderDiscrepancy], list[str]]:
         discrepancies: list[OrderDiscrepancy] = []
+        failed: list[str] = []
 
-        db_pending: dict[str, DbOrder] = {
-            o.client_order_id: o for o in self._order_repo.list_by_status(bot_run_id, "PENDING")
-        }
+        pending_rows = self._order_repo.list_by_status(
+            bot_run_id, "PENDING", limit=_ORDER_FETCH_LIMIT
+        )
+        if len(pending_rows) >= _ORDER_FETCH_LIMIT:
+            _log.warning(
+                "reconciliation.order_fetch_limit_reached",
+                bot_run_id=bot_run_id,
+                limit=_ORDER_FETCH_LIMIT,
+                msg="Result may be incomplete; PENDING orders beyond the limit are not reconciled.",
+            )
+        db_pending: dict[str, DbOrder] = {o.client_order_id: o for o in pending_rows}
+
+        # Símbolos configurados + cualquiera con órdenes PENDING en DB: si no se
+        # consulta al exchange por ese símbolo, sus PENDING se marcarían
+        # MISSING_IN_ADAPTER sin base.
+        symbols = sorted(set(self._symbols) | {o.symbol for o in db_pending.values()})
+
         seen_adapter_coids: set[str] = set()
-
-        for symbol in self._symbols:
+        for symbol in symbols:
             try:
                 adapter_orders = self._adapter.get_open_orders(symbol)
             except Exception:
                 _log.error("reconciliation.orders_fetch_failed", symbol=symbol, exc_info=True)
+                failed.append(symbol)
                 continue
 
             if not adapter_orders:
                 continue
 
-            known_ids = self._order_repo.list_known_client_order_ids(
-                [o.client_order_id for o in adapter_orders]
-            )
-
+            db_rows = {
+                o.client_order_id: o
+                for o in self._order_repo.list_by_client_order_ids(
+                    [o.client_order_id for o in adapter_orders]
+                )
+            }
             for adapter_order in adapter_orders:
                 seen_adapter_coids.add(adapter_order.client_order_id)
-                discrepancies.extend(self._compare_order(adapter_order, db_pending, known_ids))
+                discrepancies.extend(
+                    self._compare_order(adapter_order, db_rows.get(adapter_order.client_order_id))
+                )
 
         # Órdenes PENDING en DB que ya no están vivas en el exchange (se
-        # resolvieron fuera del bot: fill o cancelación manual).
+        # resolvieron fuera del bot: fill o cancelación manual). Se omiten los
+        # símbolos cuyo fetch falló: sin haber consultado al exchange no se puede
+        # afirmar que la orden ya no está viva.
         for coid, db_order in db_pending.items():
-            if coid not in seen_adapter_coids:
+            if coid not in seen_adapter_coids and db_order.symbol not in failed:
                 discrepancies.append(
                     OrderDiscrepancy(
                         client_order_id=coid,
@@ -409,17 +479,16 @@ class ReconciliationEngine:
                     )
                 )
 
-        return discrepancies
+        return discrepancies, failed
 
     def _compare_order(
         self,
         adapter_order: OrderResult,
-        db_pending: dict[str, DbOrder],
-        known_ids: set[str],
+        db_order: DbOrder | None,
     ) -> list[OrderDiscrepancy]:
         coid = adapter_order.client_order_id
 
-        if coid not in known_ids:
+        if db_order is None:
             return [
                 OrderDiscrepancy(
                     client_order_id=coid,
@@ -449,8 +518,11 @@ class ReconciliationEngine:
                 )
             ]
 
-        db_order = db_pending.get(coid)
-        if db_order is not None and adapter_order.status.value != db_order.status:
+        # El exchange reporta la orden viva (get_open_orders → PENDING). Cualquier
+        # status local distinto es divergencia, incluido el caso peligroso: una
+        # orden dada por resuelta localmente (FAILED/CANCELLED/FILLED por un
+        # timeout de confirmación) que en el exchange sigue abierta.
+        if adapter_order.status.value != db_order.status:
             return [
                 OrderDiscrepancy(
                     client_order_id=coid,
