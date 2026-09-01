@@ -795,6 +795,22 @@ class TestOrderRepository:
         repo = OrderRepository(session)
         assert repo.list_known_client_order_ids([]) == set()
 
+    def test_list_by_client_order_ids_returns_full_rows(self, session: Session) -> None:
+        run = _bot_run(session)
+        known = self._order(session, run)
+
+        repo = OrderRepository(session)
+        rows = repo.list_by_client_order_ids([known.client_order_id, "unknown-client-order-id"])
+
+        assert [r.client_order_id for r in rows] == [known.client_order_id]
+        assert rows[0].status == "PENDING"
+
+    def test_list_by_client_order_ids_empty_input_returns_empty_without_querying(
+        self, session: Session
+    ) -> None:
+        repo = OrderRepository(session)
+        assert repo.list_by_client_order_ids([]) == []
+
 
 # ---------------------------------------------------------------------------
 # PositionRepository

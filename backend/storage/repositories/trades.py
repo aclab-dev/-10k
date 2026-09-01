@@ -119,6 +119,18 @@ class OrderRepository(BaseRepository[Order]):
         stmt = select(Order.client_order_id).where(Order.client_order_id.in_(client_order_ids))
         return set(self._session.scalars(stmt))
 
+    def list_by_client_order_ids(self, client_order_ids: list[str]) -> list[Order]:
+        """Filas completas de `orders` para los `client_order_ids` dados, en una sola query.
+
+        Variante de `list_known_client_order_ids` que devuelve la fila entera (no
+        solo el id) para poder comparar el status local contra el que reporta el
+        exchange (ReconciliationEngine._compare_order).
+        """
+        if not client_order_ids:
+            return []
+        stmt = select(Order).where(Order.client_order_id.in_(client_order_ids))
+        return list(self._session.scalars(stmt))
+
 
 class PositionRepository(BaseRepository[Position]):
     model = Position
