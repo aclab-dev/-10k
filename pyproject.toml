@@ -74,4 +74,5 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "chaos: fault-injection / chaos tests (F16) — run with '-m chaos'",
 ]
