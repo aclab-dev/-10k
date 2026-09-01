@@ -110,6 +110,13 @@ reconciliation:
   block_on_unconfirmed_protection: true
   manual_balance_change_policy: UPDATE_ACCOUNT_STATE_ONLY
 
+connection_health:
+  # Umbrales de alerta temprana (F16 [117]), mas estrictos que el bound duro
+  # de MarketSnapshot (±5000ms / 10000ms): dispara SAFE_MODE antes de que la
+  # señal se pierda como un simple fetch fallido.
+  max_clock_skew_ms: 2000
+  max_latency_ms: 3000
+
 idempotency:
   required: true
   require_cycle_id: true

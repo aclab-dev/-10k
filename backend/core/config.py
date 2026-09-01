@@ -281,6 +281,53 @@ class ReconciliationConfig(BaseModel):
     manual_balance_change_policy: str
 
 
+# Bounds duros del contrato MarketSnapshot (backend/market_data/schemas.py:
+# _MAX_CLOCK_SKEW_MS/_MAX_LATENCY_MS). Duplicados acá a proposito: importarlos
+# crearia un ciclo core.config <-> market_data.schemas (schemas.py ya importa
+# Environment de este modulo). Si esos valores cambian, este validator tambien
+# debe actualizarse.
+_MARKET_SNAPSHOT_MAX_CLOCK_SKEW_MS = 5_000
+_MARKET_SNAPSHOT_MAX_LATENCY_MS = 10_000
+
+
+class ConnectionHealthConfig(BaseModel):
+    """Umbrales de alerta temprana para clock skew/latencia (F16 [117]).
+
+    Deben ser mas estrictos que el bound duro de MarketSnapshot (que solo
+    rechaza la construccion del snapshot): este umbral dispara SAFE_MODE antes
+    de que la señal se pierda como un simple fetch fallido.
+    """
+
+    max_clock_skew_ms: int
+    max_latency_ms: int
+
+    @field_validator("max_clock_skew_ms")
+    @classmethod
+    def clock_skew_below_hard_bound(cls, v: int) -> int:
+        if v <= 0:
+            raise ConfigError(f"connection_health.max_clock_skew_ms={v} debe ser > 0")
+        if v >= _MARKET_SNAPSHOT_MAX_CLOCK_SKEW_MS:
+            raise ConfigError(
+                f"connection_health.max_clock_skew_ms={v} debe ser menor al bound duro de "
+                f"MarketSnapshot ({_MARKET_SNAPSHOT_MAX_CLOCK_SKEW_MS} ms), o nunca se "
+                "dispararia antes del rechazo del snapshot"
+            )
+        return v
+
+    @field_validator("max_latency_ms")
+    @classmethod
+    def latency_below_hard_bound(cls, v: int) -> int:
+        if v <= 0:
+            raise ConfigError(f"connection_health.max_latency_ms={v} debe ser > 0")
+        if v >= _MARKET_SNAPSHOT_MAX_LATENCY_MS:
+            raise ConfigError(
+                f"connection_health.max_latency_ms={v} debe ser menor al bound duro de "
+                f"MarketSnapshot ({_MARKET_SNAPSHOT_MAX_LATENCY_MS} ms), o nunca se "
+                "dispararia antes del rechazo del snapshot"
+            )
+        return v
+
+
 class IdempotencyConfig(BaseModel):
     required: bool
     require_cycle_id: bool
@@ -505,6 +552,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig
     setup_registry: SetupRegistryConfig
     reconciliation: ReconciliationConfig
+    connection_health: ConnectionHealthConfig
     idempotency: IdempotencyConfig
     liquidation_safety: LiquidationSafetyConfig
     capital_management: CapitalManagementConfig

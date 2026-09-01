@@ -26,6 +26,7 @@ import structlog
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
@@ -66,6 +67,7 @@ class CycleRunner:
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
         position_tick_service: PositionTickService | None = None,
         orphan_order_scanner: OrphanOrderScanner | None = None,
+        connection_health_monitor: ConnectionHealthMonitor | None = None,
         market_data_service: MarketDataCycleService | None = None,
         execution_engine: ExecutionEngine | None = None,
         gpt_client: GPTClient | None = None,
@@ -82,6 +84,7 @@ class CycleRunner:
         self._heartbeat_file = heartbeat_file
         self._position_tick_service = position_tick_service
         self._orphan_order_scanner = orphan_order_scanner
+        self._connection_health_monitor = connection_health_monitor
         self._market_data_service = market_data_service
         self._execution_engine = execution_engine
         self._shutdown_event = threading.Event()
@@ -219,6 +222,9 @@ class CycleRunner:
         para que cada capa trabaje con el snapshot mas reciente. MarketDataCycleService
         y PositionTickService aislan fallas por simbolo internamente. El pipeline
         de decision también aísla fallas por símbolo para mantener el heartbeat vivo.
+        El monitor de salud de conexion corre justo despues de market data (F16
+        [117]): evalua los snapshots recien obtenidos (conectividad/clock skew/
+        latencia) antes de que posiciones u ordenes se gestionen sobre ese ciclo.
         El scanner de ordenes huerfanas corre despues de tickear posiciones (F16
         [115]): reconcilia contra el estado ya actualizado de ese ciclo, y aisla
         fallas por simbolo internamente igual que los demas servicios tickeados.
@@ -229,6 +235,8 @@ class CycleRunner:
         snapshots: list[MarketSnapshot] = []
         if self._market_data_service is not None:
             snapshots = self._market_data_service.tick_all()
+        if self._connection_health_monitor is not None:
+            self._connection_health_monitor.check_and_enforce(snapshots)
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
         if self._orphan_order_scanner is not None:
