@@ -22,6 +22,9 @@ from backend.connection_health.schemas import ConnectionAnomalyReason
 from backend.core.config import Environment
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
+from backend.market_data.cycle_service import MarketDataCycleService
+from backend.market_data.engine import MarketDataEngine
+from backend.market_data.fetcher import MockDataFetcher
 from backend.market_data.schemas import (
     CandleData,
     Candles,
@@ -37,7 +40,7 @@ from backend.storage.models import BotState as BotStateRow
 from backend.storage.models import SystemEvent
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
-from tests.chaos.faults import ChaosAdapter, InjectedDisconnectError
+from tests.chaos.faults import ChaosAdapter, ChaosFetcher, InjectedDisconnectError
 from tests.unit.conftest import make_bot_run
 
 pytestmark = pytest.mark.chaos
@@ -165,6 +168,33 @@ def test_reconciliation_reports_incomplete_when_symbol_unreachable() -> None:
     assert report.failed_symbols == ["ETHUSDT"]
     assert report.is_complete is False
     assert report.is_consistent is False
+
+
+# ---------------------------------------------------------------------------
+# MarketDataCycleService — feed de datos caído a nivel DataFetcher
+# ---------------------------------------------------------------------------
+
+
+def test_data_feed_failure_for_one_symbol_is_isolated_at_fetcher_level() -> None:
+    """Distinto de la desconexión del ExchangeAdapter (`ChaosAdapter.fail`): acá
+    cae el feed de un símbolo a nivel `DataFetcher`. El resto del escaneo sigue,
+    y el símbolo caído no deja un `last_price` inventado; al ciclo siguiente el
+    feed se recupera."""
+    inner = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    fetcher = ChaosFetcher(MockDataFetcher(seed=1))
+    fetcher.fail_symbol("ETHUSDT", times=1)
+    engine = MagicMock(spec=MarketDataEngine)
+    service = MarketDataCycleService(inner, fetcher, engine, Mock(), ["BTCUSDT", "ETHUSDT"])
+
+    first = service.tick_all()
+
+    assert [s.symbol for s in first] == ["BTCUSDT"]
+    assert service.get_last_price("ETHUSDT") is None
+    assert service.get_last_price("BTCUSDT") is not None
+
+    second = service.tick_all()
+
+    assert {s.symbol for s in second} == {"BTCUSDT", "ETHUSDT"}
 
 
 # ---------------------------------------------------------------------------

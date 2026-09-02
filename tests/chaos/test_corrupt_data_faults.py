@@ -34,7 +34,7 @@ from backend.reconciliation.engine import DiscrepancyType, ReconciliationEngine
 from backend.storage.models import BotState as BotStateRow
 from backend.storage.models import SystemEvent
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
-from tests.chaos.faults import ChaosFetcher
+from tests.chaos.faults import ChaosAdapter, ChaosFetcher
 from tests.unit.conftest import make_bot_run, make_bot_state
 
 pytestmark = pytest.mark.chaos
@@ -132,7 +132,7 @@ async def test_clock_skew_snapshot_forces_safe_mode(session: Session) -> None:
 
 
 def _reco_engine(
-    adapter: PaperAdapter,
+    adapter: PaperAdapter | ChaosAdapter,
     *,
     db_positions: list[object] | None = None,
     db_pending: list[object] | None = None,
@@ -250,6 +250,44 @@ def test_reconciliation_flags_missing_protection_for_unwatched_position() -> Non
     assert DiscrepancyType.MISSING_PROTECTION in {
         d.discrepancy_type for d in report.position_discrepancies
     }
+
+
+def test_reconciliation_flags_position_vanished_from_exchange() -> None:
+    """El exchange deja de reportar una posición que la DB tiene OPEN (el feed
+    de posiciones miente por omisión): se marca MISSING_IN_ADAPTER y el reporte
+    no es consistente — nunca se asume que la posición se cerró sola."""
+    inner = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    inner.set_leverage("BTCUSDT", 1)
+    inner.place_order(
+        OrderRequest(
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=Decimal("0.01"),
+            price=Decimal("50000"),
+        )
+    )
+    adapter_pos = inner.get_position("BTCUSDT")
+    assert adapter_pos is not None
+    adapter = ChaosAdapter(inner)
+    adapter.vanish_position("BTCUSDT")  # el exchange lo ve flat
+
+    db_pos = _db_row(
+        symbol="BTCUSDT",
+        quantity=adapter_pos.quantity,
+        entry_price=adapter_pos.entry_price,
+        direction="BUY",
+        status="OPEN",
+    )
+    engine = _reco_engine(adapter, db_positions=[db_pos])
+
+    report = engine.reconcile(_BOT_RUN_ID)
+
+    assert DiscrepancyType.MISSING_IN_ADAPTER in {
+        d.discrepancy_type for d in report.position_discrepancies
+    }
+    assert report.is_consistent is False
+    assert adapter.call_count["get_position"] >= 1  # la lectura instrumentada corrió
 
 
 # ---------------------------------------------------------------------------
