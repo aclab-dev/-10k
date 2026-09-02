@@ -91,13 +91,30 @@ ocurre incluso si el loop terminó por una excepción.
 real.** Un `SIGKILL` no le da chance al `finally` de correr: el `BotRun` queda
 en `RUNNING` en la base aunque el proceso ya no exista, y el próximo arranque
 lo detecta y cierra como `CRASHED` (ver §3) — funciona, pero es el camino de
-recuperación de una falla, no el apagado normal. Preferir siempre `stop`/`down`
-sin `-t 0` (el timeout por defecto de Compose ya le da margen al ciclo en curso
-para terminar antes de forzar `SIGKILL`).
+recuperación de una falla, no el apagado normal.
 
-Antes de un apagado planeado (mantenimiento, deploy), confirmar que no hay una
-decisión en curso mirando `/health` y los logs — un `SIGTERM` a mitad de una
-llamada a GPT no la corta, pero sí evita que arranque una nueva.
+`CycleRunner` solo revisa la señal de shutdown al tope del `while` externo y
+durante la espera entre ciclos (`backend/trading_core/cycle_runner.py`) —
+**no la revisa a mitad de un tick en curso**. Un tick procesa los símbolos
+configurados secuencialmente, cada uno con su propia llamada a GPT (timeout de
+30s por intento, hasta 4 intentos con backoff — `backend/decision_engine/gpt_client.py`),
+así que un tick real puede tardar varios minutos. El `SIGTERM` no lo acorta:
+solo evita que arranque el próximo tick, y el shutdown limpio queda esperando
+a que termine el actual.
+
+El timeout por defecto de `docker compose stop` es **10s** (`docker-compose.yml`
+no define `stop_grace_period`), muy por debajo de lo que puede tardar un tick
+en curso — con ese default, un `stop` a mitad de tick casi siempre termina en
+`SIGKILL` igual. Para un apagado planeado, usar un timeout explícito generoso:
+
+```bash
+docker compose stop -t 300 worker   # o el timeout que cubra el peor caso real
+```
+
+Si aun así se agota el timeout y Docker manda `SIGKILL`, no es un error grave
+— cae en el mismo camino de recuperación de un crash (§3), solo que evitable
+si se planifica el apagado. Antes de un apagado planeado, confirmar que no hay
+una decisión en curso mirando los logs (`docker compose logs -f worker`).
 
 ---
 
@@ -134,9 +151,11 @@ el siguiente arranque, sin intervención manual para el caso simple:
 2. `docker compose logs worker --since 10m` — buscar `orphan_bot_run_closed` y
    `kill_switch_carried_over`.
 3. `curl -s localhost:8000/health` — confirma DB alcanzable y versión corriendo.
-4. Si había posiciones abiertas al momento del crash: confirmar en el dashboard
-   (`/api/status`) que quedaron protegidas o que el bot está en `SAFE_MODE` — no
-   dejarlas sin revisar.
+4. Si había posiciones abiertas al momento del crash: confirmar que el bot
+   quedó en `SAFE_MODE` (`/api/status` expone `state`/`state_reason`, no
+   posiciones individuales — no hay endpoint de posiciones hoy, ver §6.3) o
+   revisar directamente contra el exchange/`PaperAdapter`. No asumir que
+   quedaron protegidas sin revisar.
 5. Revisar la causa raíz (OOM, panic de Docker, host reiniciado) antes de
    retomar `ACTIVE` — ver §6.
 
@@ -283,7 +302,12 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   `orchestrator.orphan_bot_run_closed`, hallazgos de `OrphanOrderScanner` /
   `ConnectionHealthMonitor` (nombres de evento con prefijo del módulo).
 - `/api/status` en el dashboard (requiere auth) para el estado actual del
-  `BotRun`, PnL y posiciones.
+  `BotRun` (`run_status`, `state`/`state_reason`) y la cuenta agregada
+  (balance, equity, PnL, drawdown, exposición). **No expone posiciones
+  individuales** — `backend/api/routes_positions.py` y `routes_orders.py`
+  existen como stubs vacíos, sin montar en `backend/app/main.py`. Para ver
+  posiciones puntuales hoy hay que mirar los logs o el estado del
+  `PaperAdapter`/exchange directamente.
 - `backend/reconciliation/engine.py` (`ReconciliationEngine`) compara estado
   local vs. exchange bajo demanda (posiciones no registradas, fills parciales,
   cambios manuales, protecciones faltantes) — **hoy es una clase de librería,
