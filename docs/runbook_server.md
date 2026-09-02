@@ -41,8 +41,10 @@ Orden real de arranque (ver `docker-compose.yml`):
 
 1. `postgres` — arranca y espera `pg_isready` (healthcheck cada 5s, hasta 10 intentos).
 2. `app` — espera a que `postgres` esté `healthy`, corre `alembic upgrade head` y
-   recién después levanta `uvicorn`. Su propio healthcheck (`curl /health`) no
-   se evalúa hasta pasados 15s (`start_period`).
+   recién después levanta `uvicorn`. Su propio healthcheck (`curl /health`) ya
+   corre durante los primeros 15s (`start_period`), pero un fallo en esa
+   ventana no cuenta contra `retries` — recién después de esos 15s un fallo
+   empieza a sumar hacia el límite que marca al contenedor `unhealthy`.
 3. `worker` — arranca en paralelo a `app` en cuanto `postgres` está `healthy`
    (no depende de `app`). Corre `python -m worker.run_worker`.
 
@@ -229,13 +231,16 @@ procedimiento es manual:
 ### 5.1 Backup lógico (`pg_dump`)
 
 ```bash
-docker compose exec postgres pg_dump -U "${POSTGRES_USER:-bot}" -d "${POSTGRES_DB:-cryptobot}" -F c \
+docker compose exec -T postgres pg_dump -U "${POSTGRES_USER:-bot}" -d "${POSTGRES_DB:-cryptobot}" -F c \
   > "backup_$(date +%Y%m%d_%H%M%S).dump"
 ```
 
-`-F c` (formato custom) permite restore selectivo y es más chico que un SQL
-plano. Guardar el archivo fuera del host (no alcanza con que sobreviva un
-`docker compose down -v`, que borra el volumen).
+`-T` es necesario: sin él, `exec` puede asignar un pseudo-TTY y corromper la
+salida binaria de `-F c` al redirigirla a un archivo — mismo motivo por el que
+el restore de abajo también lo usa. `-F c` (formato custom) permite restore
+selectivo y es más chico que un SQL plano. Guardar el archivo fuera del host
+(no alcanza con que sobreviva un `docker compose down -v`, que borra el
+volumen).
 
 ### 5.2 Restore
 
@@ -325,11 +330,22 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   cambios manuales, protecciones faltantes) — **hoy es una clase de librería,
   no wireada al loop del worker ni expuesta por script o endpoint** (existe
   `reconciliation.run_before_new_entries` en `config.yaml`, pero nada lo lee
-  todavía). Para correrla manualmente hoy hace falta un script ad-hoc que
-  instancie `ReconciliationEngine` con el adapter, los repos y la sesión de
-  DB activos — no hay un comando listo. Si se necesita este chequeo con
-  frecuencia, vale la pena levantar una tarjeta separada para exponerlo como
-  script o endpoint.
+  todavía). Para correrla manualmente hoy hace falta un script ad-hoc, no hay
+  un comando listo — instanciarla requiere exactamente esta firma:
+
+  ```python
+  from backend.reconciliation.engine import ReconciliationEngine
+
+  engine = ReconciliationEngine(adapter, position_repo, order_repo, position_manager)
+  report = engine.reconcile(bot_run_id)
+  # report.is_consistent / report.position_discrepancies / report.order_discrepancies
+  ```
+
+  `adapter` es el mismo `ExchangeAdapter` (hoy `PaperAdapter`) que usa el
+  worker en curso, y `position_repo`/`order_repo`/`position_manager` salen de
+  la misma sesión de DB — no instancias nuevas divergentes. Si se necesita
+  este chequeo con frecuencia, vale la pena levantar una tarjeta separada
+  para exponerlo como script o endpoint en vez de repetir este ad-hoc cada vez.
 
 ### 6.4 Retomar operación tras SAFE_MODE / HALTED / kill switch
 
@@ -343,9 +359,9 @@ No hay auto-resume por diseño (PDF 4.8: `KILL_SWITCH_TRIGGERED` solo degrada a
 3. Reiniciar el worker (`docker compose restart worker`) tiene efecto distinto
    según el estado (ver punto 2 de la sección 3):
    - Si está en `HALTED` o `KILL_SWITCH_TRIGGERED`, el restart **no** lo
-     resuelve — esos dos se arrastran al `BotRun` nuevo tal cual. Hace falta
-     resolver la causa y, para `KILL_SWITCH_TRIGGERED`, además el paso 4 de
-     abajo antes de que un restart pueda volver a `ACTIVE`.
+     resuelve — esos dos se arrastran al `BotRun` nuevo tal cual, indefinidamente:
+     un restart nunca los promueve a `ACTIVE` por sí solo, por más veces que
+     se reinicie. Ver el paso 4 de abajo para el único camino real de vuelta.
    - Si está en `SAFE_MODE` o `MANUAL_PAUSED`, el restart **sí** vuelve a
      `ACTIVE` — no hay arrastre. Por eso mismo, **no reiniciar el worker como
      forma de "limpiar" ninguno de los dos sin haber resuelto la causa
@@ -354,11 +370,19 @@ No hay auto-resume por diseño (PDF 4.8: `KILL_SWITCH_TRIGGERED` solo degrada a
      lo pueden volver a detectar en el próximo tick si el problema sigue ahí.
      Para `MANUAL_PAUSED` no hay ninguna: un restart lo reactiva sin que nada
      lo vuelva a frenar.
-4. Si el estado quedó en `KILL_SWITCH_TRIGGERED`, no hay endpoint para
-   destrabarlo automáticamente — requiere intervención directa sobre `bot_state`
-   en DB tras confirmar que es seguro, dado que la state machine solo permite
-   degradarlo a `HALTED` (`_ALLOWED_TRANSITIONS`), nunca de vuelta a `ACTIVE`
-   directamente.
+4. No hay ningún endpoint que escriba `bot_state` salvo `/api/kill-switch`
+   (que solo produce `KILL_SWITCH_TRIGGERED`) — ni para bajar
+   `KILL_SWITCH_TRIGGERED` a `HALTED`, ni para subir `HALTED` de vuelta a
+   `ACTIVE`, aunque la state machine permite ambas transiciones
+   (`_ALLOWED_TRANSITIONS`). Un restart del worker **no hace ninguna de las
+   dos** — solo arrastra tal cual el último estado persistido (ver punto 3).
+   Hoy la única vía para cualquiera de esas dos transiciones es insertar a
+   mano una fila nueva en `bot_state` (tabla `backend/storage/models.py::BotState`
+   — columnas `bot_run_id`, `state`, `previous_state`, `reason`,
+   `created_at`) con el `state` destino para el `bot_run_id` activo, dejando
+   `reason` con el motivo de la intervención para la auditoría. Es decir: para
+   volver de `KILL_SWITCH_TRIGGERED` a `ACTIVE` hacen falta **dos** inserts
+   manuales separados (`HALTED` primero, `ACTIVE` después), no uno.
 
 ### 6.5 Incidentes que no cubre nada de lo anterior
 
