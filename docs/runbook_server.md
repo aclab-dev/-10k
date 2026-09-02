@@ -8,6 +8,14 @@ en `develop` — no son recomendaciones genéricas.
 Alcance: entorno `PAPER` en un solo host con Docker Compose (`docker-compose.yml`).
 No cubre despliegue TESTNET/LIVE ni orquestación multi-nodo — eso es F17/F18.
 
+Varias secciones documentan un "estado actual" verificado contra `develop` a
+la fecha de este documento pero deliberadamente sin resolver (rotación de
+logs sin límites en `docker-compose.yml`, `ReconciliationEngine` sin wirear al
+loop, endpoints de posiciones/órdenes sin montar) — son gaps de infra que
+corresponden a F17, no a esta tarjeta. Cuando F17 los cierre, revisar y
+actualizar las secciones §4 y §6.3 de este documento; de lo contrario quedan
+desactualizadas en silencio.
+
 ---
 
 ## 1. Arranque
@@ -331,7 +339,7 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   no wireada al loop del worker ni expuesta por script o endpoint** (existe
   `reconciliation.run_before_new_entries` en `config.yaml`, pero nada lo lee
   todavía). Para correrla manualmente hoy hace falta un script ad-hoc, no hay
-  un comando listo — instanciarla requiere exactamente esta firma:
+  un comando listo — el constructor real (`ReconciliationEngine.__init__`) es:
 
   ```python
   from backend.reconciliation.engine import ReconciliationEngine
@@ -341,8 +349,12 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   # report.is_consistent / report.position_discrepancies / report.order_discrepancies
   ```
 
-  `adapter` es el mismo `ExchangeAdapter` (hoy `PaperAdapter`) que usa el
-  worker en curso, y `position_repo`/`order_repo`/`position_manager` salen de
+  `adapter`, `position_repo` y `order_repo` son requeridos; `position_manager`
+  es opcional (default `None`), igual que `symbols` y `decimal_tolerance` —
+  pero omitirlo desactiva el chequeo de protecciones (SL/TP faltante o
+  divergente), que es justo el hallazgo más interesante del caso. `adapter` es
+  el mismo `ExchangeAdapter` (hoy `PaperAdapter`) que usa el worker en curso,
+  y `position_repo`/`order_repo`/`position_manager` salen de
   la misma sesión de DB — no instancias nuevas divergentes. Si se necesita
   este chequeo con frecuencia, vale la pena levantar una tarjeta separada
   para exponerlo como script o endpoint en vez de repetir este ad-hoc cada vez.
@@ -377,12 +389,26 @@ No hay auto-resume por diseño (PDF 4.8: `KILL_SWITCH_TRIGGERED` solo degrada a
    (`_ALLOWED_TRANSITIONS`). Un restart del worker **no hace ninguna de las
    dos** — solo arrastra tal cual el último estado persistido (ver punto 3).
    Hoy la única vía para cualquiera de esas dos transiciones es insertar a
-   mano una fila nueva en `bot_state` (tabla `backend/storage/models.py::BotState`
-   — columnas `bot_run_id`, `state`, `previous_state`, `reason`,
-   `created_at`) con el `state` destino para el `bot_run_id` activo, dejando
-   `reason` con el motivo de la intervención para la auditoría. Es decir: para
-   volver de `KILL_SWITCH_TRIGGERED` a `ACTIVE` hacen falta **dos** inserts
-   manuales separados (`HALTED` primero, `ACTIVE` después), no uno.
+   mano una fila nueva en `bot_state`. **`id` y `created_at` no tienen
+   `server_default` en la migración** (`migrations/versions/c1edf83a521c_create_all_annexb_tables.py`)
+   — son defaults del lado de Python (`_uuid()`/`_now()` en
+   `backend/storage/models.py::BotState`) que solo aplican pasando por el
+   ORM. Un INSERT crudo sin proveerlos explícitamente falla por `NOT NULL`.
+   Ejemplo funcional vía `psql` (Postgres 16 trae `gen_random_uuid()` nativo,
+   sin extensión):
+
+   ```bash
+   docker compose exec -T postgres psql -U "${POSTGRES_USER:-bot}" -d "${POSTGRES_DB:-cryptobot}" <<'SQL'
+   INSERT INTO bot_state (id, bot_run_id, state, previous_state, reason, created_at)
+   VALUES (gen_random_uuid(), '<bot_run_id activo>', 'HALTED', 'KILL_SWITCH_TRIGGERED',
+           '<motivo de la intervención manual>', now());
+   SQL
+   ```
+
+   Reemplazar `state`/`previous_state` según la transición (`'ACTIVE'` /
+   `'HALTED'` para el segundo paso). Para volver de `KILL_SWITCH_TRIGGERED` a
+   `ACTIVE` hacen falta **dos** inserts así, uno por uno (`HALTED` primero,
+   `ACTIVE` después) — no hay atajo directo.
 
 ### 6.5 Incidentes que no cubre nada de lo anterior
 
