@@ -62,9 +62,12 @@ antes de entrar al loop. En ese arranque:
 
 - Cierra como `CRASHED` cualquier `BotRun` que haya quedado en `RUNNING` de una
   corrida anterior (ver §3).
-- Arrastra al nuevo `BotRun` el último estado persistido si no era uno "corriendo"
-  (`SAFE_MODE`, `HALTED`, `KILL_SWITCH_TRIGGERED`, `MANUAL_PAUSED`) — el bot **no
-  vuelve a `ACTIVE` solo por reiniciar el proceso** (ver §3 y §6).
+- Arrastra al nuevo `BotRun` el último estado persistido si era uno "detenido"
+  (`HALTED` o `KILL_SWITCH_TRIGGERED`, según `BotStateMachine.is_running()`) —
+  para esos dos el bot **no vuelve a `ACTIVE` solo por reiniciar el proceso**
+  (ver §3 y §6). `SAFE_MODE` y `MANUAL_PAUSED` sí cuentan como "corriendo": si
+  el `BotRun` anterior quedó en alguno de esos dos, el nuevo arranque **sí
+  nace en `ACTIVE`**, sin arrastrar nada.
 - Si ya hay otro `BotRun` `RUNNING` (dos workers arrancando a la vez), lanza
   `BotRunAlreadyActiveError`, loguea `worker.bot_run_already_active` y sale con
   código 1 tras dormir `WORKER_STARTUP_RACE_BACKOFF_SECONDS` (300s por defecto).
@@ -128,12 +131,21 @@ el siguiente arranque, sin intervención manual para el caso simple:
    host) y loguea `orchestrator.orphan_bot_run_closed` con su ID. Si aparece
    este log, vale la pena revisar por qué murió el proceso anterior — no es
    ruido esperado en operación normal.
-2. **Estado no-`ACTIVE` se arrastra** — si el `BotRun` anterior había quedado en
-   `SAFE_MODE`, `HALTED`, `KILL_SWITCH_TRIGGERED` o `MANUAL_PAUSED`, el nuevo
-   arranque **no vuelve a `ACTIVE` automáticamente**. Se loguea
+2. **Estado detenido se arrastra — solo `HALTED` y `KILL_SWITCH_TRIGGERED`** —
+   si el `BotRun` anterior había quedado en uno de esos dos, el nuevo arranque
+   **no vuelve a `ACTIVE` automáticamente**. Se loguea
    `orchestrator.kill_switch_carried_over`. Esto es intencional (PDF 4.8): un
    estado detenido exige revisión humana, no un simple restart de proceso.
-   Ver §6 para cómo retomar.
+   Ver §6 para cómo retomar. **`SAFE_MODE` y `MANUAL_PAUSED` no se arrastran**
+   (`BotStateMachine.is_running()` los cuenta como "corriendo"): un `BotRun`
+   que quedó en cualquiera de esos dos nace en `ACTIVE` tras un restart. Para
+   `SAFE_MODE` esto no dependió nunca del arrastre — ver punto 3: si sigue
+   habiendo una condición real (posición sin protección, conectividad), el
+   bot vuelve a caer en `SAFE_MODE` solo, por re-detección del propio
+   `OrphanOrderScanner`/`ConnectionHealthMonitor` en el próximo tick, no
+   porque el estado anterior haya sobrevivido al restart. `MANUAL_PAUSED` sí
+   se pierde sin más: un restart lo reactiva sin ninguna re-detección que lo
+   frene.
 3. **Posiciones sin protección tras el restart** — `PositionManager` guarda el
    `PositionConfig` (SL/TP efectivo, trailing, break-even) **en memoria**. Un
    restart del worker lo pierde por completo: si había posiciones abiertas,
@@ -328,10 +340,20 @@ No hay auto-resume por diseño (PDF 4.8: `KILL_SWITCH_TRIGGERED` solo degrada a
    posiciones reales en el exchange/`PaperAdapter`).
 2. Resolver lo que haya quedado inconsistente (posición sin protección,
    orden huérfana, conectividad).
-3. Reiniciar el worker (`docker compose restart worker`) **solo si el estado
-   persistido ya no es uno detenido** — si sigue en `SAFE_MODE`/`HALTED`, el
-   restart lo va a arrastrar igual (ver punto 2 de la sección 3) y no alcanza
-   con reiniciar el proceso para "limpiar" el estado.
+3. Reiniciar el worker (`docker compose restart worker`) tiene efecto distinto
+   según el estado (ver punto 2 de la sección 3):
+   - Si está en `HALTED` o `KILL_SWITCH_TRIGGERED`, el restart **no** lo
+     resuelve — esos dos se arrastran al `BotRun` nuevo tal cual. Hace falta
+     resolver la causa y, para `KILL_SWITCH_TRIGGERED`, además el paso 4 de
+     abajo antes de que un restart pueda volver a `ACTIVE`.
+   - Si está en `SAFE_MODE` o `MANUAL_PAUSED`, el restart **sí** vuelve a
+     `ACTIVE` — no hay arrastre. Por eso mismo, **no reiniciar el worker como
+     forma de "limpiar" ninguno de los dos sin haber resuelto la causa
+     primero**: el restart no vuelve a verificar nada. Para `SAFE_MODE` al
+     menos hay red de seguridad — `OrphanOrderScanner`/`ConnectionHealthMonitor`
+     lo pueden volver a detectar en el próximo tick si el problema sigue ahí.
+     Para `MANUAL_PAUSED` no hay ninguna: un restart lo reactiva sin que nada
+     lo vuelva a frenar.
 4. Si el estado quedó en `KILL_SWITCH_TRIGGERED`, no hay endpoint para
    destrabarlo automáticamente — requiere intervención directa sobre `bot_state`
    en DB tras confirmar que es seguro, dado que la state machine solo permite
