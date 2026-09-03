@@ -23,17 +23,17 @@ casos de orfandad:
   restart del worker pierde todos los PositionConfig en memoria y deja
   posiciones abiertas sin ningún monitoreo, en silencio.
 
-Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE replicando el
-patrón de routes_kill_switch.py (lock de fila del BotRun, transición validada
-por la state machine, persistencia atómica de BotState + SystemEvent). El
-estado en memoria se muta recién después de que el commit tiene éxito, no
-antes: si la persistencia falla, memoria y DB no deben divergir (ver
-_trigger_safe_mode).
+Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE vía
+EmergencyStopService (F16 [158]), compartido con routes_kill_switch.py y
+ConnectionHealthMonitor: lock de fila del BotRun, transición validada por la
+state machine, persistencia atómica de BotState + SystemEvent. El estado en
+memoria se muta recién después de que el commit tiene éxito, no antes: si la
+persistencia falla, memoria y DB no deben divergir (ver _trigger_safe_mode).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 from sqlalchemy.exc import SQLAlchemyError
@@ -43,15 +43,18 @@ from backend.exchange_adapters.base import ExchangeAdapter
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.orphan_order_scanner.schemas import OrphanFinding, OrphanReason
 from backend.position_manager.manager import PositionManager
-from backend.storage.models import BotRun, SystemEvent
-from backend.storage.models import BotState as BotStateRow
-from backend.storage.repositories.audit import SystemEventRepository
-from backend.storage.repositories.bot import BotStateRepository
+from backend.storage.models import SystemEvent
 from backend.storage.repositories.trades import OrderRepository
 from backend.trading_core.bot_state_machine import (
     BotState,
     BotStateMachine,
-    resolve_persisted_state,
+    InvalidStateTransitionError,
+)
+from backend.trading_core.emergency_stop import (
+    BotRunNotRunningError,
+    CurrentStateNotAllowedError,
+    EmergencyStopService,
+    UnknownPersistedStateError,
 )
 
 _log = structlog.get_logger(__name__)
@@ -157,98 +160,66 @@ class OrphanOrderScanner:
         return findings
 
     def _trigger_safe_mode(self, findings: list[OrphanFinding]) -> None:
-        # Lock de fila: evita una carrera con un kill switch manual disparado desde
-        # la API en el mismo instante (mismo criterio que routes_kill_switch.py).
-        # A partir de acá, TODO return debe soltar la transaccion (rollback): sin
-        # eso el lock FOR UPDATE queda abierto hasta el proximo commit en esta
-        # misma sesion de larga vida del worker, y puede bloquear indefinidamente
-        # al kill switch manual, que toma el mismo lock sobre el mismo BotRun
-        # (review PR #121).
-        bot_run = self._session.get(BotRun, self._bot_run_id, with_for_update=True)
-        if bot_run is None or bot_run.status != "RUNNING":
-            _log.warning(
-                "orphan_order_scanner.bot_run_not_running",
-                bot_run_id=self._bot_run_id,
-                status=bot_run.status if bot_run else None,
-            )
-            self._session.rollback()
-            return
-
-        latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
-        current = resolve_persisted_state(latest.state if latest is not None else None)
-        if current is None:
-            # Dato corrupto en bot_state: no hay forma segura de mapearlo a una
-            # transicion valida (mismo criterio que routes_kill_switch._current_bot_state,
-            # que ante esto devuelve 500 en vez de fabricar un estado falso). Acá no hay
-            # HTTP al que responder — el caller es CycleRunner._tick(), sin try/except
-            # propio — asi que la falla debe quedar contenida acá: loguear y no disparar,
-            # en vez de dejar el ValueError sin atrapar y tumbar el loop del worker entero.
-            _log.error(
-                "orphan_order_scanner.unknown_persisted_state",
-                bot_run_id=self._bot_run_id,
-                state=latest.state if latest is not None else None,
-            )
-            self._session.rollback()
-            return
-        if current != self._state_machine.state:
-            self._state_machine.force_set(current, reason="orphan_scanner_resync")
-        if current != BotState.ACTIVE:
-            # El estado cambio (ej. kill switch manual) entre el ultimo _sync_state_from_db
-            # del ciclo y este lock. No hay nada que disparar: ya no esta ACTIVE.
-            _log.warning("orphan_order_scanner.state_changed_before_lock", state=current.value)
-            self._session.rollback()
-            return
-
-        if not self._state_machine.can_transition_to(BotState.SAFE_MODE):
-            # En la practica inalcanzable (ACTIVE -> SAFE_MODE es incondicional en
-            # _ALLOWED_TRANSITIONS), pero valida ANTES de escribir nada: fallar acá
-            # evita persistir una fila bot_state para una transicion que después
-            # rechazaria transition_to(), lo que dejaria DB y memoria divergiendo
-            # (ver el bug de orden persist/mutate mas abajo).
-            _log.error("orphan_order_scanner.invalid_transition", current=current.value)
-            self._session.rollback()
-            return
-
         reason = "Ordenes huerfanas detectadas: " + "; ".join(
             f"{f.symbol}:{f.reason.value}" for f in findings
         )
-        now = datetime.now(UTC)
-        BotStateRepository(self._session).save(
-            BotStateRow(
-                bot_run_id=self._bot_run_id,
-                state=BotState.SAFE_MODE.value,
-                previous_state=current.value,
-                reason=reason,
-                created_at=now,
-            )
-        )
-        SystemEventRepository(self._session).save(
-            SystemEvent(
-                bot_run_id=self._bot_run_id,
+
+        def _audit_event(bot_run_id: str, now: datetime, _previous: BotState) -> SystemEvent:
+            return SystemEvent(
+                bot_run_id=bot_run_id,
                 timestamp=now,
                 event_type="ORPHAN_ORDER_DETECTED",
                 severity="WARNING",
                 message=reason,
                 details={"findings": [f.model_dump(mode="json") for f in findings]},
             )
-        )
-        self._session.commit()
-        # El estado en memoria se refleja SOLO despues de que el commit tuvo
-        # exito (review PR #121): si el persist fallara arriba, self._state_machine
-        # debe seguir en ACTIVE para no divergir de la DB — antes se llamaba
-        # transition_to() previo al commit, y un fallo de persistencia dejaba la
-        # memoria en SAFE_MODE mientras la DB seguia en ACTIVE, revertida en
-        # silencio por el proximo _sync_state_from_db. force_set() en vez de
-        # transition_to() porque la validez de la transicion ya se confirmo
-        # arriba con can_transition_to(); no hay camino de excepcion acá, y uno
-        # nuevo (InvalidStateTransitionError post-commit) seria peor: DB ya en
-        # SAFE_MODE con memoria sin actualizar.
-        self._state_machine.force_set(BotState.SAFE_MODE, reason=reason)
-        _log.warning(
-            "orphan_order_scanner.safe_mode_triggered",
-            reason=reason,
-            findings_count=len(findings),
-        )
+
+        try:
+            EmergencyStopService(self._session).trigger(
+                bot_run_id=self._bot_run_id,
+                target=BotState.SAFE_MODE,
+                reason=reason,
+                audit_event_factory=_audit_event,
+                require_current_in=frozenset({BotState.ACTIVE}),
+                state_machine=self._state_machine,
+                resync_reason="orphan_scanner_resync",
+            )
+        except BotRunNotRunningError as exc:
+            _log.warning(
+                "orphan_order_scanner.bot_run_not_running",
+                bot_run_id=exc.bot_run_id,
+                status=exc.status,
+            )
+        except UnknownPersistedStateError as exc:
+            # Dato corrupto en bot_state: no hay forma segura de mapearlo a una
+            # transicion valida (mismo criterio que routes_kill_switch, que ante
+            # esto devuelve 500 en vez de fabricar un estado falso). Acá no hay
+            # HTTP al que responder — el caller es CycleRunner._tick(), sin
+            # try/except propio — asi que la falla queda contenida acá: loguear
+            # y no disparar, en vez de dejar el ValueError sin atrapar y tumbar
+            # el loop del worker entero.
+            _log.error(
+                "orphan_order_scanner.unknown_persisted_state",
+                bot_run_id=exc.bot_run_id,
+                state=exc.raw_state,
+            )
+        except CurrentStateNotAllowedError as exc:
+            # El estado cambio (ej. kill switch manual) entre el ultimo
+            # _sync_state_from_db del ciclo y este lock. No hay nada que
+            # disparar: ya no esta ACTIVE.
+            _log.warning("orphan_order_scanner.state_changed_before_lock", state=exc.current.value)
+        except InvalidStateTransitionError as exc:
+            # En la practica inalcanzable (ACTIVE -> SAFE_MODE es incondicional),
+            # pero EmergencyStopService valida ANTES de escribir nada: fallar acá
+            # evita persistir una fila bot_state para una transicion que después
+            # se rechazaria, lo que dejaria DB y memoria divergiendo.
+            _log.error("orphan_order_scanner.invalid_transition", current=exc.current.value)
+        else:
+            _log.warning(
+                "orphan_order_scanner.safe_mode_triggered",
+                reason=reason,
+                findings_count=len(findings),
+            )
 
 
 __all__ = ["OrphanOrderScanner"]

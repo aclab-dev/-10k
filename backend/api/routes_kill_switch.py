@@ -15,7 +15,7 @@ siguientes del mismo tick.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 
 import structlog
@@ -26,12 +26,11 @@ from sqlalchemy.orm import Session
 from backend.api.dependencies import get_current_bot_run
 from backend.storage.database import get_db
 from backend.storage.models import BotRun, KillSwitchEvent
-from backend.storage.models import BotState as BotStateRow
-from backend.storage.repositories import BotStateRepository, KillSwitchEventRepository
-from backend.trading_core.bot_state_machine import (
-    BotState,
-    BotStateMachine,
-    InvalidStateTransitionError,
+from backend.trading_core.bot_state_machine import BotState, InvalidStateTransitionError
+from backend.trading_core.emergency_stop import (
+    BotRunNotRunningError,
+    EmergencyStopService,
+    UnknownPersistedStateError,
 )
 
 router = APIRouter(prefix="/kill-switch", tags=["kill-switch"])
@@ -50,24 +49,6 @@ class KillSwitchOut(BaseModel):
     triggered_at: datetime
 
 
-def _current_bot_state(db: Session, bot_run_id: str) -> BotState:
-    latest = BotStateRepository(db).get_latest(bot_run_id)
-    if latest is None:
-        return BotState.ACTIVE
-    try:
-        return BotState(latest.state)
-    except ValueError as exc:
-        # No hay forma segura de mapear un estado fuera del enum a una
-        # transición válida: fabricar ACTIVE escribiría un estado falso en
-        # la auditoría (bot_state.previous_state / kill_switch_events.state_before).
-        # Falla explícita en vez de silenciar el dato corrupto.
-        _log.error("kill_switch.unknown_bot_state", bot_run_id=bot_run_id, state=latest.state)
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"Estado de bot desconocido en base: '{latest.state}'",
-        ) from exc
-
-
 @router.post("", status_code=status.HTTP_200_OK)
 def trigger_kill_switch(
     body: KillSwitchRequest,
@@ -75,63 +56,47 @@ def trigger_kill_switch(
     db: Annotated[Session, Depends(get_db)],
 ) -> KillSwitchOut:
     """Dispara el kill switch manual: transiciona a KILL_SWITCH_TRIGGERED."""
-    # Lock de fila: sin esto, dos POST concurrentes leen el mismo estado
-    # actual, ambos pasan la validacion de transicion y quedan dos filas en
-    # bot_state/kill_switch_events para el mismo hecho. SQLite (tests) no
-    # soporta FOR UPDATE y SQLAlchemy lo omite silenciosamente ahi (el motor
-    # ya serializa escrituras); Postgres si lo respeta.
-    # db.refresh(with_for_update=True) en vez de un SELECT descartado: `bot_run`
-    # ya está en la identity map desde `get_current_bot_run`, y un SELECT
-    # adicional no refresca los atributos de un objeto ya cargado en la sesión
-    # salvo que se lo pidas explícitamente — con solo el lock, el chequeo de
-    # status de abajo podía seguir usando el valor leído antes de tomarlo.
-    db.refresh(bot_run, with_for_update=True)
 
-    if bot_run.status != "RUNNING":
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"No se puede activar el kill switch: el bot run '{bot_run.id}' no esta "
-            f"RUNNING (status actual: '{bot_run.status}')",
-        )
-
-    current = _current_bot_state(db, bot_run.id)
-    machine = BotStateMachine(initial=current)
-
-    try:
-        machine.transition_to(BotState.KILL_SWITCH_TRIGGERED, reason=body.reason)
-    except InvalidStateTransitionError as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"No se puede activar el kill switch desde el estado '{current.value}'",
-        ) from exc
-
-    now = datetime.now(UTC)
-
-    new_state = BotStateRepository(db).save(
-        BotStateRow(
-            bot_run_id=bot_run.id,
-            state=machine.state.value,
-            previous_state=current.value,
-            reason=body.reason,
-            created_at=now,
-        )
-    )
-    KillSwitchEventRepository(db).save(
-        KillSwitchEvent(
-            bot_run_id=bot_run.id,
+    def _audit_event(bot_run_id: str, now: datetime, previous: BotState) -> KillSwitchEvent:
+        return KillSwitchEvent(
+            bot_run_id=bot_run_id,
             timestamp=now,
             trigger_reason=body.reason,
-            state_before=current.value,
+            state_before=previous.value,
             action_taken="MANUAL_KILL_SWITCH",
             requires_manual_review=True,
         )
-    )
-    db.commit()
+
+    try:
+        result = EmergencyStopService(db).trigger(
+            bot_run_id=bot_run.id,
+            target=BotState.KILL_SWITCH_TRIGGERED,
+            reason=body.reason,
+            audit_event_factory=_audit_event,
+            # get_db ya hace rollback+close al final del request cuando la
+            # excepcion se propaga (ver backend/storage/database.py): no hace
+            # falta que el servicio lo haga antes.
+            release_lock_on_reject=False,
+        )
+    except BotRunNotRunningError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"No se puede activar el kill switch: el bot run '{exc.bot_run_id}' no esta "
+            f"RUNNING (status actual: '{exc.status}')",
+        ) from exc
+    except UnknownPersistedStateError as exc:
+        _log.error("kill_switch.unknown_bot_state", bot_run_id=exc.bot_run_id, state=exc.raw_state)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+    except InvalidStateTransitionError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"No se puede activar el kill switch desde el estado '{exc.current.value}'",
+        ) from exc
 
     return KillSwitchOut(
         bot_run_id=bot_run.id,
-        state=new_state.state,
-        previous_state=current.value,
+        state=result.bot_state.state,
+        previous_state=result.previous_state.value,
         reason=body.reason,
-        triggered_at=now,
+        triggered_at=result.triggered_at,
     )

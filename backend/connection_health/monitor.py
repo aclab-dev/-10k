@@ -17,11 +17,11 @@ Dos tipos de anomalía:
   (ConnectionHealthConfig), más estricto que ese bound duro — alerta temprana antes
   del rechazo.
 
-Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE con el mismo patrón
-de OrphanOrderScanner (F16 [115]): lock de fila del BotRun, transición validada por
-la state machine, persistencia atómica de BotState + SystemEvent. Duplicado a
-propósito en vez de refactorizar OrphanOrderScanner para compartirlo: evita mezclar
-un refactor de código ya aprobado con esta feature.
+Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE vía
+EmergencyStopService (F16 [158]): lock de fila del BotRun, transición validada por
+la state machine, persistencia atómica de BotState + SystemEvent. Mismo servicio que
+usan routes_kill_switch.py y OrphanOrderScanner — antes de F16 [158] este módulo
+duplicaba el patrón por tercera vez.
 
 Sin contador de ticks consecutivos: para cuando MarketDataCycleService reporta un
 hallazgo, ese fetch ya sobrevivió los reintentos con backoff de F16 [113] (o el
@@ -31,7 +31,7 @@ ruido transitorio. Mismo criterio que OrphanOrderScanner.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import structlog
 from sqlalchemy.exc import SQLAlchemyError
@@ -39,14 +39,17 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.schemas import ConnectionAnomalyFinding, ConnectionAnomalyReason
 from backend.market_data.schemas import ALLOWED_SYMBOLS, MarketSnapshot
-from backend.storage.models import BotRun, SystemEvent
-from backend.storage.models import BotState as BotStateRow
-from backend.storage.repositories.audit import SystemEventRepository
-from backend.storage.repositories.bot import BotStateRepository
+from backend.storage.models import SystemEvent
 from backend.trading_core.bot_state_machine import (
     BotState,
     BotStateMachine,
-    resolve_persisted_state,
+    InvalidStateTransitionError,
+)
+from backend.trading_core.emergency_stop import (
+    BotRunNotRunningError,
+    CurrentStateNotAllowedError,
+    EmergencyStopService,
+    UnknownPersistedStateError,
 )
 
 _log = structlog.get_logger(__name__)
@@ -158,79 +161,57 @@ class ConnectionHealthMonitor:
         return findings
 
     def _trigger_safe_mode(self, findings: list[ConnectionAnomalyFinding]) -> None:
-        # Mismo patron de lock/persist que OrphanOrderScanner._trigger_safe_mode:
-        # lock de fila evita una carrera con un kill switch manual disparado
-        # desde la API en el mismo instante. A partir de aca, TODO return debe
-        # soltar la transaccion (rollback).
-        bot_run = self._session.get(BotRun, self._bot_run_id, with_for_update=True)
-        if bot_run is None or bot_run.status != "RUNNING":
-            _log.warning(
-                "connection_health_monitor.bot_run_not_running",
-                bot_run_id=self._bot_run_id,
-                status=bot_run.status if bot_run else None,
-            )
-            self._session.rollback()
-            return
-
-        latest = BotStateRepository(self._session).get_latest(self._bot_run_id)
-        current = resolve_persisted_state(latest.state if latest is not None else None)
-        if current is None:
-            _log.error(
-                "connection_health_monitor.unknown_persisted_state",
-                bot_run_id=self._bot_run_id,
-                state=latest.state if latest is not None else None,
-            )
-            self._session.rollback()
-            return
-        if current != self._state_machine.state:
-            self._state_machine.force_set(current, reason="connection_health_resync")
-        if current != BotState.ACTIVE:
-            # El estado cambio (ej. kill switch manual) entre el ultimo
-            # _sync_state_from_db del ciclo y este lock. No hay nada que
-            # disparar: ya no esta ACTIVE.
-            _log.warning("connection_health_monitor.state_changed_before_lock", state=current.value)
-            self._session.rollback()
-            return
-
-        if not self._state_machine.can_transition_to(BotState.SAFE_MODE):
-            _log.error("connection_health_monitor.invalid_transition", current=current.value)
-            self._session.rollback()
-            return
-
         reason = "Anomalias de conexion/reloj detectadas: " + "; ".join(
             f"{f.symbol}:{f.reason.value}" for f in findings
         )
-        now = datetime.now(UTC)
-        BotStateRepository(self._session).save(
-            BotStateRow(
-                bot_run_id=self._bot_run_id,
-                state=BotState.SAFE_MODE.value,
-                previous_state=current.value,
-                reason=reason,
-                created_at=now,
-            )
-        )
-        SystemEventRepository(self._session).save(
-            SystemEvent(
-                bot_run_id=self._bot_run_id,
+
+        def _audit_event(bot_run_id: str, now: datetime, _previous: BotState) -> SystemEvent:
+            return SystemEvent(
+                bot_run_id=bot_run_id,
                 timestamp=now,
                 event_type="CONNECTION_HEALTH_ANOMALY",
                 severity="WARNING",
                 message=reason,
                 details={"findings": [f.model_dump(mode="json") for f in findings]},
             )
-        )
-        self._session.commit()
-        # El estado en memoria se refleja SOLO despues de que el commit tuvo
-        # exito (mismo criterio que OrphanOrderScanner, ver review PR #121):
-        # si el persist fallara arriba, self._state_machine debe seguir en
-        # ACTIVE para no divergir de la DB.
-        self._state_machine.force_set(BotState.SAFE_MODE, reason=reason)
-        _log.warning(
-            "connection_health_monitor.safe_mode_triggered",
-            reason=reason,
-            findings_count=len(findings),
-        )
+
+        try:
+            EmergencyStopService(self._session).trigger(
+                bot_run_id=self._bot_run_id,
+                target=BotState.SAFE_MODE,
+                reason=reason,
+                audit_event_factory=_audit_event,
+                require_current_in=frozenset({BotState.ACTIVE}),
+                state_machine=self._state_machine,
+                resync_reason="connection_health_resync",
+            )
+        except BotRunNotRunningError as exc:
+            _log.warning(
+                "connection_health_monitor.bot_run_not_running",
+                bot_run_id=exc.bot_run_id,
+                status=exc.status,
+            )
+        except UnknownPersistedStateError as exc:
+            _log.error(
+                "connection_health_monitor.unknown_persisted_state",
+                bot_run_id=exc.bot_run_id,
+                state=exc.raw_state,
+            )
+        except CurrentStateNotAllowedError as exc:
+            # El estado cambio (ej. kill switch manual) entre el ultimo
+            # _sync_state_from_db del ciclo y este lock. No hay nada que
+            # disparar: ya no esta ACTIVE.
+            _log.warning(
+                "connection_health_monitor.state_changed_before_lock", state=exc.current.value
+            )
+        except InvalidStateTransitionError as exc:
+            _log.error("connection_health_monitor.invalid_transition", current=exc.current.value)
+        else:
+            _log.warning(
+                "connection_health_monitor.safe_mode_triggered",
+                reason=reason,
+                findings_count=len(findings),
+            )
 
 
 __all__ = ["ConnectionHealthMonitor"]
