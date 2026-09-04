@@ -160,6 +160,13 @@ class CycleRunner:
         while not self._shutdown_event.is_set():
             self._sync_state_from_db()
             if not self._state_machine.is_running():
+                # El proceso esta vivo, solo pausado por estado (HALTED /
+                # KILL_SWITCH_TRIGGERED). Igual hay que refrescar el heartbeat:
+                # es el caso normal tras un kill switch + restart del worker, y
+                # sin esto el healthcheck del container (docker-compose.yml:
+                # `find /tmp/worker_alive -mmin -2`) lo marca unhealthy para
+                # siempre aunque no lo este (F16 [157]).
+                self._touch_heartbeat()
                 log.info("cycle_runner.paused_by_state", state=self._state_machine.state.value)
             else:
                 self._tick()
@@ -215,6 +222,16 @@ class CycleRunner:
         if persisted != self._state_machine.state:
             self._state_machine.force_set(persisted, reason="synced_from_db")
 
+    def _touch_heartbeat(self) -> None:
+        """Marca el proceso como vivo para el healthcheck del container.
+
+        Se llama tanto en el tick normal como en la rama paused_by_state: el
+        healthcheck de docker-compose solo mira la mtime de este archivo, asi
+        que mientras el loop siga girando (aunque el estado no sea ACTIVE) el
+        worker debe reportarse healthy.
+        """
+        self._heartbeat_file.touch(exist_ok=True)
+
     def _tick(self) -> None:
         """Una iteracion del ciclo: heartbeat + market data + posiciones + decision pipeline.
 
@@ -229,7 +246,7 @@ class CycleRunner:
         [115]): reconcilia contra el estado ya actualizado de ese ciclo, y aisla
         fallas por simbolo internamente igual que los demas servicios tickeados.
         """
-        self._heartbeat_file.touch(exist_ok=True)
+        self._touch_heartbeat()
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
 
         snapshots: list[MarketSnapshot] = []

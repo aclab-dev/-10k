@@ -94,10 +94,17 @@ def test_run_loops_and_exits_on_shutdown(heartbeat_file: Path) -> None:
     assert not thread.is_alive(), "Thread should exit after shutdown"
 
 
-def test_run_skips_tick_when_state_machine_not_running(heartbeat_file: Path) -> None:
-    """En estado HALTED el runner sigue vivo pero no hace heartbeat."""
+def test_run_skips_tick_but_keeps_heartbeat_when_state_machine_not_running(
+    heartbeat_file: Path,
+) -> None:
+    """En estado HALTED el runner no tickea servicios, pero sigue vivo: el
+    heartbeat se refresca igual para que el healthcheck del container no lo
+    marque unhealthy (F16 [157])."""
     sm = BotStateMachine(initial=BotState.HALTED)
-    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+    tick_service = Mock(spec=PositionTickService)
+    runner = CycleRunner(
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, position_tick_service=tick_service
+    )
 
     thread = threading.Thread(target=runner.run)
     thread.start()
@@ -108,8 +115,31 @@ def test_run_skips_tick_when_state_machine_not_running(heartbeat_file: Path) -> 
         runner.request_shutdown()
         thread.join(timeout=3.0)
 
-    # No se debe tocar el heartbeat porque el state no esta running.
-    assert not heartbeat_file.exists()
+    assert heartbeat_file.exists()
+    tick_service.tick_all.assert_not_called()
+
+
+def test_run_keeps_heartbeat_after_inherited_kill_switch(heartbeat_file: Path) -> None:
+    """Regresion F16 [157]: worker que arranca heredando KILL_SWITCH_TRIGGERED
+    de un bot_run anterior (caso normal tras el kill switch manual de F15 +
+    restart del worker). El loop entra en paused_by_state y nunca llama a
+    _tick(), pero el proceso esta vivo y el healthcheck de docker-compose
+    (`find /tmp/worker_alive -mmin -2`) no debe verlo unhealthy."""
+    sm = BotStateMachine(initial=BotState.KILL_SWITCH_TRIGGERED)
+    runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
+
+    assert not sm.is_running()
+
+    thread = threading.Thread(target=runner.run)
+    thread.start()
+    try:
+        threading.Event().wait(timeout=1.5)
+    finally:
+        runner.request_shutdown()
+        thread.join(timeout=3.0)
+
+    assert not thread.is_alive(), "Thread should exit after shutdown"
+    assert heartbeat_file.exists()
 
 
 def test_tick_calls_position_tick_service_when_provided(heartbeat_file: Path) -> None:
