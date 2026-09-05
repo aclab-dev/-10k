@@ -334,12 +334,24 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   posiciones puntuales hoy hay que mirar los logs o el estado del
   `PaperAdapter`/exchange directamente.
 - `backend/reconciliation/engine.py` (`ReconciliationEngine`) compara estado
-  local vs. exchange bajo demanda (posiciones no registradas, fills parciales,
-  cambios manuales, protecciones faltantes) — **hoy es una clase de librería,
-  no wireada al loop del worker ni expuesta por script o endpoint** (existe
-  `reconciliation.run_before_new_entries` en `config.yaml`, pero nada lo lee
-  todavía). Para correrla manualmente hoy hace falta un script ad-hoc, no hay
-  un comando listo — el constructor real (`ReconciliationEngine.__init__`) es:
+  local vs. exchange (posiciones no registradas, fills parciales, cambios
+  manuales, protecciones faltantes) y **ya está wireada al loop del worker**
+  (F16 [159], `backend/reconciliation/gate.py::ReconciliationGate`): en cada
+  tick de `CycleRunner`, si `reconciliation.enabled` y
+  `reconciliation.run_before_new_entries` están en `true` en `config.yaml`, el
+  `Orchestrator` corre la reconciliación completa antes de habilitar nuevas
+  entradas. Si aparece una orden en estado desconocido
+  (`block_on_orphan_orders`), una posición no trackeada
+  (`block_on_untracked_positions`) o una protección no confirmada
+  (`block_on_unconfirmed_protection`), el gate dispara `SAFE_MODE` vía
+  `EmergencyStopService`, mismo mecanismo que `OrphanOrderScanner` /
+  `ConnectionHealthMonitor` — buscar en logs `reconciliation_gate.safe_mode_triggered`
+  o el `SystemEvent` con `event_type="RECONCILIATION_BLOCKED"`.
+  `manual_balance_change_policy` se lee desde config pero no tiene efecto
+  todavía: el engine no detecta discrepancias de balance en su versión actual.
+
+  Para correrla manualmente fuera del loop (ad-hoc, ej. una consola), el
+  constructor real (`ReconciliationEngine.__init__`) sigue siendo:
 
   ```python
   from backend.reconciliation.engine import ReconciliationEngine
@@ -355,9 +367,10 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   divergente), que es justo el hallazgo más interesante del caso. `adapter` es
   el mismo `ExchangeAdapter` (hoy `PaperAdapter`) que usa el worker en curso,
   y `position_repo`/`order_repo`/`position_manager` salen de
-  la misma sesión de DB — no instancias nuevas divergentes. Si se necesita
-  este chequeo con frecuencia, vale la pena levantar una tarjeta separada
-  para exponerlo como script o endpoint en vez de repetir este ad-hoc cada vez.
+  la misma sesión de DB — no instancias nuevas divergentes. Esto sigue siendo
+  útil para un chequeo puntual sin esperar al próximo tick; si se necesita con
+  frecuencia como comando de operador, vale la pena levantar una tarjeta
+  separada para exponerlo como script o endpoint.
 
 ### 6.4 Retomar operación tras SAFE_MODE / HALTED / kill switch
 

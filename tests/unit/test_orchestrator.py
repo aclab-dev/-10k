@@ -21,6 +21,8 @@ from backend.market_data.fetcher import MockDataFetcher
 from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
+from backend.reconciliation.engine import ReconciliationEngine
+from backend.reconciliation.gate import ReconciliationGate
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
@@ -168,6 +170,34 @@ def test_orphan_order_scanner_is_none_when_market_data_service_injected() -> Non
         execution_engine=Mock(spec=ExecutionEngine),
     )
     assert orch.cycle_runner._orphan_order_scanner is None  # type: ignore[attr-defined]
+
+
+def test_default_construction_wires_reconciliation_gate(sqlite_session: Session) -> None:
+    """Sin nada inyectado, arma un ReconciliationGate (F16 [159]) atado al mismo
+    adapter/PositionManager/state_machine/bot_run/config que el resto del
+    pipeline — mismo criterio que OrphanOrderScanner: reusar el estado real
+    compartido, no instanciar uno divergente."""
+    orch = Orchestrator(session=sqlite_session)
+
+    gate = orch.cycle_runner._reconciliation_gate  # type: ignore[attr-defined]
+    assert isinstance(gate, ReconciliationGate)
+    engine = gate._engine  # type: ignore[attr-defined]
+    assert isinstance(engine, ReconciliationEngine)
+    assert engine._adapter is orch.position_manager._adapter  # type: ignore[attr-defined]
+    assert engine._position_manager is orch.position_manager  # type: ignore[attr-defined]
+    assert gate._state_machine is orch.state_machine  # type: ignore[attr-defined]
+    assert gate._bot_run_id == orch._bot_run.id  # type: ignore[attr-defined]
+    assert gate._config is get_config().reconciliation  # type: ignore[attr-defined]
+
+
+def test_reconciliation_gate_is_none_when_market_data_service_injected() -> None:
+    """Mismo criterio que orphan_order_scanner: si el caller inyecta su propio
+    market_data_service/execution_engine, es dueno de ese ciclo de vida."""
+    orch = Orchestrator(
+        market_data_service=Mock(spec=MarketDataCycleService),
+        execution_engine=Mock(spec=ExecutionEngine),
+    )
+    assert orch.cycle_runner._reconciliation_gate is None  # type: ignore[attr-defined]
 
 
 def test_default_construction_wires_connection_health_monitor(sqlite_session: Session) -> None:
