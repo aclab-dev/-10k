@@ -18,7 +18,6 @@ from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.fetcher import MockDataFetcher
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.reconciliation.engine import ReconciliationEngine
@@ -147,35 +146,10 @@ def test_position_tick_service_is_none_when_market_data_service_injected() -> No
     assert orch.cycle_runner._position_tick_service is None  # type: ignore[attr-defined]
 
 
-def test_default_construction_wires_orphan_order_scanner(sqlite_session: Session) -> None:
-    """Sin nada inyectado, arma un OrphanOrderScanner (F16 [115]) atado al mismo
-    adapter/PositionManager/state_machine/bot_run que el resto del pipeline —
-    mismo criterio que PositionTickService: reusar el estado real compartido,
-    no instanciar uno divergente."""
-    orch = Orchestrator(session=sqlite_session)
-
-    scanner = orch.cycle_runner._orphan_order_scanner  # type: ignore[attr-defined]
-    assert isinstance(scanner, OrphanOrderScanner)
-    assert scanner._adapter is orch.position_manager._adapter  # type: ignore[attr-defined]
-    assert scanner._position_manager is orch.position_manager  # type: ignore[attr-defined]
-    assert scanner._state_machine is orch.state_machine  # type: ignore[attr-defined]
-    assert scanner._bot_run_id == orch._bot_run.id  # type: ignore[attr-defined]
-
-
-def test_orphan_order_scanner_is_none_when_market_data_service_injected() -> None:
-    """Mismo criterio que position_tick_service: si el caller inyecta su propio
-    market_data_service/execution_engine, es dueno de ese ciclo de vida."""
-    orch = Orchestrator(
-        market_data_service=Mock(spec=MarketDataCycleService),
-        execution_engine=Mock(spec=ExecutionEngine),
-    )
-    assert orch.cycle_runner._orphan_order_scanner is None  # type: ignore[attr-defined]
-
-
 def test_default_construction_wires_reconciliation_gate(sqlite_session: Session) -> None:
     """Sin nada inyectado, arma un ReconciliationGate (F16 [159]) atado al mismo
     adapter/PositionManager/state_machine/bot_run/config que el resto del
-    pipeline — mismo criterio que OrphanOrderScanner: reusar el estado real
+    pipeline — mismo criterio que PositionTickService: reusar el estado real
     compartido, no instanciar uno divergente."""
     orch = Orchestrator(session=sqlite_session)
 
@@ -191,7 +165,7 @@ def test_default_construction_wires_reconciliation_gate(sqlite_session: Session)
 
 
 def test_reconciliation_gate_is_none_when_market_data_service_injected() -> None:
-    """Mismo criterio que orphan_order_scanner: si el caller inyecta su propio
+    """Mismo criterio que position_tick_service: si el caller inyecta su propio
     market_data_service/execution_engine, es dueno de ese ciclo de vida."""
     orch = Orchestrator(
         market_data_service=Mock(spec=MarketDataCycleService),
@@ -203,7 +177,7 @@ def test_reconciliation_gate_is_none_when_market_data_service_injected() -> None
 def test_default_construction_wires_connection_health_monitor(sqlite_session: Session) -> None:
     """Sin nada inyectado, arma un ConnectionHealthMonitor (F16 [117]) atado a la
     misma state_machine/sesion/bot_run que el resto del pipeline — mismo
-    criterio que OrphanOrderScanner: reusar el estado real compartido."""
+    criterio que ReconciliationGate: reusar el estado real compartido."""
     orch = Orchestrator(session=sqlite_session)
 
     monitor = orch.cycle_runner._connection_health_monitor  # type: ignore[attr-defined]
@@ -217,7 +191,7 @@ def test_default_construction_wires_connection_health_monitor(sqlite_session: Se
 
 
 def test_connection_health_monitor_is_none_when_market_data_service_injected() -> None:
-    """Mismo criterio que orphan_order_scanner: si el caller inyecta su propio
+    """Mismo criterio que position_tick_service: si el caller inyecta su propio
     market_data_service/execution_engine, es dueno de ese ciclo de vida."""
     orch = Orchestrator(
         market_data_service=Mock(spec=MarketDataCycleService),

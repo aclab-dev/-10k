@@ -2,27 +2,49 @@
 
 `ReconciliationEngine` (engine.py) solo detecta — su propio docstring lo dice
 explícitamente: "no corrige ni muta el adapter ni la DB". La respuesta a los
-hallazgos (bloquear nuevas entradas) es responsabilidad de este componente,
-mismo criterio que separa `OrphanOrderScanner` (que sí detecta y enforce en
-una sola clase) de un motor puro — acá la separación ya vino dada por el
-propio ReconciliationEngine, así que el enforcement vive en un wrapper aparte
-en vez de mezclarse con la detección.
+hallazgos (bloquear nuevas entradas) es responsabilidad de este componente
+aparte, en vez de mezclarse con la detección.
+
+Reemplaza a `OrphanOrderScanner` (F16 [115], retirado): su detección (órdenes
+vivas sin fila local, posiciones sin `PositionConfig`) era un subconjunto
+estricto de la que ya hace `ReconciliationEngine` — correr ambos hacia el
+mismo adapter en el mismo tick duplicaba las llamadas al exchange sin agregar
+cobertura.
 
 Mapeo discrepancia -> flag de bloqueo (config.yaml `reconciliation:`):
 - `block_on_orphan_orders`: OrderDiscrepancy MISSING_IN_DB (orden viva en el
-  exchange sin fila local) o MISSING_IN_ADAPTER (orden PENDING localmente que
-  el exchange ya no reporta viva). Ambos casos son "orden en estado
-  desconocido" en los términos del spec (§3.9.3: "Si una orden queda en
-  estado desconocido, Reconciliation Engine debe resolver antes de permitir
-  nuevas entradas") — no solo la huérfana en sentido estricto.
+  exchange sin fila local — orden genuinamente ajena/desconocida). NO incluye
+  MISSING_IN_ADAPTER (orden PENDING en DB que el exchange ya no reporta viva):
+  ese caso significa que la orden se resolvió fuera del bot (fill o
+  cancelación) y no hay ningún mecanismo en el sistema que después actualice
+  el status local (`ExecutionEngine` persiste la fila una sola vez, al
+  colocarla — ver `execute_approved_plan`) — así que toda orden que alguna vez
+  se resuelva queda MISSING_IN_ADAPTER *para siempre* en cada tick posterior.
+  Bloquear por esto dispararía SAFE_MODE de forma permanente ante el ciclo de
+  vida normal de cualquier orden, no ante un riesgo real (revisión de Rodrigo,
+  PR #128) — mismo criterio de asimetría que ya aplica del lado de posiciones
+  (ver abajo).
 - `block_on_untracked_positions`: PositionDiscrepancy MISSING_IN_DB (posición
-  abierta en el exchange sin fila OPEN local).
+  abierta en el exchange sin fila OPEN local). NO incluye MISSING_IN_ADAPTER
+  (posición OPEN en DB que el exchange ya no reporta) — DB desactualizada no
+  es exposición de riesgo no trackeada.
 - `block_on_unconfirmed_protection`: PositionDiscrepancy MISSING_PROTECTION.
 
 El resto de los tipos de discrepancia (QUANTITY_MISMATCH, PRICE_MISMATCH,
-SIDE_MISMATCH, STATUS_MISMATCH ajeno a las dos categorías de arriba,
-PARTIAL_FILL, MANUAL_SL_TP_CHANGE) se loguean pero no bloquean: la tarjeta
-que wireó este componente solo pide estos tres flags.
+SIDE_MISMATCH, STATUS_MISMATCH, PARTIAL_FILL, MANUAL_SL_TP_CHANGE, y las dos
+variantes MISSING_IN_ADAPTER de arriba) se loguean (quedan en el
+`ReconciliationReport` y, si el ciclo sí bloquea por otra razón, en el
+`SystemEvent` de auditoría) pero no bloquean por sí solos: la tarjeta que
+wireó este componente solo pide estos tres flags.
+
+`failed_symbols`: si `get_position`/`get_open_orders` falla para un símbolo,
+`ReconciliationEngine` lo marca como no verificado (`report.is_complete` pasa
+a `False`) pero NO agrega ninguna discrepancia por ese símbolo — así que un
+reporte incompleto, sin más, no bloquea nuevas entradas acá (mismo criterio de
+aislamiento por símbolo que `MarketDataCycleService`: un fallo de transporte
+puntual no debe frenar todo el ciclo). Si ese símbolo
+tenía además una condición realmente bloqueante, esa sí se evalúa igual sobre
+lo que se pudo reconciliar de otros símbolos.
 
 `manual_balance_change_policy` (hoy siempre `UPDATE_ACCOUNT_STATE_ONLY`) no
 tiene ningún efecto acá a propósito: `ReconciliationEngine` no compara balance
@@ -61,16 +83,17 @@ from backend.trading_core.emergency_stop import (
 
 _log = structlog.get_logger(__name__)
 
-# Tipos de OrderDiscrepancy que cuentan como "orden en estado desconocido"
-# para block_on_orphan_orders (ver docstring del módulo).
-_ORPHAN_ORDER_TYPES = frozenset({DiscrepancyType.MISSING_IN_DB, DiscrepancyType.MISSING_IN_ADAPTER})
+# Tipo de OrderDiscrepancy que cuenta como "orden huérfana" para
+# block_on_orphan_orders (ver docstring del módulo — MISSING_IN_ADAPTER queda
+# deliberadamente afuera).
+_ORPHAN_ORDER_TYPES = frozenset({DiscrepancyType.MISSING_IN_DB})
 
 
 class ReconciliationGate:
     """Corre `ReconciliationEngine` en cada tick y aplica SAFE_MODE según los flags de config.
 
-    No thread-safe, mismo criterio que OrphanOrderScanner/ConnectionHealthMonitor:
-    se asume un solo loop llamando run_and_enforce() secuencialmente.
+    No thread-safe, mismo criterio que ConnectionHealthMonitor: se asume un
+    solo loop llamando run_and_enforce() secuencialmente.
     """
 
     def __init__(
@@ -95,6 +118,10 @@ class ReconciliationGate:
         nuevas entradas"; correr la reconciliación bajo demanda por otra vía
         (script, endpoint) es un caso de uso distinto, ya documentado como gap
         separado en docs/runbook_server.md.
+
+        Un reporte con `failed_symbols` (fetch fallido contra el exchange para
+        algún símbolo) no bloquea por sí solo — solo lo hacen las 3 condiciones
+        de `_blocking_reasons`, evaluadas sobre lo que sí se pudo reconciliar.
         """
         if not (self._config.enabled and self._config.run_before_new_entries):
             return None
@@ -121,7 +148,7 @@ class ReconciliationGate:
         try:
             self._trigger_safe_mode(reasons, report)
         except SQLAlchemyError:
-            # Fail-open igual que CycleRunner._sync_state_from_db / OrphanOrderScanner:
+            # Fail-open igual que CycleRunner._sync_state_from_db / ConnectionHealthMonitor:
             # un error transitorio de DB no debe tumbar el tick entero.
             _log.error("reconciliation_gate.safe_mode_persist_failed", exc_info=True)
             self._session.rollback()
@@ -136,7 +163,7 @@ class ReconciliationGate:
                 d for d in report.order_discrepancies if d.discrepancy_type in _ORPHAN_ORDER_TYPES
             ]
             if orphan:
-                reasons.append(f"{len(orphan)} orden(es) en estado desconocido/huérfana(s)")
+                reasons.append(f"{len(orphan)} orden(es) huérfana(s)")
 
         if self._config.block_on_untracked_positions:
             untracked = [
@@ -197,7 +224,7 @@ class ReconciliationGate:
                 status=exc.status,
             )
         except UnknownPersistedStateError as exc:
-            # Mismo criterio que OrphanOrderScanner._trigger_safe_mode: dato
+            # Mismo criterio que ConnectionHealthMonitor._trigger_safe_mode: dato
             # corrupto en bot_state, no hay transicion segura que fabricar acá.
             _log.error(
                 "reconciliation_gate.unknown_persisted_state",

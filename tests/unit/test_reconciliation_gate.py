@@ -3,8 +3,7 @@
 El motor de detección (ReconciliationEngine) ya está cubierto exhaustivamente
 en test_reconciliation_engine.py — acá se mockea (`Mock(spec=...)`) para
 aislar la lógica propia del gate: gating por config, mapeo discrepancia -> flag
-de bloqueo, y el disparo de SAFE_MODE vía EmergencyStopService. Mismo patrón
-que test_orphan_order_scanner.py::TestScanAndEnforce.
+de bloqueo, y el disparo de SAFE_MODE vía EmergencyStopService.
 """
 
 from __future__ import annotations
@@ -41,6 +40,12 @@ _ALL_FLAGS_ON = ReconciliationConfig(
 
 def _clean_report(bot_run_id: str) -> ReconciliationReport:
     return ReconciliationReport(bot_run_id=bot_run_id)
+
+
+def _incomplete_report(bot_run_id: str) -> ReconciliationReport:
+    """Reporte parcial: el fetch al exchange fallo para un simbolo, sin ninguna
+    discrepancia detectada en el resto."""
+    return ReconciliationReport(bot_run_id=bot_run_id, failed_symbols=["BTCUSDT"])
 
 
 def _report_with(
@@ -145,6 +150,24 @@ class TestGating:
         assert sm.state == BotState.ACTIVE
         assert session.scalars(select(BotStateRow)).first() is None
 
+    def test_incomplete_report_without_discrepancies_does_not_trigger_safe_mode(
+        self, session: Session
+    ) -> None:
+        """failed_symbols (fetch fallido contra el exchange) por si solo no
+        bloquea — solo lo hacen las 3 condiciones de config, evaluadas sobre lo
+        que si se pudo reconciliar (revision de Rodrigo, PR #128)."""
+        bot_run = make_bot_run(session, status="RUNNING")
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        report = _incomplete_report(bot_run.id)
+        gate = _gate(session, bot_run.id, report, state_machine=sm)
+
+        result = gate.run_and_enforce()
+
+        assert result is not None
+        assert result.is_complete is False
+        assert sm.state == BotState.ACTIVE
+        assert session.scalars(select(BotStateRow)).first() is None
+
 
 class TestBlockingReasons:
     def test_orphan_order_missing_in_db_triggers_safe_mode(self, session: Session) -> None:
@@ -160,11 +183,15 @@ class TestBlockingReasons:
         assert len(events) == 1
         assert events[0].event_type == "RECONCILIATION_BLOCKED"
 
-    def test_orphan_order_missing_in_adapter_also_triggers_safe_mode(
-        self, session: Session
-    ) -> None:
-        """Una orden PENDING localmente que el exchange ya no reporta viva es
-        tambien 'estado desconocido' (spec 3.9.3) — no solo MISSING_IN_DB."""
+    def test_order_missing_in_adapter_does_not_trigger_safe_mode(self, session: Session) -> None:
+        """Una orden PENDING en DB que el exchange ya no reporta viva significa que
+        se resolvio fuera del bot (fill o cancelacion) — nada en el sistema
+        actualiza despues el status local (ExecutionEngine persiste la fila una
+        sola vez, al colocarla), asi que toda orden que se resuelva quedaria
+        MISSING_IN_ADAPTER para siempre en cada tick posterior. Bloquear por
+        esto dispararia SAFE_MODE de forma permanente ante el ciclo de vida
+        normal de cualquier orden, no ante un riesgo real (revision de Rodrigo,
+        PR #128) — misma asimetria que ya aplica del lado de posiciones."""
         bot_run = make_bot_run(session, status="RUNNING")
         sm = BotStateMachine(initial=BotState.ACTIVE)
         report = _report_with(
@@ -175,7 +202,8 @@ class TestBlockingReasons:
 
         gate.run_and_enforce()
 
-        assert sm.state == BotState.SAFE_MODE
+        assert sm.state == BotState.ACTIVE
+        assert session.scalars(select(SystemEvent)).first() is None
 
     def test_orphan_orders_respect_disabled_flag(self, session: Session) -> None:
         bot_run = make_bot_run(session, status="RUNNING")

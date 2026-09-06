@@ -255,7 +255,8 @@ class TestCheckAndEnforce:
         corrupto) no debe propagar ValueError hacia CycleRunner._tick() — ese loop
         no tiene try/except propio, asi que una excepcion sin atrapar acá tumbaria
         el worker entero. Mismo criterio de fail-safe que OrphanOrderScanner
-        (adaptado del mismo bug/fix, PR #121): loguear y no disparar."""
+        (adaptado del mismo bug/fix, PR #121; clase retirada y unificada en
+        ReconciliationGate): loguear y no disparar."""
         bot_run = make_bot_run(session, status="RUNNING")
         make_bot_state(session, bot_run, state="GARBAGE_STATE", previous_state="ACTIVE")
         # commit explicito: la fila corrupta debe sobrevivir al rollback() que
@@ -275,7 +276,8 @@ class TestCheckAndEnforce:
         assert session.scalars(select(SystemEvent)).first() is None
 
     def test_releases_row_lock_on_every_early_return(self, session: Session) -> None:
-        """Regresion (mismo bug/fix que OrphanOrderScanner, PR #121): session.get(
+        """Regresion (mismo bug/fix que OrphanOrderScanner, PR #121; clase
+        retirada y unificada en ReconciliationGate): session.get(
         ..., with_for_update=True) abre una transaccion con lock FOR UPDATE sobre
         BotRun. Si un early-return posterior no hace rollback/commit, esa
         transaccion (y el lock) queda abierta hasta el proximo commit en esta

@@ -37,7 +37,6 @@ from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.schemas import MarketSnapshot
 from backend.market_regime.engine import MarketRegimeEngine
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.tick_service import PositionTickService
 from backend.quant_signals.engine import compute_quant_signals
 from backend.reconciliation.gate import ReconciliationGate
@@ -67,7 +66,6 @@ class CycleRunner:
         interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
         heartbeat_file: Path = DEFAULT_HEARTBEAT_FILE,
         position_tick_service: PositionTickService | None = None,
-        orphan_order_scanner: OrphanOrderScanner | None = None,
         reconciliation_gate: ReconciliationGate | None = None,
         connection_health_monitor: ConnectionHealthMonitor | None = None,
         market_data_service: MarketDataCycleService | None = None,
@@ -85,7 +83,6 @@ class CycleRunner:
         self._interval_seconds = interval_seconds
         self._heartbeat_file = heartbeat_file
         self._position_tick_service = position_tick_service
-        self._orphan_order_scanner = orphan_order_scanner
         self._reconciliation_gate = reconciliation_gate
         self._connection_health_monitor = connection_health_monitor
         self._market_data_service = market_data_service
@@ -245,13 +242,15 @@ class CycleRunner:
         El monitor de salud de conexion corre justo despues de market data (F16
         [117]): evalua los snapshots recien obtenidos (conectividad/clock skew/
         latencia) antes de que posiciones u ordenes se gestionen sobre ese ciclo.
-        El scanner de ordenes huerfanas corre despues de tickear posiciones (F16
-        [115]): reconcilia contra el estado ya actualizado de ese ciclo, y aisla
-        fallas por simbolo internamente igual que los demas servicios tickeados.
-        El ReconciliationGate corre justo despues (F16 [159]): reconciliacion
-        completa DB vs exchange (posiciones + ordenes, con deteccion mas amplia
-        que el scanner de huerfanas) antes de habilitar nuevas entradas en el
-        pipeline de decision.
+        El ReconciliationGate corre despues de tickear posiciones (F16 [159]):
+        reconciliacion completa DB vs exchange (posiciones + ordenes — ordenes
+        huerfanas, posiciones no trackeadas, protecciones no confirmadas) antes
+        de habilitar nuevas entradas en el pipeline de decision. Unifica lo que
+        antes cubrian por separado `OrphanOrderScanner` (F16 [115], retirado) y
+        este componente: correr ambos hacia el mismo adapter en el mismo tick
+        duplicaba las llamadas al exchange sin agregar cobertura (el scanner
+        detectaba un subconjunto estricto de lo que ya detecta el engine de
+        reconciliacion).
         """
         self._touch_heartbeat()
         log.info("cycle_runner.heartbeat", state=self._state_machine.state.value)
@@ -263,8 +262,6 @@ class CycleRunner:
             self._connection_health_monitor.check_and_enforce(snapshots)
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
-        if self._orphan_order_scanner is not None:
-            self._orphan_order_scanner.scan_and_enforce()
         if self._reconciliation_gate is not None:
             self._reconciliation_gate.run_and_enforce()
 

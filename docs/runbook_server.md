@@ -152,16 +152,18 @@ el siguiente arranque, sin intervención manual para el caso simple:
    `SAFE_MODE` esto no dependió nunca del arrastre — ver punto 3: si sigue
    habiendo una condición real (posición sin protección, conectividad), el
    bot vuelve a caer en `SAFE_MODE` solo, por re-detección del propio
-   `OrphanOrderScanner`/`ConnectionHealthMonitor` en el próximo tick, no
+   `ReconciliationGate`/`ConnectionHealthMonitor` en el próximo tick, no
    porque el estado anterior haya sobrevivido al restart. `MANUAL_PAUSED` sí
    se pierde sin más: un restart lo reactiva sin ninguna re-detección que lo
    frene.
 3. **Posiciones sin protección tras el restart** — `PositionManager` guarda el
    `PositionConfig` (SL/TP efectivo, trailing, break-even) **en memoria**. Un
    restart del worker lo pierde por completo: si había posiciones abiertas,
-   quedan sin ningún monitoreo hasta el próximo tick de `OrphanOrderScanner`,
-   que las detecta como `UNPROTECTED_POSITION` y dispara `SAFE_MODE`
-   automáticamente. Esa ventana dura como máximo un ciclo
+   quedan sin ningún monitoreo hasta el próximo tick de `ReconciliationGate`,
+   que las detecta como `MISSING_PROTECTION` y dispara `SAFE_MODE`
+   automáticamente (si `reconciliation.enabled`/`run_before_new_entries` y
+   `block_on_unconfirmed_protection` están en `true`). Esa ventana dura como
+   máximo un ciclo
    (`WORKER_HEARTBEAT_INTERVAL_SECONDS`, 10s por defecto) — pero **no hay SL/TP
    activo del bot durante esa ventana**. Con posiciones abiertas, verificar
    después de cualquier restart que el bot haya entrado en `SAFE_MODE` como se
@@ -302,10 +304,15 @@ Obtener token: `POST /api/auth/login` con `DASHBOARD_USERNAME`/contraseña.
 Dos componentes tickean en cada ciclo del worker y disparan `SAFE_MODE`
 automáticamente ante hallazgos, con el bot en `ACTIVE`:
 
-- **`OrphanOrderScanner`** (`backend/orphan_order_scanner/`): órdenes activas en
-  el exchange sin fila local (`UNEXPLAINED_ORDER`) o posiciones abiertas sin
-  `PositionConfig` vigilándolas (`UNPROTECTED_POSITION` — ver punto 3 de la
-  sección 3).
+- **`ReconciliationGate`** (`backend/reconciliation/gate.py`, F16 [159]): corre
+  `ReconciliationEngine` (si `reconciliation.enabled`/`run_before_new_entries`
+  están en `true`) y bloquea, cada uno gateado por su propio flag en
+  `config.yaml`: órdenes activas en el exchange sin fila local
+  (`block_on_orphan_orders`), posiciones abiertas sin fila local
+  (`block_on_untracked_positions`) o sin `PositionConfig` vigilándolas
+  (`block_on_unconfirmed_protection` — ver punto 3 de la sección 3). Unifica lo
+  que antes cubría por separado `OrphanOrderScanner` (F16 [115], retirado): su
+  detección era un subconjunto estricto de la de `ReconciliationEngine`.
 - **`ConnectionHealthMonitor`** (`backend/connection_health/monitor.py`): símbolo
   sin datos de mercado disponibles (`SYMBOL_DATA_UNAVAILABLE`), o clock skew /
   latencia por encima del umbral configurado (`connection_health.max_clock_skew_ms`
@@ -324,7 +331,7 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
 - `curl localhost:8000/health` — `{"status":"ok"}` (DB alcanzable) o
   `{"status":"degraded","db":"unreachable"}` (503).
 - `docker compose logs worker --tail 200` — buscar `bot_state_machine.invalid_transition`,
-  `orchestrator.orphan_bot_run_closed`, hallazgos de `OrphanOrderScanner` /
+  `orchestrator.orphan_bot_run_closed`, hallazgos de `ReconciliationGate` /
   `ConnectionHealthMonitor` (nombres de evento con prefijo del módulo).
 - `/api/status` en el dashboard (requiere auth) para el estado actual del
   `BotRun` (`run_status`, `state`/`state_reason`) y la cuenta agregada
@@ -340,13 +347,14 @@ es "dejar de abrir posiciones nuevas hasta que alguien mire qué pasó".
   tick de `CycleRunner`, si `reconciliation.enabled` y
   `reconciliation.run_before_new_entries` están en `true` en `config.yaml`, el
   `Orchestrator` corre la reconciliación completa antes de habilitar nuevas
-  entradas. Si aparece una orden en estado desconocido
-  (`block_on_orphan_orders`), una posición no trackeada
-  (`block_on_untracked_positions`) o una protección no confirmada
-  (`block_on_unconfirmed_protection`), el gate dispara `SAFE_MODE` vía
-  `EmergencyStopService`, mismo mecanismo que `OrphanOrderScanner` /
-  `ConnectionHealthMonitor` — buscar en logs `reconciliation_gate.safe_mode_triggered`
-  o el `SystemEvent` con `event_type="RECONCILIATION_BLOCKED"`.
+  entradas. Si aparece una orden huérfana (`block_on_orphan_orders`), una
+  posición no trackeada (`block_on_untracked_positions`) o una protección no
+  confirmada (`block_on_unconfirmed_protection`), el gate dispara `SAFE_MODE`
+  vía `EmergencyStopService`, mismo mecanismo que `ConnectionHealthMonitor` —
+  buscar en logs `reconciliation_gate.safe_mode_triggered` o el `SystemEvent`
+  con `event_type="RECONCILIATION_BLOCKED"`. Un reporte parcial (fetch fallido
+  contra el exchange para algún símbolo, `failed_symbols`) no bloquea por sí
+  solo — solo lo hacen las 3 condiciones de arriba.
   `manual_balance_change_policy` se lee desde config pero no tiene efecto
   todavía: el engine no detecta discrepancias de balance en su versión actual.
 
@@ -391,7 +399,7 @@ No hay auto-resume por diseño (PDF 4.8: `KILL_SWITCH_TRIGGERED` solo degrada a
      `ACTIVE` — no hay arrastre. Por eso mismo, **no reiniciar el worker como
      forma de "limpiar" ninguno de los dos sin haber resuelto la causa
      primero**: el restart no vuelve a verificar nada. Para `SAFE_MODE` al
-     menos hay red de seguridad — `OrphanOrderScanner`/`ConnectionHealthMonitor`
+     menos hay red de seguridad — `ReconciliationGate`/`ConnectionHealthMonitor`
      lo pueden volver a detectar en el próximo tick si el problema sigue ahí.
      Para `MANUAL_PAUSED` no hay ninguna: un restart lo reactiva sin que nada
      lo vuelva a frenar.

@@ -28,7 +28,6 @@ from backend.market_data.analysis_service import MarketAnalysisService
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
 from backend.reconciliation.engine import ReconciliationEngine
@@ -101,9 +100,6 @@ class Orchestrator:
                 position_tick_service: PositionTickService | None = (
                     self._build_position_tick_service(mds, self._position_manager)
                 )
-                orphan_order_scanner: OrphanOrderScanner | None = self._build_orphan_order_scanner(
-                    adapter, self._position_manager, db_session, bot_run
-                )
                 reconciliation_gate: ReconciliationGate | None = self._build_reconciliation_gate(
                     adapter, self._position_manager, db_session, bot_run, cfg
                 )
@@ -122,7 +118,6 @@ class Orchestrator:
                 mds = market_data_service
                 exec_engine = execution_engine
                 position_tick_service = None
-                orphan_order_scanner = None
                 reconciliation_gate = None
                 connection_health_monitor = None
                 gpt_client, prompt_builder, aggregator = None, None, None
@@ -133,7 +128,6 @@ class Orchestrator:
                 self._state_machine,
                 interval_seconds=interval,
                 position_tick_service=position_tick_service,
-                orphan_order_scanner=orphan_order_scanner,
                 reconciliation_gate=reconciliation_gate,
                 connection_health_monitor=connection_health_monitor,
                 market_data_service=mds,
@@ -413,25 +407,6 @@ class Orchestrator:
 
         return PositionTickService(position_manager, get_mark_price=get_mark_price)
 
-    def _build_orphan_order_scanner(
-        self,
-        adapter: PaperAdapter,
-        position_manager: PositionManager,
-        db_session: Session,
-        bot_run: BotRun,
-    ) -> OrphanOrderScanner:
-        """Arma el OrphanOrderScanner (F16 [115]) con el adapter y PositionManager
-        compartidos de ExecutionEngine — mismo criterio que _build_position_tick_service:
-        reusar el estado real en vez de instanciar uno divergente.
-        """
-        return OrphanOrderScanner(
-            adapter=adapter,
-            position_manager=position_manager,
-            state_machine=self._state_machine,
-            session=db_session,
-            bot_run_id=bot_run.id,
-        )
-
     def _build_reconciliation_gate(
         self,
         adapter: PaperAdapter,
@@ -441,7 +416,13 @@ class Orchestrator:
         cfg: AppConfig,
     ) -> ReconciliationGate:
         """Arma el ReconciliationGate (F16 [159]) con el adapter/PositionManager
-        compartidos de ExecutionEngine — mismo criterio que _build_orphan_order_scanner.
+        compartidos de ExecutionEngine — mismo criterio que _build_position_tick_service:
+        reusar el estado real en vez de instanciar uno divergente. Unifica lo que
+        antes hacia por separado OrphanOrderScanner (F16 [115], retirado): su
+        deteccion (ordenes vivas sin fila local, posiciones sin PositionConfig)
+        es un subconjunto estricto de la que ya hace ReconciliationEngine —
+        correr ambos duplicaba las llamadas al exchange en cada tick sin
+        agregar cobertura.
 
         PositionRepository/OrderRepository no se instancian en ningun otro lugar
         de produccion hoy (ExecutionEngine arma su propio OrderRepository interno,
@@ -468,7 +449,7 @@ class Orchestrator:
     ) -> ConnectionHealthMonitor:
         """Arma el ConnectionHealthMonitor (F16 [117]) con la misma state_machine/
         sesion/bot_run que el resto del pipeline — mismo criterio que
-        _build_orphan_order_scanner: reusar el estado real, no instanciar uno
+        _build_reconciliation_gate: reusar el estado real, no instanciar uno
         divergente.
         """
         return ConnectionHealthMonitor(

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.connection_health.schemas import ConnectionAnomalyReason
-from backend.core.config import Environment
+from backend.core.config import Environment, ReconciliationConfig
 from backend.exchange_adapters.paper_adapter import PaperAdapter
 from backend.exchange_adapters.schemas import OrderRequest, OrderSide, OrderType
 from backend.market_data.cycle_service import MarketDataCycleService
@@ -33,11 +33,12 @@ from backend.market_data.schemas import (
     Exchange,
     MarketSnapshot,
 )
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.reconciliation.engine import ReconciliationEngine
+from backend.reconciliation.gate import ReconciliationGate
 from backend.storage.models import BotState as BotStateRow
 from backend.storage.models import SystemEvent
+from backend.storage.repositories.trades import OrderRepository, PositionRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner
 from tests.chaos.faults import ChaosAdapter, ChaosFetcher, InjectedDisconnectError
@@ -198,11 +199,13 @@ def test_data_feed_failure_for_one_symbol_is_isolated_at_fetcher_level() -> None
 
 
 # ---------------------------------------------------------------------------
-# OrphanOrderScanner — un símbolo inalcanzable no tapa un hallazgo en otro
+# ReconciliationGate — un símbolo inalcanzable no tapa un hallazgo en otro
 # ---------------------------------------------------------------------------
 
 
-def test_orphan_scanner_isolates_unreachable_symbol_and_still_safes(session: Session) -> None:
+def test_reconciliation_gate_isolates_unreachable_symbol_and_still_safes(
+    session: Session,
+) -> None:
     bot_run = make_bot_run(session, status="RUNNING")
     inner = PaperAdapter(initial_balance_usdt=Decimal("1000"))
     adapter = ChaosAdapter(inner)
@@ -221,18 +224,33 @@ def test_orphan_scanner_isolates_unreachable_symbol_and_still_safes(session: Ses
     )
 
     sm = BotStateMachine(initial=BotState.ACTIVE)
-    scanner = OrphanOrderScanner(
+    engine = ReconciliationEngine(
         adapter=adapter,
+        position_repo=PositionRepository(session),
+        order_repo=OrderRepository(session),
         position_manager=PositionManager(adapter),
+        symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
+    )
+    gate = ReconciliationGate(
+        engine=engine,
+        config=ReconciliationConfig(
+            enabled=True,
+            run_before_new_entries=True,
+            block_on_orphan_orders=True,
+            block_on_untracked_positions=True,
+            block_on_unconfirmed_protection=True,
+            manual_balance_change_policy="UPDATE_ACCOUNT_STATE_ONLY",
+        ),
         state_machine=sm,
         session=session,
         bot_run_id=bot_run.id,
-        symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
     )
 
-    findings = scanner.scan_and_enforce()  # no debe lanzar por el símbolo caído
+    report = gate.run_and_enforce()  # no debe lanzar por el símbolo caído
 
-    assert [f.symbol for f in findings] == ["BTCUSDT"]
+    assert report is not None
+    assert report.failed_symbols == ["ETHUSDT"]
+    assert [d.symbol for d in report.order_discrepancies] == ["BTCUSDT"]
     assert sm.state == BotState.SAFE_MODE
 
 
