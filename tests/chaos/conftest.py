@@ -2,7 +2,7 @@
 
 DB: SQLite en memoria, mismo patrón que `tests/unit/conftest.py` — los
 componentes que persisten estado en estos tests (ConnectionHealthMonitor,
-OrphanOrderScanner) ya se ejercitan sobre SQLite en su cobertura unitaria.
+ReconciliationGate) ya se ejercitan sobre SQLite en su cobertura unitaria.
 Las funciones `make_bot_run` / `make_bot_state` se reusan de ahí.
 """
 

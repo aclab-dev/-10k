@@ -20,13 +20,13 @@ Dos tipos de anomalía:
 Ante cualquier hallazgo con el bot en ACTIVE, dispara SAFE_MODE vía
 EmergencyStopService (F16 [158]): lock de fila del BotRun, transición validada por
 la state machine, persistencia atómica de BotState + SystemEvent. Mismo servicio que
-usan routes_kill_switch.py y OrphanOrderScanner — antes de F16 [158] este módulo
-duplicaba el patrón por tercera vez.
+usan routes_kill_switch.py y ReconciliationGate (F16 [159]) — antes de F16 [158]
+este módulo duplicaba el patrón por tercera vez.
 
 Sin contador de ticks consecutivos: para cuando MarketDataCycleService reporta un
 hallazgo, ese fetch ya sobrevivió los reintentos con backoff de F16 [113] (o el
 circuit breaker ya está abierto) — un solo tick con hallazgo ya es señal real, no
-ruido transitorio. Mismo criterio que OrphanOrderScanner.
+ruido transitorio. Mismo criterio que ReconciliationGate.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class ConnectionHealthMonitor:
     y aplica SAFE_MODE si hace falta.
 
     No thread-safe, mismo criterio que el resto de los componentes tickeados del
-    worker (OrphanOrderScanner, PositionTickService): se asume un solo loop
+    worker (ReconciliationGate, PositionTickService): se asume un solo loop
     llamando check_and_enforce() secuencialmente.
     """
 
@@ -152,7 +152,7 @@ class ConnectionHealthMonitor:
         try:
             self._trigger_safe_mode(findings)
         except SQLAlchemyError:
-            # Fail-open igual que OrphanOrderScanner.scan_and_enforce: un error
+            # Fail-open igual que ReconciliationGate.run_and_enforce: un error
             # transitorio de DB no debe tumbar el tick entero. El proximo ciclo
             # vuelve a intentarlo.
             _log.error("connection_health_monitor.safe_mode_persist_failed", exc_info=True)

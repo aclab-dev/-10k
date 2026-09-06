@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.tick_service import PositionTickService
+from backend.reconciliation.gate import ReconciliationGate
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
@@ -253,20 +253,20 @@ def test_tick_calls_market_data_before_connection_health_monitor(heartbeat_file:
     assert call_order == ["market_data", "connection_health"]
 
 
-def test_tick_calls_orphan_order_scanner_when_provided(heartbeat_file: Path) -> None:
+def test_tick_calls_reconciliation_gate_when_provided(heartbeat_file: Path) -> None:
     sm = BotStateMachine(initial=BotState.ACTIVE)
-    scanner = Mock(spec=OrphanOrderScanner)
+    gate = Mock(spec=ReconciliationGate)
     runner = CycleRunner(
-        sm, interval_seconds=1, heartbeat_file=heartbeat_file, orphan_order_scanner=scanner
+        sm, interval_seconds=1, heartbeat_file=heartbeat_file, reconciliation_gate=gate
     )
 
     runner._tick()  # type: ignore[attr-defined]
 
-    scanner.scan_and_enforce.assert_called_once()
+    gate.run_and_enforce.assert_called_once()
 
 
-def test_tick_without_orphan_order_scanner_still_heartbeats(heartbeat_file: Path) -> None:
-    """Compat: orphan_order_scanner es opcional y default None."""
+def test_tick_without_reconciliation_gate_still_heartbeats(heartbeat_file: Path) -> None:
+    """Compat: reconciliation_gate es opcional y default None."""
     sm = BotStateMachine(initial=BotState.ACTIVE)
     runner = CycleRunner(sm, interval_seconds=1, heartbeat_file=heartbeat_file)
 
@@ -275,25 +275,25 @@ def test_tick_without_orphan_order_scanner_still_heartbeats(heartbeat_file: Path
     assert heartbeat_file.exists()
 
 
-def test_tick_calls_position_tick_service_before_orphan_order_scanner(heartbeat_file: Path) -> None:
-    """El scanner reconcilia contra el estado de posiciones ya actualizado del ciclo."""
+def test_tick_calls_position_tick_service_before_reconciliation_gate(heartbeat_file: Path) -> None:
+    """El gate reconcilia contra el estado de posiciones ya actualizado del ciclo."""
     sm = BotStateMachine(initial=BotState.ACTIVE)
     call_order: list[str] = []
     tick_service = Mock(spec=PositionTickService)
     tick_service.tick_all.side_effect = lambda: call_order.append("position")
-    scanner = Mock(spec=OrphanOrderScanner)
-    scanner.scan_and_enforce.side_effect = lambda: call_order.append("orphan_scan")
+    gate = Mock(spec=ReconciliationGate)
+    gate.run_and_enforce.side_effect = lambda: call_order.append("reconciliation")
     runner = CycleRunner(
         sm,
         interval_seconds=1,
         heartbeat_file=heartbeat_file,
         position_tick_service=tick_service,
-        orphan_order_scanner=scanner,
+        reconciliation_gate=gate,
     )
 
     runner._tick()  # type: ignore[attr-defined]
 
-    assert call_order == ["position", "orphan_scan"]
+    assert call_order == ["position", "reconciliation"]
 
 
 def test_execution_engine_is_stored_and_exposed_but_not_auto_invoked(

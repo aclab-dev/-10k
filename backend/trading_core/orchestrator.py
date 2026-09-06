@@ -28,13 +28,15 @@ from backend.market_data.analysis_service import MarketAnalysisService
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.engine import MarketDataEngine
 from backend.market_data.fetcher import MockDataFetcher
-from backend.orphan_order_scanner.scanner import OrphanOrderScanner
 from backend.position_manager.manager import PositionManager
 from backend.position_manager.tick_service import PositionTickService
+from backend.reconciliation.engine import ReconciliationEngine
+from backend.reconciliation.gate import ReconciliationGate
 from backend.storage.database import get_session_factory
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
 from backend.storage.repositories.bot import BotRunRepository, BotStateRepository
+from backend.storage.repositories.trades import OrderRepository, PositionRepository
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import CycleRunner, parse_interval_from_env
 
@@ -98,8 +100,8 @@ class Orchestrator:
                 position_tick_service: PositionTickService | None = (
                     self._build_position_tick_service(mds, self._position_manager)
                 )
-                orphan_order_scanner: OrphanOrderScanner | None = self._build_orphan_order_scanner(
-                    adapter, self._position_manager, db_session, bot_run
+                reconciliation_gate: ReconciliationGate | None = self._build_reconciliation_gate(
+                    adapter, self._position_manager, db_session, bot_run, cfg
                 )
                 connection_health_monitor: ConnectionHealthMonitor | None = (
                     self._build_connection_health_monitor(db_session, bot_run, cfg)
@@ -116,7 +118,7 @@ class Orchestrator:
                 mds = market_data_service
                 exec_engine = execution_engine
                 position_tick_service = None
-                orphan_order_scanner = None
+                reconciliation_gate = None
                 connection_health_monitor = None
                 gpt_client, prompt_builder, aggregator = None, None, None
                 decision_session = None
@@ -126,7 +128,7 @@ class Orchestrator:
                 self._state_machine,
                 interval_seconds=interval,
                 position_tick_service=position_tick_service,
-                orphan_order_scanner=orphan_order_scanner,
+                reconciliation_gate=reconciliation_gate,
                 connection_health_monitor=connection_health_monitor,
                 market_data_service=mds,
                 execution_engine=exec_engine,
@@ -405,20 +407,38 @@ class Orchestrator:
 
         return PositionTickService(position_manager, get_mark_price=get_mark_price)
 
-    def _build_orphan_order_scanner(
+    def _build_reconciliation_gate(
         self,
         adapter: PaperAdapter,
         position_manager: PositionManager,
         db_session: Session,
         bot_run: BotRun,
-    ) -> OrphanOrderScanner:
-        """Arma el OrphanOrderScanner (F16 [115]) con el adapter y PositionManager
+        cfg: AppConfig,
+    ) -> ReconciliationGate:
+        """Arma el ReconciliationGate (F16 [159]) con el adapter/PositionManager
         compartidos de ExecutionEngine — mismo criterio que _build_position_tick_service:
-        reusar el estado real en vez de instanciar uno divergente.
+        reusar el estado real en vez de instanciar uno divergente. Unifica lo que
+        antes hacia por separado OrphanOrderScanner (F16 [115], retirado): su
+        deteccion (ordenes vivas sin fila local, posiciones sin PositionConfig)
+        es un subconjunto estricto de la que ya hace ReconciliationEngine —
+        correr ambos duplicaba las llamadas al exchange en cada tick sin
+        agregar cobertura.
+
+        PositionRepository/OrderRepository no se instancian en ningun otro lugar
+        de produccion hoy (ExecutionEngine arma su propio OrderRepository interno,
+        pero no expone uno compartido) — se crean acá, sobre la misma db_session
+        del resto del pipeline.
         """
-        return OrphanOrderScanner(
+        engine = ReconciliationEngine(
             adapter=adapter,
+            position_repo=PositionRepository(db_session),
+            order_repo=OrderRepository(db_session),
             position_manager=position_manager,
+            symbols=frozenset(cfg.trading.allowed_symbols),
+        )
+        return ReconciliationGate(
+            engine=engine,
+            config=cfg.reconciliation,
             state_machine=self._state_machine,
             session=db_session,
             bot_run_id=bot_run.id,
@@ -429,7 +449,7 @@ class Orchestrator:
     ) -> ConnectionHealthMonitor:
         """Arma el ConnectionHealthMonitor (F16 [117]) con la misma state_machine/
         sesion/bot_run que el resto del pipeline — mismo criterio que
-        _build_orphan_order_scanner: reusar el estado real, no instanciar uno
+        _build_reconciliation_gate: reusar el estado real, no instanciar uno
         divergente.
         """
         return ConnectionHealthMonitor(

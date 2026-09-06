@@ -1,7 +1,7 @@
 """Servicio compartido para disparar una transición de emergencia del bot.
 
 Los tres disparadores de emergency-stop del sistema (kill switch manual —
-routes_kill_switch.py—, OrphanOrderScanner y ConnectionHealthMonitor)
+routes_kill_switch.py—, ReconciliationGate y ConnectionHealthMonitor)
 reimplementaban cada uno, por separado, la misma secuencia: lock de fila
 `FOR UPDATE` sobre `BotRun`, re-lectura del estado persistido, validación de
 la transición contra la state machine, persistencia atómica de `BotState` +
@@ -10,7 +10,7 @@ evento de auditoría, commit. Este módulo la centraliza.
 Lo que NO centraliza, a propósito, porque difiere legítimamente entre
 callers:
 - Cómo reaccionar a un rechazo (routes_kill_switch.py responde HTTP;
-  OrphanOrderScanner/ConnectionHealthMonitor loguean y siguen el loop del
+  ReconciliationGate/ConnectionHealthMonitor loguean y siguen el loop del
   worker). `trigger()` señaliza cada rechazo con una excepción distinta y
   deja la reacción al caller.
 - Qué fila de auditoría persistir (`KillSwitchEvent` vs `SystemEvent`, con
