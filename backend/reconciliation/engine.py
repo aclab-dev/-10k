@@ -1,16 +1,14 @@
 """ReconciliationEngine — compara estado local (DB) vs exchange (F16 [116]).
 
 Recorre símbolo por símbolo usando la `ExchangeAdapter` genérica (`get_position` /
-`get_open_orders`) — el mismo contrato que usa `OrphanOrderScanner` (F16 [115]) —
-así que funciona igual contra `PaperAdapter` que contra un adapter real
-(BingX/Binance). Compara ese estado contra lo persistido en DB y produce un
-`ReconciliationReport` con todas las discrepancias encontradas.
+`get_open_orders`), así que funciona igual contra `PaperAdapter` que contra un
+adapter real (BingX/Binance). Compara ese estado contra lo persistido en DB y
+produce un `ReconciliationReport` con todas las discrepancias encontradas.
 
 Scope:
 - Solo detecta. No corrige ni muta el adapter ni la DB. La respuesta a los
-  hallazgos (ej. disparar SAFE_MODE) es responsabilidad de otros componentes
-  (ver OrphanOrderScanner para el caso de posiciones sin protección y órdenes
-  huérfanas).
+  hallazgos (ej. disparar SAFE_MODE) es responsabilidad de otro componente —
+  ver `backend/reconciliation/gate.py::ReconciliationGate` (F16 [159]).
 - Posiciones: se comparan todas las posiciones OPEN en DB contra
   `adapter.get_position(symbol)`. Se recorren los símbolos configurados más
   cualquier símbolo con posición OPEN en DB (una posición vieja cuyo símbolo
@@ -24,9 +22,8 @@ Scope:
   (STATUS_MISMATCH) — incluye el caso peligroso de una orden dada por resuelta
   localmente (FAILED/CANCELLED/FILLED) que el exchange todavía reporta abierta.
 - Protecciones: si se inyecta un `PositionManager`, se valida que toda
-  posición abierta tenga un `PositionConfig` activo vigilándola (mismo
-  criterio que `UNPROTECTED_POSITION` en OrphanOrderScanner) y que, cuando el
-  adapter reporta un stop_loss/take_profit propio (algunos exchanges reales
+  posición abierta tenga un `PositionConfig` activo vigilándola y que, cuando
+  el adapter reporta un stop_loss/take_profit propio (algunos exchanges reales
   lo hacen; PaperAdapter nunca), coincida con el SL/TP *efectivo* local
   (`get_effective_sl/tp`, que ya incorpora break-even y updates dinámicos;
   fallback al valor de `PositionConfig`) — una discrepancia ahí implica que

@@ -140,7 +140,7 @@ def resolve_persisted_state(raw_state: str | None) -> BotState | None:
     """Mapea el string crudo de la ultima fila `bot_state.state` a BotState.
 
     Contrato compartido por todo caller que relee estado persistido (hoy
-    CycleRunner._sync_state_from_db y OrphanOrderScanner._trigger_safe_mode;
+    CycleRunner._sync_state_from_db y ReconciliationGate._trigger_safe_mode;
     antes vivia duplicado en los dos):
     - raw_state=None (no hay fila persistida todavia) -> BotState.ACTIVE, el
       default del sistema.

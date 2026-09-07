@@ -96,7 +96,7 @@ def test_invalid_transition_error_carries_state_info() -> None:
 
 class TestResolvePersistedState:
     """Helper compartido por CycleRunner._sync_state_from_db y
-    OrphanOrderScanner._trigger_safe_mode (antes duplicado en los dos)."""
+    ReconciliationGate._trigger_safe_mode (antes duplicado en los dos)."""
 
     def test_none_raw_state_defaults_to_active(self) -> None:
         assert resolve_persisted_state(None) == BotState.ACTIVE

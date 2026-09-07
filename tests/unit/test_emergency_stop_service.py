@@ -252,10 +252,11 @@ class TestCommitOrdering:
     def test_commit_failure_propagates_without_mutating_state_machine(
         self, session: Session
     ) -> None:
-        """Regresion equivalente a la de OrphanOrderScanner (PR #121): si el
-        commit falla, la state_machine persistente no debe haberse movido al
-        target. El servicio no atrapa el error de commit — es responsabilidad
-        del caller (igual que scan_and_enforce/check_and_enforce)."""
+        """Regresion equivalente a la de OrphanOrderScanner (PR #121, clase
+        retirada y unificada en ReconciliationGate): si el commit falla, la
+        state_machine persistente no debe haberse movido al target. El
+        servicio no atrapa el error de commit — es responsabilidad del caller
+        (igual que run_and_enforce/check_and_enforce)."""
         from unittest.mock import patch
 
         from sqlalchemy.exc import SQLAlchemyError
