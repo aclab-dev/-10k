@@ -39,8 +39,21 @@ from sqlalchemy import Engine, text
 pytestmark = pytest.mark.smoke
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_WORKER_POLL_TIMEOUT_SECONDS = 40
+# Cota real, no el caso feliz: el resync corre antes de cada símbolo
+# (cycle_runner._run_decision_pipeline), pero el símbolo EN CURSO al momento
+# del disparo puede seguir en medio de su propia llamada a GPT con reintentos
+# — timeout_seconds=30 x hasta 4 intentos + backoff exponencial hasta
+# max_delay_seconds=60 entre reintentos (backend/decision_engine/gpt_client.py
+# GPTClientConfig). 200s da margen real sobre "un timeout + un retry" sin
+# llegar al peor caso patológico (todos los reintentos agotando el backoff
+# máximo, ~300s) — si eso ocurre el test puede fallar igual pese a que el
+# kill switch funcionó; se documenta como límite conocido, no se ignora.
+_WORKER_POLL_TIMEOUT_SECONDS = 200
 _WORKER_POLL_INTERVAL_SECONDS = 5
+# Evidencia válida de "el worker dejó de operar": el resync de fin de vuelta
+# del while (paused_by_state) o el resync per-símbolo a mitad de tick
+# (pipeline_aborted_by_state) — cycle_runner.py líneas ~170 y ~308.
+_STOP_EVENTS = frozenset({"cycle_runner.paused_by_state", "cycle_runner.pipeline_aborted_by_state"})
 # docker compose prefija cada línea con "<container>  | ": el resto es el JSON
 # de structlog (ver worker/run_worker.py). No trae bot_run_id — un solo
 # BotRun corre por worker a la vez en este stack local — así que lo que
@@ -147,12 +160,12 @@ def test_kill_switch_stops_worker_and_logs_event(
                 "smoke test (evento persistido, sin órdenes nuevas) sí se validó."
             )
         post_trigger_events = events
-        if any(e.get("event") == "cycle_runner.paused_by_state" for e in events):
+        if any(e.get("event") in _STOP_EVENTS for e in events):
             worker_paused = True
             break
         time.sleep(_WORKER_POLL_INTERVAL_SECONDS)
     assert worker_paused, (
-        "el worker no logueó cycle_runner.paused_by_state dentro de "
+        "el worker no logueó paused_by_state ni pipeline_aborted_by_state dentro de "
         f"{_WORKER_POLL_TIMEOUT_SECONDS}s tras el kill switch — no se detuvo. "
         f"Eventos posteriores al disparo: {post_trigger_events}"
     )
