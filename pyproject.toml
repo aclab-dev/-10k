@@ -75,4 +75,5 @@ asyncio_mode = "auto"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "chaos: fault-injection / chaos tests (F16) — run with '-m chaos'",
+    "smoke: end-to-end smoke tests against a real docker compose stack (F17) — run with '-m smoke'; skip cleanly (not fail) when no stack is reachable, so safe to leave in the default run",
 ]
