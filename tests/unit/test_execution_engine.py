@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from backend.core.config import Environment, load_config
-from backend.core.slippage import SlippageEstimate
+from backend.core.slippage import SlippageEstimate, estimate_slippage
 from backend.decision_engine.schemas import (
     BreakoutInterpretation,
     DecisionAggregatorSection,
@@ -427,6 +427,8 @@ def _slippage_estimate(estimated_usdt: str = "0.02") -> SlippageEstimate:
         half_spread_usdt=Decimal("0.01"),
         impact_usdt=Decimal("0.01"),
         expected_fill_price=Decimal("50110"),
+        bid=Decimal("50090"),
+        ask=Decimal("50110"),
     )
 
 
@@ -588,3 +590,44 @@ def test_adapter_that_does_not_measure_slippage_persists_null_not_zero() -> None
     assert saved_order.slippage_usdt is None
     # El estimado sí se guarda: el gap es la medición real, no la estimación.
     assert saved_order.estimated_slippage_usdt == Decimal("0.02")
+
+
+def test_estimated_and_real_slippage_match_in_paper() -> None:
+    """Estimado y real coinciden en PAPER: era la observación de la review del PR #132.
+
+    Antes el estimado incluía media horquilla + impacto y el real sólo el
+    impacto, porque `PaperAdapter` llenaba al precio de referencia sin cruzar
+    el spread. El estimado superaba al real de forma estructural, por
+    exactamente el medio spread, y la comparación que esta card habilita no
+    medía el error del modelo sino esa discrepancia fija.
+
+    Ahora ambos parten del mismo libro (`SlippageEstimate.bid/ask` viaja hasta
+    la `OrderRequest`), así que en PAPER la comparación vale como verificación
+    de plumbing. El error real del modelo sólo se mide contra fills de
+    exchange, en TESTNET/LIVE.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    entry = Decimal(str(decision.entry_price))
+    estimate = estimate_slippage(
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        notional_usdt=Decimal(str(decision.margin_usdt)) * decision.leverage,
+        bid=entry - Decimal("10"),
+        ask=entry + Decimal("10"),
+        reference_price=entry,
+        market_impact_bps=Decimal("2"),
+    )
+
+    result = engine.execute_approved_plan(
+        decision, _make_risk_result(decision), slippage_estimate=estimate
+    )
+
+    assert result.order_result.fill_price == estimate.expected_fill_price
+    saved_order: Order = order_repo.save.call_args[0][0]
+    # La diferencia residual es el ROUND_DOWN de la cantidad ejecutada, muy por
+    # debajo de un céntimo: el estimado se calcula sobre el notional sin cuantizar.
+    assert saved_order.slippage_usdt is not None
+    assert saved_order.estimated_slippage_usdt is not None
+    assert abs(saved_order.slippage_usdt - saved_order.estimated_slippage_usdt) < Decimal("0.0001")

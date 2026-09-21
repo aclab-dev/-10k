@@ -618,3 +618,78 @@ def test_filled_market_order_reports_a_measured_slippage() -> None:
     assert result.status == OrderStatus.FILLED
     assert result.slippage_usdt is not None
     assert result.slippage_usdt > Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Cruce del spread en el fill simulado (F17 [162])
+# ---------------------------------------------------------------------------
+
+
+def _market_request(side: OrderSide, **book: Decimal) -> OrderRequest:
+    return OrderRequest(
+        symbol="BTCUSDT",
+        side=side,
+        order_type=OrderType.MARKET,
+        quantity=Decimal("0.001"),
+        price=Decimal("50000"),
+        **book,
+    )
+
+
+def test_market_fill_crosses_the_spread_when_book_is_provided() -> None:
+    """Con bid/ask, el fill paga media horquilla además del impacto de 2 BPS.
+
+    Sin esto PAPER llenaba al precio de referencia + 2 BPS, subestimando el
+    coste por exactamente el medio spread — en el entorno donde se valida el
+    bot antes de TESTNET.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    result = adapter.place_order(
+        _market_request(OrderSide.BUY, bid=Decimal("49990"), ask=Decimal("50010"))
+    )
+    # 50000 × (1 + 2/10_000) = 50010, más media horquilla (10) = 50020.
+    assert result.fill_price == Decimal("50020.00000000")
+
+
+def test_market_fill_crosses_the_spread_adversely_on_sell() -> None:
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    result = adapter.place_order(
+        _market_request(OrderSide.SELL, bid=Decimal("49990"), ask=Decimal("50010"))
+    )
+    # 50000 × (1 − 2/10_000) = 49990, menos media horquilla (10) = 49980.
+    assert result.fill_price == Decimal("49980.00000000")
+
+
+def test_market_fill_without_book_keeps_previous_behaviour() -> None:
+    """Sin bid/ask no cambia nada: backtesting y callers viejos no se ven afectados."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    result = adapter.place_order(_market_request(OrderSide.BUY))
+    assert result.fill_price == Decimal("50010.00000000")
+
+
+def test_wider_spread_costs_more() -> None:
+    narrow = PaperAdapter(initial_balance_usdt=Decimal("1000")).place_order(
+        _market_request(OrderSide.BUY, bid=Decimal("49999"), ask=Decimal("50001"))
+    )
+    wide = PaperAdapter(initial_balance_usdt=Decimal("1000")).place_order(
+        _market_request(OrderSide.BUY, bid=Decimal("49950"), ask=Decimal("50050"))
+    )
+    assert wide.slippage_usdt is not None and narrow.slippage_usdt is not None
+    assert wide.slippage_usdt > narrow.slippage_usdt
+
+
+def test_order_request_rejects_inverted_book() -> None:
+    with pytest.raises(ValueError, match="debe ser menor que ask"):
+        _market_request(OrderSide.BUY, bid=Decimal("50010"), ask=Decimal("49990"))
+
+
+def test_order_request_rejects_half_a_book() -> None:
+    with pytest.raises(ValueError, match="juntos"):
+        OrderRequest(
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=Decimal("0.001"),
+            price=Decimal("50000"),
+            bid=Decimal("49990"),
+        )

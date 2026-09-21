@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 
@@ -60,8 +60,23 @@ class OrderRequest(BaseModel):
     price: Decimal | None = Field(default=None, gt=Decimal("0"))
     stop_price: Decimal | None = Field(default=None, gt=Decimal("0"))
     is_reduce_only: bool = False
+    # Mejor bid/ask al momento de decidir. Opcionales: un exchange real tiene su
+    # propio libro y los ignora. Los usa el simulador de fills de PAPER para
+    # cruzar el spread en vez de llenar al precio de referencia (F17 [162]) —
+    # sin ellos, PAPER subestima el coste justo en el entorno donde se valida
+    # el bot antes de TESTNET.
+    bid: Decimal | None = Field(default=None, gt=Decimal("0"))
+    ask: Decimal | None = Field(default=None, gt=Decimal("0"))
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def book_coherent(self) -> OrderRequest:
+        if self.bid is not None and self.ask is not None and self.bid >= self.ask:
+            raise ValueError(f"bid={self.bid} debe ser menor que ask={self.ask}")
+        if (self.bid is None) != (self.ask is None):
+            raise ValueError("bid y ask se proveen juntos o ninguno de los dos.")
+        return self
 
     @field_validator("client_order_id")
     @classmethod

@@ -71,6 +71,12 @@ class SlippageEstimate:
     half_spread_usdt: Decimal
     impact_usdt: Decimal
     expected_fill_price: Decimal
+    # El libro contra el que se estimó. Viaja en el estimate para que el
+    # simulador de fills de PAPER cruce exactamente el mismo spread: si cada
+    # uno usara su propia fuente, estimado y real divergirían por construcción
+    # y la comparación que esta card habilita no mediría nada.
+    bid: Decimal
+    ask: Decimal
     method: str = ESTIMATION_METHOD
 
     def as_audit_reason(self) -> str:
@@ -136,6 +142,8 @@ def estimate_slippage(
             half_spread_usdt=Decimal("0"),
             impact_usdt=Decimal("0"),
             expected_fill_price=reference_price.quantize(_QUANT),
+            bid=bid,
+            ask=ask,
         )
 
     quantity = notional_usdt / reference_price
@@ -161,6 +169,8 @@ def estimate_slippage(
         half_spread_usdt=half_spread_usdt,
         impact_usdt=impact_usdt,
         expected_fill_price=expected_fill_price.quantize(_QUANT),
+        bid=bid,
+        ask=ask,
     )
 
 

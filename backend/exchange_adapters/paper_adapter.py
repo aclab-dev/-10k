@@ -292,7 +292,14 @@ class PaperAdapter(ExchangeAdapter):
             )
 
         model_order_type = _ORDER_TYPE_TO_MODEL_TYPE[request.order_type]
+        # SlippageModel aporta el impacto de mercado (BPS adversos sobre el
+        # precio de referencia). Una orden MARKET real, además, se ejecuta
+        # contra el otro lado del libro: si el caller nos dio bid/ask, se suma
+        # la media horquilla, también en contra. Sin eso, PAPER llenaba al
+        # precio de referencia más 2 BPS y subestimaba el coste por exactamente
+        # el medio spread (F17 [162]).
         fill_price = self._slip.apply(request.price, request.side.value, model_order_type)
+        fill_price = self._cross_spread(fill_price, request)
 
         notional = (fill_price * request.quantity).quantize(_QUANT)
         fee_usdt = self._fee.calculate(notional, model_order_type)
@@ -336,6 +343,23 @@ class PaperAdapter(ExchangeAdapter):
             is_simulated=True,
             timestamp_utc=_now(),
         )
+
+    @staticmethod
+    def _cross_spread(fill_price: Decimal, request: OrderRequest) -> Decimal:
+        """Mueve el fill media horquilla en contra, si el caller proveyó el libro.
+
+        BUY paga por encima (compra contra el ask), SELL recibe por debajo. Sin
+        bid/ask en la request se devuelve el precio tal cual: el comportamiento
+        previo, que conservan el motor de backtesting y cualquier caller que no
+        tenga un snapshot a mano.
+        """
+        if request.bid is None or request.ask is None:
+            return fill_price
+        half_spread = (request.ask - request.bid) / Decimal("2")
+        adjusted = (
+            fill_price + half_spread if request.side == OrderSide.BUY else fill_price - half_spread
+        )
+        return adjusted.quantize(_QUANT)
 
     def _open_or_net_position(self, request: OrderRequest, fill_price: Decimal) -> None:
         """Abre una nueva posición o netea con la existente en la misma dirección.

@@ -170,7 +170,7 @@ class ExecutionEngine:
         self._adapter.set_leverage(decision.symbol, adjusted.leverage)
 
         quantity = self._compute_quantity(adjusted.margin_usdt, adjusted.leverage, decision)
-        request = self._build_order_request(decision, quantity)
+        request = self._build_order_request(decision, quantity, slippage_estimate)
 
         result = self._place_order_with_timeout(request)
 
@@ -267,7 +267,9 @@ class ExecutionEngine:
         return quantity.quantize(_QUANT, rounding=ROUND_DOWN)
 
     @staticmethod
-    def _build_order_request(decision: ModelDecision, quantity: Decimal) -> OrderRequest:
+    def _build_order_request(
+        decision: ModelDecision, quantity: Decimal, slippage_estimate: SlippageEstimate | None
+    ) -> OrderRequest:
         side = OrderSide.BUY if decision.decision == DecisionType.LONG else OrderSide.SELL
         is_market = decision.entry_type == EntryType.MARKET
         order_type = OrderType.MARKET if is_market else OrderType.LIMIT
@@ -283,6 +285,12 @@ class ExecutionEngine:
             # PaperAdapter usa price como referencia para simular el fill incluso
             # en MARKET (ver _fill_market_order) — siempre requerido, no solo LIMIT.
             price=Decimal(str(decision.entry_price)),
+            # El mismo libro contra el que se estimó, para que el fill simulado
+            # de PAPER cruce ese spread y no otro: si estimador y simulador
+            # usaran fuentes distintas, comparar estimado vs. real no mediría
+            # el error del modelo sino la diferencia entre dos entradas.
+            bid=slippage_estimate.bid if slippage_estimate is not None else None,
+            ask=slippage_estimate.ask if slippage_estimate is not None else None,
         )
 
     def _place_order_with_timeout(self, request: OrderRequest) -> OrderResult:
