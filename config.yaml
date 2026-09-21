@@ -133,6 +133,14 @@ liquidation_safety:
   block_if_liquidation_unknown: true
   block_if_stop_after_liquidation: true
 
+slippage:
+  # Estimación de slippage pre-trade (regla no negociable 13, fila 13 de
+  # docs/live_checklist.md). Colchón de impacto de mercado en basis points que
+  # se suma a la media horquilla bid/ask. 2 BPS alinea la estimación con el
+  # SlippageModel del backtest, para que backtest y runtime no diverjan.
+  # No hay flag para apagar la estimación: ver SlippageConfig en core/config.py.
+  market_impact_bps: 2.0
+
 capital_management:
   bot_withdrawals_allowed: false
   automatic_profit_withdrawal: false

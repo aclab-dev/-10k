@@ -14,6 +14,7 @@ from decimal import Decimal
 from enum import Enum, auto
 
 from backend.core.config import AppConfig, Environment, LiquidationSafetyConfig
+from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, ModelDecision
 
 # ---------------------------------------------------------------------------
@@ -538,4 +539,47 @@ def check_anti_averaging(
             f"no realizado de {open_position_unrealized_pnl_usdt} USDT. "
             "Agregar exposición a una posición perdedora está prohibido."
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check informativo de slippage (F17 [162], regla no negociable 13)
+# ---------------------------------------------------------------------------
+
+
+def check_slippage_estimate(estimate: SlippageEstimate | None) -> CheckResult:
+    """Registra la estimación de slippage pre-trade en la auditoría. Nunca bloquea.
+
+    La regla 13 de la Sección 3.6 pide *estimar y registrar* el slippage antes
+    de operar, no vetar por su magnitud: qué slippage es "demasiado" depende
+    del edge del trade, que este check no conoce. Por eso el outcome es
+    siempre PASS y el valor viaja en `reason` hacia
+    `risk_validations.reasons` (Anexo B).
+
+    Que la estimación llegue en None no bloquea acá — los dos call sites reales
+    (`CycleRunner._process_symbol` y `HistoricalReplayEngine.run`) la calculan
+    siempre, así que un None indica un caller nuevo sin wirear, y queda
+    explícito en la auditoría en vez de pasar inadvertido.
+
+    Args:
+        estimate: resultado de `backend.core.slippage.estimate_slippage`, o
+            None si el caller no la proveyó.
+
+    Returns:
+        CheckResult con outcome PASS en todos los casos.
+    """
+    if estimate is None:
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule="slippage_estimate",
+            reason=(
+                "Sin estimación de slippage pre-trade: el caller no la proveyó. "
+                "No bloquea (la regla 13 pide estimar y registrar, no vetar), "
+                "pero queda asentado que este trade se validó sin el dato."
+            ),
+        )
+    return CheckResult(
+        outcome=CheckOutcome.PASS,
+        rule="slippage_estimate",
+        reason=estimate.as_audit_reason(),
     )

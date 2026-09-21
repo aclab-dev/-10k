@@ -346,6 +346,26 @@ class LiquidationSafetyConfig(BaseModel):
     block_if_stop_after_liquidation: bool
 
 
+class SlippageConfig(BaseModel):
+    """Parámetros de la estimación de slippage pre-trade (regla no negociable 13).
+
+    No hay flag `enabled` a propósito: un interruptor para apagar la estimación
+    sería exactamente la violación que esta config viene a cerrar ("sin
+    estimación de fees, slippage y funding → no se opera"). Para desactivar el
+    colchón de impacto y quedarse sólo con la media horquilla, poner
+    `market_impact_bps: 0.0`.
+    """
+
+    market_impact_bps: float
+
+    @field_validator("market_impact_bps")
+    @classmethod
+    def impact_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ConfigError(f"market_impact_bps debe ser >= 0, recibido: {v}")
+        return v
+
+
 class CapitalManagementConfig(BaseModel):
     bot_withdrawals_allowed: bool
     automatic_profit_withdrawal: bool
@@ -555,6 +575,7 @@ class AppConfig(BaseModel):
     connection_health: ConnectionHealthConfig
     idempotency: IdempotencyConfig
     liquidation_safety: LiquidationSafetyConfig
+    slippage: SlippageConfig
     capital_management: CapitalManagementConfig
     position_management: PositionManagementConfig
     failure_policy: FailurePolicyConfig
