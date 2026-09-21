@@ -380,6 +380,12 @@ class Orchestrator:
         """Arma el PositionTickService (F14) con el PositionManager compartido de
         ExecutionEngine y una fuente de mark_price real.
 
+        Fuente de bid/ask: `mds.get_last_book`, el mismo cache. Hace que las
+        órdenes de cierre crucen el spread igual que las de entrada en PAPER
+        (F17 [162]); sin él el PnL simulado quedaba optimista por media
+        horquilla en cada salida. A diferencia de mark_price, su ausencia no
+        saltea el símbolo: el cierre simplemente llena al mark_price.
+
         Fuente de mark_price: `mds.get_last_price`, el cache en memoria que
         MarketDataCycleService puebla en cada tick exitoso. CycleRunner tickea
         market_data_service antes que position_tick_service (ver cycle_runner.py),
@@ -405,7 +411,15 @@ class Orchestrator:
                 )
             return price
 
-        return PositionTickService(position_manager, get_mark_price=get_mark_price)
+        def get_book(symbol: str) -> tuple[Decimal, Decimal] | None:
+            # Opcional por contrato: si todavía no hay snapshot para el símbolo,
+            # el cierre llena al mark_price en vez de saltearse. Misma lectura
+            # de dict en memoria que get_mark_price, sin I/O.
+            return mds.get_last_book(symbol)
+
+        return PositionTickService(
+            position_manager, get_mark_price=get_mark_price, get_book=get_book
+        )
 
     def _build_reconciliation_gate(
         self,

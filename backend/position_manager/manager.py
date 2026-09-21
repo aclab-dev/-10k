@@ -192,7 +192,13 @@ class PositionManager:
     # Invalidación de setup (F14)
     # ------------------------------------------------------------------
 
-    def trigger_setup_invalidation(self, symbol: str, mark_price: Decimal) -> TickResult | None:
+    def trigger_setup_invalidation(
+        self,
+        symbol: str,
+        mark_price: Decimal,
+        *,
+        book: tuple[Decimal, Decimal] | None = None,
+    ) -> TickResult | None:
         """Aplica la InvalidationAction configurada para el símbolo (disparo manual).
 
         Retorna TickResult con trigger=SETUP_INVALIDATED si se tomó alguna acción,
@@ -207,7 +213,7 @@ class PositionManager:
             return None
 
         return self._apply_invalidation_action(
-            symbol, mark_price, config.invalidation_action, position
+            symbol, mark_price, config.invalidation_action, position, book=book
         )
 
     def _apply_invalidation_action(
@@ -216,6 +222,8 @@ class PositionManager:
         mark_price: Decimal,
         action: InvalidationAction,
         position: PositionState,
+        *,
+        book: tuple[Decimal, Decimal] | None = None,
     ) -> TickResult:
         """Aplica una InvalidationAction (mover SL y/o cerrar parcial/total) y notifica
         on_invalidation_event. Usado tanto por trigger_setup_invalidation (manual) como
@@ -232,7 +240,7 @@ class PositionManager:
             is_full_close = action.close_fraction >= Decimal("1")
             try:
                 close_order_id = self._place_close_order(
-                    symbol, close_qty, mark_price, position.side
+                    symbol, close_qty, mark_price, position.side, book
                 )
             finally:
                 if is_full_close:
@@ -289,7 +297,14 @@ class PositionManager:
     # Tick principal
     # ------------------------------------------------------------------
 
-    def tick(self, symbol: str, mark_price: Decimal, *, atr: Decimal | None = None) -> TickResult:
+    def tick(
+        self,
+        symbol: str,
+        mark_price: Decimal,
+        *,
+        atr: Decimal | None = None,
+        book: tuple[Decimal, Decimal] | None = None,
+    ) -> TickResult:
         """Evalúa triggers para `symbol` al precio `mark_price`.
 
         Orden de evaluación: SL efectivo → invalidación de setup → TP (single o
@@ -399,7 +414,9 @@ class PositionManager:
             )
             if sl_hit:
                 try:
-                    order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
+                    order_id = self._place_close_order(
+                        symbol, position.quantity, mark_price, side, book
+                    )
                 finally:
                     self.remove_config(symbol)
                 _log.info(
@@ -437,7 +454,7 @@ class PositionManager:
                 # elimina), la invalidación NO se consume y el próximo tick reintenta,
                 # igual que con los niveles de multi-TP.
                 result = self._apply_invalidation_action(
-                    symbol, mark_price, config.invalidation_action, position
+                    symbol, mark_price, config.invalidation_action, position, book=book
                 )
                 # Solo marcar si la config sigue viva: en un cierre total,
                 # _apply_invalidation_action ya hizo remove_config() (que descarta esta
@@ -467,7 +484,7 @@ class PositionManager:
                 # Para niveles parciales: pop(0) va FUERA del finally — si la orden
                 # falla, el nivel se preserva y el próximo tick puede reintentar.
                 try:
-                    order_id = self._place_close_order(symbol, close_qty, mark_price, side)
+                    order_id = self._place_close_order(symbol, close_qty, mark_price, side, book)
                 finally:
                     if is_last_level:
                         self.remove_config(symbol)
@@ -504,7 +521,7 @@ class PositionManager:
                 if tp_hit:
                     try:
                         order_id = self._place_close_order(
-                            symbol, position.quantity, mark_price, side
+                            symbol, position.quantity, mark_price, side, book
                         )
                     finally:
                         self.remove_config(symbol)
@@ -527,7 +544,9 @@ class PositionManager:
             side, mark_price, trailing_stop_price
         ):
             try:
-                order_id = self._place_close_order(symbol, position.quantity, mark_price, side)
+                order_id = self._place_close_order(
+                    symbol, position.quantity, mark_price, side, book
+                )
             finally:
                 self.remove_config(symbol)
             _log.info(
@@ -584,7 +603,16 @@ class PositionManager:
         quantity: Decimal,
         mark_price: Decimal,
         side: OrderSide,
+        book: tuple[Decimal, Decimal] | None = None,
     ) -> str:
+        """Coloca la orden MARKET de cierre.
+
+        `book` es el `(bid, ask)` del símbolo, si el caller lo tiene. Sirve para
+        que el fill simulado de PAPER cruce el spread igual que en la entrada
+        (F17 [162]): sin él, las salidas llenaban al mark_price y el PnL de
+        PAPER quedaba optimista por media horquilla en cada cierre. Los adapters
+        de exchange real lo ignoran — tienen su propio libro.
+        """
         close_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
         client_order_id = str(uuid.uuid4())
 
@@ -599,6 +627,8 @@ class PositionManager:
             # (BingX, Binance) DEBEN ignorar explícitamente este campo en órdenes MARKET
             # y nunca enviarlo a la API — de lo contrario podría crear una orden limitada.
             price=mark_price,
+            bid=book[0] if book is not None else None,
+            ask=book[1] if book is not None else None,
             is_reduce_only=True,
         )
         self._adapter.place_order(request)
