@@ -593,17 +593,15 @@ def test_adapter_that_does_not_measure_slippage_persists_null_not_zero() -> None
 
 
 def test_estimated_and_real_slippage_match_in_paper() -> None:
-    """Estimado y real coinciden en PAPER: era la observación de la review del PR #132.
+    """Estimado y real coinciden en PAPER, porque parten del mismo libro.
 
-    Antes el estimado incluía media horquilla + impacto y el real sólo el
-    impacto, porque `PaperAdapter` llenaba al precio de referencia sin cruzar
-    el spread. El estimado superaba al real de forma estructural, por
-    exactamente el medio spread, y la comparación que esta card habilita no
-    medía el error del modelo sino esa discrepancia fija.
+    `SlippageEstimate.bid/ask` viaja hasta la `OrderRequest`, así que el fill
+    simulado cruza exactamente el spread contra el que se estimó. Si cada lado
+    usara su propia fuente, la diferencia mediría la discrepancia entre dos
+    entradas en vez del error del modelo.
 
-    Ahora ambos parten del mismo libro (`SlippageEstimate.bid/ask` viaja hasta
-    la `OrderRequest`), así que en PAPER la comparación vale como verificación
-    de plumbing. El error real del modelo sólo se mide contra fills de
+    Coincidir es lo esperado en PAPER y no valida la heurística: ambos lados
+    salen del mismo modelo. El error real sólo se mide contra fills de
     exchange, en TESTNET/LIVE.
     """
     adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
