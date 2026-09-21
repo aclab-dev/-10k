@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig
+from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.gpt_client import GPTClient, GPTRequest, RequestPurpose
@@ -403,7 +404,27 @@ class CycleRunner:
             )
             return
 
-        # 6. Risk Engine — valida parámetros del trade con datos de pérdida reales
+        # 6. Slippage estimado pre-trade (F17, regla no negociable 13). Se calcula
+        # sobre los parámetros *propuestos*, que son los únicos que existen antes
+        # de que el Risk Engine se pronuncie — eso es lo que "pre-trade" significa.
+        # El gate de arriba filtra el NO_OPERAR del Aggregator, pero el
+        # ModelDecision puede traer execute=False igual (el Risk Engine lo
+        # propaga como NO_OPERAR en su Fase 0): esa decisión admite margin y
+        # entry_price en 0, así que no hay notional que estimar.
+        impact_bps = Decimal(str(self._config.slippage.market_impact_bps))
+        slippage_estimate = (
+            estimate_for_decision(
+                snapshot=snapshot,
+                decision=gpt_decision,
+                margin_usdt=Decimal(str(gpt_decision.margin_usdt)),
+                leverage=gpt_decision.leverage,
+                market_impact_bps=impact_bps,
+            )
+            if gpt_decision.execute
+            else None
+        )
+
+        # 7. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
         open_position_pnl = self._execution_engine.get_open_position_unrealized_pnl(symbol)
         risk_result: RiskValidationResult = risk_engine.validate(
@@ -415,17 +436,48 @@ class CycleRunner:
             last_trade_pnl_usdt=last_trade.net_pnl if last_trade else None,
             last_trade_margin_usdt=last_trade.margin_usdt if last_trade else None,
             open_position_unrealized_pnl_usdt=open_position_pnl,
+            slippage_estimate=slippage_estimate,
         )
 
-        # 7. Ejecutar si el Risk Engine aprueba o ajusta
+        # 8. Ejecutar si el Risk Engine aprueba o ajusta
         if risk_result.decision in (RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN):
             log.info(
                 "cycle_runner.executing_plan",
                 symbol=symbol,
                 risk_decision=risk_result.decision.value,
                 direction=gpt_decision.decision.value,
+                estimated_slippage_usdt=(
+                    str(slippage_estimate.estimated_slippage_usdt)
+                    if slippage_estimate is not None
+                    else None
+                ),
             )
-            self._execution_engine.execute_approved_plan(gpt_decision, risk_result)
+            # Re-estimar sobre los parámetros aprobados: tras un ADJUST_DOWN el
+            # notional ejecutado no es el propuesto, y el número que se persiste
+            # junto al slippage real tiene que describir la orden que se colocó,
+            # no la que se pidió. El de arriba (propuesto) ya quedó auditado en
+            # `risk_validations.reasons`.
+            #
+            # `adjusted_parameters` no es None acá: el validator de
+            # RiskValidationResult lo garantiza para APPROVE/ADJUST_DOWN. El
+            # guard es defensivo — no confiar ciegamente en el invariante de
+            # otro módulo — y cae al estimado propuesto, que describe la misma
+            # orden cuando no hubo ajuste.
+            approved = risk_result.adjusted_parameters
+            executed_estimate = (
+                slippage_estimate
+                if approved is None
+                else estimate_for_decision(
+                    snapshot=snapshot,
+                    decision=gpt_decision,
+                    margin_usdt=approved.margin_usdt,
+                    leverage=approved.leverage,
+                    market_impact_bps=impact_bps,
+                )
+            )
+            self._execution_engine.execute_approved_plan(
+                gpt_decision, risk_result, slippage_estimate=executed_estimate
+            )
         else:
             log.info(
                 "cycle_runner.risk_blocked",

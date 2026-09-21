@@ -42,6 +42,7 @@ from backend.replay.historical_replay_engine import (
     snapshot_row_to_pydantic,
 )
 from backend.replay.schemas import SnapshotWindow
+from backend.risk_engine.schemas import RiskDecision
 from backend.storage.models import MarketSnapshot as MarketSnapshotRow
 
 _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
@@ -307,6 +308,53 @@ class TestHistoricalReplayEngineRun:
         assert results[0].risk_result.decision.value == "APPROVE"
         assert results[1].risk_result.decision.value == "BLOCK"
         assert "daily_drawdown" in results[1].risk_result.reasons
+
+    def test_run_survives_non_executable_decision(self) -> None:
+        """Una NO_OPERAR no puede tumbar la corrida al estimar slippage (F17 [162]).
+
+        `margin_usdt=0` y `entry_price=0` son válidos por schema para una
+        decisión no ejecutable, pero no son un notional estimable: el replay
+        calcula el slippage antes de validar, así que estimar sin filtrar
+        reventaba toda la ventana con un ValueError.
+        """
+        row = MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        no_operar = _make_gpt_decision().model_copy(
+            update={
+                "decision": DecisionType.NO_OPERAR,
+                "execute": False,
+                "margin_usdt": 0.0,
+                "entry_price": 0.0,
+            }
+        )
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(window, decision_provider=lambda s, q: no_operar)
+
+        assert len(results) == 1
+        assert results[0].risk_result.decision == RiskDecision.NO_OPERAR
+
+    def test_run_registers_slippage_estimate_for_executable_decision(self) -> None:
+        """El estimado pre-trade llega a `reasons` también en replay (Anexo B)."""
+        row = MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(window, decision_provider=lambda s, q: _make_gpt_decision())
+
+        reasons = results[0].risk_result.reasons
+        assert "slippage_estimate" in reasons
+        assert "Slippage estimado pre-trade" in reasons["slippage_estimate"]
 
     def test_run_empty_window_returns_empty_list(self) -> None:
         engine = HistoricalReplayEngine(session=MagicMock())

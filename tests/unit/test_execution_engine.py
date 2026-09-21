@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from backend.core.config import Environment, load_config
+from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import (
     BreakoutInterpretation,
     DecisionAggregatorSection,
@@ -413,3 +414,143 @@ def test_timeout_does_not_block_subsequent_calls() -> None:
 
     assert result.order_result.status == OrderStatus.FILLED
     assert elapsed < 0.15  # muy por debajo del sleep(0.3) del thread colgado
+
+
+# ---------------------------------------------------------------------------
+# Persistencia del slippage (F17 [162], regla no negociable 13)
+# ---------------------------------------------------------------------------
+
+
+def _slippage_estimate(estimated_usdt: str = "0.02") -> SlippageEstimate:
+    return SlippageEstimate(
+        estimated_slippage_usdt=Decimal(estimated_usdt),
+        half_spread_usdt=Decimal("0.01"),
+        impact_usdt=Decimal("0.01"),
+        expected_fill_price=Decimal("50110"),
+    )
+
+
+def test_execute_approved_plan_persists_real_slippage_on_fill() -> None:
+    """El slippage real del adapter deja de perderse: va a orders.slippage_usdt."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    # PaperAdapter aplica 2 BPS adversos en MARKET, así que el real es > 0 y es
+    # exactamente el que reportó el adapter — no un 0 hardcodeado ni un recálculo.
+    assert result.order_result.slippage_usdt > Decimal("0")
+    assert saved_order.slippage_usdt == result.order_result.slippage_usdt
+
+
+def test_execute_approved_plan_persists_estimated_slippage() -> None:
+    """El estimado pre-trade queda en la misma fila, para comparar contra el real."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    engine.execute_approved_plan(
+        decision, risk_result, slippage_estimate=_slippage_estimate("0.02")
+    )
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.estimated_slippage_usdt == Decimal("0.02")
+    assert saved_order.slippage_usdt is not None
+
+
+def test_execute_approved_plan_without_estimate_persists_null_not_zero() -> None:
+    """Sin estimación se guarda NULL: 'no se estimó' no es 'se estimó y dio 0'."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+
+    engine.execute_approved_plan(decision, _make_risk_result(decision))
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.estimated_slippage_usdt is None
+
+
+def test_unfilled_order_persists_null_real_slippage() -> None:
+    """Una orden que no llenó no tiene slippage real: NULL, no el 0 del default."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision(entry_type=EntryType.LIMIT)
+    risk_result = _make_risk_result(decision)
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.status != OrderStatus.FILLED
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.slippage_usdt is None
+
+
+def test_idempotent_replay_returns_persisted_slippage_not_zero() -> None:
+    """El replay idempotente lee orders.slippage_usdt en vez de devolver 0 fijo.
+
+    Era el síntoma del gap de la regla 13: el valor no se persistía, así que un
+    retry del mismo plan devolvía siempre slippage 0 y la auditoría mentía.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    order_repo.get_by_client_order_id.return_value = Order(
+        id="order-db-1",
+        bot_run_id="run-1",
+        trade_id="trade-1",
+        client_order_id=decision.decision_id,
+        symbol=decision.symbol,
+        environment="PAPER",
+        order_type="MARKET",
+        side="BUY",
+        quantity=Decimal("0.001"),
+        price=Decimal(str(decision.entry_price)),
+        status="FILLED",
+        exchange_order_id="exch-1",
+        filled_at=_NOW,
+        fill_price=Decimal(str(decision.entry_price)),
+        fee=Decimal("0.01"),
+        slippage_usdt=Decimal("0.03"),
+        is_simulated=True,
+    )
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.slippage_usdt == Decimal("0.03")
+
+
+def test_idempotent_replay_falls_back_to_zero_for_pre_migration_orders() -> None:
+    """Órdenes anteriores a la migración e5b3a71c9d40 no tienen el dato: 0, sin romper."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    order_repo.get_by_client_order_id.return_value = Order(
+        id="order-db-1",
+        bot_run_id="run-1",
+        trade_id="trade-1",
+        client_order_id=decision.decision_id,
+        symbol=decision.symbol,
+        environment="PAPER",
+        order_type="MARKET",
+        side="BUY",
+        quantity=Decimal("0.001"),
+        price=Decimal(str(decision.entry_price)),
+        status="FILLED",
+        exchange_order_id="exch-1",
+        filled_at=_NOW,
+        fill_price=Decimal(str(decision.entry_price)),
+        fee=Decimal("0.01"),
+        slippage_usdt=None,
+        is_simulated=True,
+    )
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.slippage_usdt == Decimal("0")

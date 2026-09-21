@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import load_config
+from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.schemas import ModelDecision
@@ -166,12 +167,29 @@ class HistoricalReplayEngine:
             volatility = compute_volatility_assessment(snapshot)
             decision = decision_provider(snapshot, quant_signals)
             aggregation = self._aggregator.aggregate(decision, quant_signals, regime, volatility)
+            # Slippage estimado pre-trade (F17, regla 13) sobre los parámetros
+            # propuestos, igual que en el ciclo real: el replay tiene que ver la
+            # misma auditoría que vería en producción. Sólo para decisiones
+            # ejecutables: una NO_OPERAR no tiene trade que estimar (y admite
+            # margin/entry_price en 0, que no son un notional válido).
+            slippage_estimate = (
+                estimate_for_decision(
+                    snapshot=snapshot,
+                    decision=decision,
+                    margin_usdt=Decimal(str(decision.margin_usdt)),
+                    leverage=decision.leverage,
+                    market_impact_bps=Decimal(str(config.slippage.market_impact_bps)),
+                )
+                if decision.execute
+                else None
+            )
             risk_result = risk_engine.validate(
                 aggregation=aggregation,
                 decision=decision,
                 daily_loss_usdt=daily_loss_usdt,
                 total_loss_usdt=total_loss_usdt,
                 config=config,
+                slippage_estimate=slippage_estimate,
             )
             results.append(
                 ReplayStepResult(

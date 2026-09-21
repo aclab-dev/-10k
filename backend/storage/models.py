@@ -525,6 +525,13 @@ class Order(Base):
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     fee: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    # Slippage real post-fill, tal como lo reporta el adapter. Nullable: las
+    # órdenes anteriores a la migración e5b3a71c9d40 no lo tienen, y NULL
+    # ("no se midió") no es lo mismo que 0 ("se midió y no hubo").
+    slippage_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    # Estimación pre-trade (F17, regla 13). Se guarda junto al real para que
+    # comparar estimado vs. real sea una lectura de la misma fila.
+    estimated_slippage_usdt: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     is_simulated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     __table_args__ = (UniqueConstraint("client_order_id", name="uq_orders_client_order_id"),)
