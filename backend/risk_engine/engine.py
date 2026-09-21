@@ -53,7 +53,8 @@ def validate(
     last_trade_pnl_usdt: Decimal | None = None,
     last_trade_margin_usdt: Decimal | None = None,
     open_position_unrealized_pnl_usdt: Decimal | None = None,
-    funding_rate: float | None = None,
+    *,
+    funding_rate: float | None,
 ) -> RiskValidationResult:
     """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
 
@@ -73,9 +74,10 @@ def validate(
         open_position_unrealized_pnl_usdt: PnL no realizado de la posición abierta
             en el símbolo (None = sin posición abierta).
             Fase BLOCK: usado por check_anti_averaging; no aplica en ADJUST_DOWN.
-        funding_rate: funding rate por intervalo del snapshot del ciclo (None = desconocido).
-            Fase BLOCK: usado por check_funding_gate; con block_if_funding_unknown=True,
-            omitirlo bloquea el trade (fail-closed).
+        funding_rate: funding rate por intervalo del snapshot del ciclo. Requerido (keyword-only,
+            sin default): None significa que el exchange no devolvió el dato, no que el caller
+            lo omitió. Fase BLOCK: usado por check_funding_gate; con
+            block_if_funding_unknown=True, None bloquea el trade (fail-closed).
 
     Returns:
         RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.

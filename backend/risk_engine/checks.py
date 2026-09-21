@@ -226,36 +226,47 @@ def check_funding_gate(
     rule = "funding_gate"
     if not config.enabled:
         return CheckResult(
-            CheckOutcome.PASS, rule, "Gate de funding deshabilitado en configuración."
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason="Gate de funding deshabilitado en configuración.",
         )
     if decision.decision == DecisionType.NO_OPERAR:
-        return CheckResult(CheckOutcome.PASS, rule, "NO_OPERAR: no hay trade que validar.")
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason="NO_OPERAR: no hay trade que validar.",
+        )
     if funding_rate is None:
         if config.block_if_funding_unknown:
             return CheckResult(
-                CheckOutcome.BLOCK,
-                rule,
-                "Funding rate desconocido: revisión de funding obligatoria antes de operar.",
+                outcome=CheckOutcome.BLOCK,
+                rule=rule,
+                reason="Funding rate desconocido: revisión de funding obligatoria antes de operar.",
             )
         return CheckResult(
-            CheckOutcome.PASS,
-            rule,
-            "Funding rate desconocido; block_if_funding_unknown=False, no se bloquea.",
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason="Funding rate desconocido; block_if_funding_unknown=False, no se bloquea.",
         )
 
     adverse = funding_rate if decision.decision == DecisionType.LONG else -funding_rate
     limit = config.max_adverse_funding_rate
     if adverse >= limit:
         return CheckResult(
-            CheckOutcome.BLOCK,
-            rule,
-            f"Funding adverso {adverse:.6f} para {decision.decision.value} alcanzó el "
-            f"límite {limit:.6f} (funding_rate={funding_rate:.6f}).",
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason=(
+                f"Funding adverso {adverse:.6f} para {decision.decision.value} alcanzó el "
+                f"límite {limit:.6f} (funding_rate={funding_rate:.6f})."
+            ),
         )
     return CheckResult(
-        CheckOutcome.PASS,
-        rule,
-        f"Funding adverso {max(adverse, 0.0):.6f} por debajo del límite {limit:.6f}.",
+        outcome=CheckOutcome.PASS,
+        rule=rule,
+        reason=(
+            f"Funding adverso {adverse:.6f} para {decision.decision.value} por debajo del "
+            f"límite {limit:.6f} (funding_rate={funding_rate:.6f})."
+        ),
     )
 
 

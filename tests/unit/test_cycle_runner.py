@@ -6,7 +6,7 @@ import asyncio
 import threading
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import create_engine
@@ -14,10 +14,18 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
+from backend.core.config import get_config
+from backend.decision_engine.aggregator_schemas import (
+    ContributingSources,
+    DecisionAggregationResult,
+)
+from backend.decision_engine.schemas import DecisionType
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
+from backend.market_data.schemas import MarketSnapshot
 from backend.position_manager.tick_service import PositionTickService
 from backend.reconciliation.gate import ReconciliationGate
+from backend.risk_engine.schemas import RiskDecision
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
@@ -27,6 +35,7 @@ from backend.trading_core.cycle_runner import (
     CycleRunner,
     parse_interval_from_env,
 )
+from tests.unit.test_historical_replay_engine import _make_gpt_decision, _make_snapshot
 
 
 @pytest.fixture
@@ -562,3 +571,88 @@ def test_run_decision_pipeline_skips_new_entries_in_safe_mode_but_keeps_looping(
     # Se resincronizo y evaluo cada simbolo (no aborto tras el primero, a
     # diferencia del caso KILL_SWITCH_TRIGGERED de arriba).
     assert sync_calls == 2
+
+
+# ---------------------------------------------------------------------------
+# Cableado snapshot.funding_rate -> gate de funding del Risk Engine (F17, PR #133)
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline_runner(
+    db_session: Session, heartbeat_file: Path, snapshot: MarketSnapshot
+) -> tuple[CycleRunner, Mock]:
+    """CycleRunner con GPT y Aggregator mockeados (LONG válido) y Risk Engine real.
+
+    El Aggregator real devuelve NO_OPERAR con el snapshot sintético y el pipeline
+    cortaría antes del Risk Engine, así que se fija su salida para que el gate
+    de funding sea lo único que decide.
+    """
+    bot_run = _make_bot_run(db_session)
+    gpt_decision = _make_gpt_decision(snapshot.symbol)
+    aggregator = Mock()
+    aggregator.aggregate.return_value = DecisionAggregationResult(
+        decision_id=gpt_decision.decision_id,
+        symbol=gpt_decision.symbol,
+        timestamp_utc=snapshot.timestamp_utc,
+        contributing_sources=ContributingSources(
+            quant_score=0.80, gpt_context_score=0.85, regime_factor=0.75, volatility_factor=0.70
+        ),
+        aggregated_score=0.78,
+        final_action=DecisionType.LONG,
+    )
+    execution_engine = Mock()
+    execution_engine.get_open_position_unrealized_pnl.return_value = None
+    gpt_client = Mock()
+    gpt_client.request = AsyncMock(return_value=gpt_decision)
+    prompt_builder = Mock()
+    prompt_builder.build.return_value = ("system", "user")
+    runner = CycleRunner(
+        BotStateMachine(initial=BotState.ACTIVE),
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        execution_engine=execution_engine,
+        gpt_client=gpt_client,
+        prompt_builder=prompt_builder,
+        aggregator=aggregator,
+        config=get_config(),
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+    return runner, execution_engine
+
+
+def test_process_symbol_passes_snapshot_funding_rate_to_risk_engine(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.00037})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    spy = Mock(return_value=Mock(decision=RiskDecision.BLOCK, reasons={}))
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["funding_rate"] == 0.00037
+
+
+def test_process_symbol_blocks_and_skips_execution_on_adverse_snapshot_funding(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.002})  # LONG paga >= 0.001
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_not_called()
+
+
+def test_process_symbol_executes_with_neutral_snapshot_funding(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Control del test anterior: sin funding adverso el mismo pipeline sí ejecuta."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_called_once()

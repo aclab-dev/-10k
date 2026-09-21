@@ -42,6 +42,7 @@ from backend.replay.historical_replay_engine import (
     snapshot_row_to_pydantic,
 )
 from backend.replay.schemas import SnapshotWindow
+from backend.risk_engine import engine as risk_engine
 from backend.storage.models import MarketSnapshot as MarketSnapshotRow
 
 _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
@@ -245,6 +246,44 @@ class TestHistoricalReplayEngineRun:
 
         assert results[0].risk_result.decision.value == "BLOCK"
         assert "daily_drawdown" in results[0].risk_result.reasons
+
+    def test_run_passes_snapshot_funding_rate_to_risk_engine(self) -> None:
+        snap = _make_snapshot().model_copy(update={"funding_rate": 0.00037})
+        row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with (
+            patch.object(engine._loader, "load", return_value=[row]),
+            patch(
+                "backend.replay.historical_replay_engine.risk_engine.validate",
+                wraps=risk_engine.validate,
+            ) as spy,
+        ):
+            engine.run(window, decision_provider=lambda snap, _qs: _make_gpt_decision())
+
+        spy.assert_called_once()
+        assert spy.call_args.kwargs["funding_rate"] == 0.00037
+
+    def test_run_blocks_on_adverse_snapshot_funding(self) -> None:
+        snap = _make_snapshot().model_copy(update={"funding_rate": 0.002})  # LONG paga >= 0.001
+        row = MarketSnapshotRow(**snap.to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(window, decision_provider=lambda snap, _qs: _make_gpt_decision())
+
+        assert results[0].risk_result.decision.value == "BLOCK"
+        assert "funding_gate" in results[0].risk_result.reasons
 
     def test_run_is_idempotent(self) -> None:
         """Mismos snapshots e igual decision_provider → mismas risk decisions y final_actions."""
