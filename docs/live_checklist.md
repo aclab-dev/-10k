@@ -41,7 +41,7 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 | 10 | Stop loss obligatorio | ✅ | [`check_sl_required`](../backend/risk_engine/checks.py#L58) (BLOCK) + defensa redundante dentro de [`check_liquidation_safety`](../backend/risk_engine/checks.py#L241). Test: `tests/unit/test_risk_engine_exhaustive.py`. |
 | 11 | Take profit o plan de salida obligatorio | ✅ | [`check_tp_or_exit_plan`](../backend/risk_engine/checks.py#L73) (BLOCK). Test: `tests/unit/test_risk_engine_exhaustive.py`. |
 | 12 | Cálculo de fees obligatorio | ❌ | [`backend/backtesting/fee_model.py`](../backend/backtesting/fee_model.py) solo calcula fees para el simulador de backtesting. No existe ningún check en `risk_engine/checks.py` o en el pipeline de `engine.py` que calcule o verifique fees antes de operar en PAPER/TESTNET/LIVE. **Acción requerida antes de LIVE**: agregar un check de fees al Risk Engine (aunque sea informativo/ADJUST_DOWN si el fee proyectado erosiona el margen). |
-| 13 | Estimación de slippage obligatoria | ❌ | [`backend/backtesting/slippage_model.py`](../backend/backtesting/slippage_model.py) solo se usa en el motor de backtesting. [`execution/engine.py:235`](../backend/execution/engine.py#L235) hardcodea `slippage_usdt=Decimal("0")` en resultados de órdenes live/paper, confirmando que no se calcula. **Acción requerida antes de LIVE**: estimar slippage pre-trade (order book depth o heurística) y registrarlo, aunque no bloquee. |
+| 13 | Estimación de slippage obligatoria | ✅ | Estimación pre-trade: [`estimate_slippage`](../backend/core/slippage.py#L90) + [`estimate_for_decision`](../backend/core/slippage.py#L167) — heurística documentada (media horquilla bid/ask + impacto fijo en BPS, `slippage.market_impact_bps` en `config.yaml`), no order book depth: el codebase no tiene profundidad de libro, `MarketSnapshot` sólo expone bid/ask/spread. Llega al Risk Engine vía [`check_slippage_estimate`](../backend/risk_engine/checks.py#L550), wired en [`engine.py:138`](../backend/risk_engine/engine.py#L138), y queda en `risk_validations.reasons` (Anexo B) en los tres caminos de salida — también en los trades que el Risk Engine rechaza. **Es informativo por diseño**: la regla pide estimar y registrar, no vetar por magnitud; qué slippage es "demasiado" depende del edge del trade, que el check no conoce. Para que eso no sea fail-open silencioso, los dos call sites reales lo calculan siempre ([`cycle_runner.py:415`](../backend/trading_core/cycle_runner.py#L415), [`historical_replay_engine.py`](../backend/replay/historical_replay_engine.py)) y la ausencia del dato se asienta explícita en `reasons`. Slippage real post-fill: el `Decimal("0")` hardcodeado ya no existe — el valor que reporta el adapter se persiste en `orders.slippage_usdt` ([`execution/engine.py:353`](../backend/execution/engine.py#L353), migración `e5b3a71c9d40`) y el replay idempotente lo lee de ahí ([`engine.py:251`](../backend/execution/engine.py#L251)). El estimado se guarda en la misma fila (`orders.estimated_slippage_usdt`) para que comparar estimado vs. real sea una lectura de una sola fila. Nota: `ModelDecision.estimated_slippage_usdt` es una autoestimación de GPT y no cuenta como cumplimiento — GPT no es el edge. Test: `tests/unit/test_slippage_estimator.py`, `tests/unit/test_risk_engine_slippage.py`, `tests/unit/test_execution_engine.py` (persistencia real + estimado, y replay idempotente devolviendo el valor persistido en vez de 0). Card Trello [162]. |
 | 14 | Revisión de funding obligatoria | ❌ | [`backend/quant_signals/funding.py`](../backend/quant_signals/funding.py) alimenta funding como señal informativa al Decision Aggregator/GPT; [`backend/core/funding.py`](../backend/core/funding.py) solo lo usa para contabilidad post-hoc. No hay ningún BLOCK/ADJUST que exija haber "revisado" funding antes de operar. **Acción requerida antes de LIVE**: decidir si esto debe ser un check de Risk Engine (ej. bloquear si el funding rate absoluto supera un umbral) o si la señal ya cumple el espíritu de la regla — documentar la decisión explícitamente si se acepta como está. |
 
 ## 15–25. Gates de calidad de señal, datos e infraestructura
@@ -81,9 +81,10 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
 ## Resumen
 
-- **24/34 reglas verificadas** (✅) con check de código y test.
+- **25/34 reglas verificadas** (✅) con check de código y test.
 - **3/34 son gates de proceso** (⚠️) por diseño (#32, #33, #34) — no verificables por código, pero #33/#34 tienen booleanos de config declarados y nunca leídos (código muerto que conviene wirear o eliminar).
-- **7/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #13 (slippage), #14 (funding no es gate), #21 (falla de lectura de balance/posiciones no autobloquea), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
+- **6/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #14 (funding no es gate), #21 (falla de lectura de balance/posiciones no autobloquea), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
+- **Resuelto desde la auditoría original**: #13 (slippage) — card Trello [162].
 
 ### Acciones menores sin card de seguimiento (aceptadas como están)
 
@@ -114,11 +115,12 @@ Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems �
 La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
 abiertos violaría la regla que el documento existe para hacer cumplir.
 
-**Próximo paso:** resolver los 7 ítems ❌ (cada uno tiene su acción requerida
+**Próximo paso:** resolver los 6 ítems ❌ restantes (cada uno tiene su acción requerida
 documentada arriba) en tareas de seguimiento dentro de la épica F17, volver a
 correr esta auditoría, y recién entonces firmar.
 
 ---
 
 _Auditoría: Claude Code (Sonnet 5), a pedido de Rodrigo Sánchez — 2026-09-15._
+_Actualización #13 (slippage) — 2026-09-21, card Trello [162]._
 _Firma pendiente: **************\_\_\_\_************** — Fecha: **\_\_\_\_**_
