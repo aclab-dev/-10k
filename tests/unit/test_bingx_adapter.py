@@ -455,6 +455,23 @@ def test_place_order_market_success() -> None:
     assert "positionSide=BOTH" in str(post_calls[0].url)
 
 
+def test_place_order_reports_no_slippage_measurement() -> None:
+    """BingX no informa slippage: el OrderResult debe traer None, no 0 (F17 [162]).
+
+    Con 0 toda orden llenada en TESTNET/LIVE quedaría persistida en
+    `orders.slippage_usdt` como "se midió y no hubo", indistinguible de un fill
+    sin slippage, y la comparación estimado-vs-real del checklist (fila 13)
+    sería falsa justo en los entornos que importan.
+    """
+    adapter, _calls = _adapter_with_calls()
+    result = adapter.place_order(
+        _order_request(client_order_id="650e8400-e29b-41d4-a716-446655440099")
+    )
+    assert result.status == OrderStatus.FILLED
+    assert result.is_simulated is False
+    assert result.slippage_usdt is None
+
+
 def test_parse_order_reads_uppercase_client_order_id_key() -> None:
     """La API real de BingX devuelve 'clientOrderID' (ID mayúscula), no 'clientOrderId'
     — _parse_order debe leer ambas casings para no perder el id (tarjeta [101])."""

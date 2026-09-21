@@ -585,3 +585,36 @@ def test_apply_funding_balance_goes_negative_does_not_raise(adapter: PaperAdapte
     )
     assert payment == Decimal("500")
     assert tiny_adapter.get_account_state().balance_usdt < Decimal("0")
+
+
+def test_unfilled_order_reports_no_slippage_measurement() -> None:
+    """Una orden que no llenó no midió slippage: None, no 0 (F17 [162])."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    result = adapter.place_order(
+        OrderRequest(
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=Decimal("0.001"),
+            price=Decimal("50000"),
+        )
+    )
+    assert result.status != OrderStatus.FILLED
+    assert result.slippage_usdt is None
+
+
+def test_filled_market_order_reports_a_measured_slippage() -> None:
+    """Un fill MARKET sí mide: el valor existe y es > 0 (2 BPS adversos)."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    result = adapter.place_order(
+        OrderRequest(
+            symbol="BTCUSDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=Decimal("0.001"),
+            price=Decimal("50000"),
+        )
+    )
+    assert result.status == OrderStatus.FILLED
+    assert result.slippage_usdt is not None
+    assert result.slippage_usdt > Decimal("0")

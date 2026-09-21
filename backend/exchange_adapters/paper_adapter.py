@@ -162,7 +162,7 @@ class PaperAdapter(ExchangeAdapter):
             quantity_filled=Decimal("0"),
             fill_price=None,
             fee_usdt=Decimal("0"),
-            slippage_usdt=Decimal("0"),
+            slippage_usdt=None,
             is_simulated=True,
             timestamp_utc=_now(),
         )
@@ -332,7 +332,7 @@ class PaperAdapter(ExchangeAdapter):
             quantity_filled=Decimal("0"),
             fill_price=None,
             fee_usdt=Decimal("0"),
-            slippage_usdt=Decimal("0"),
+            slippage_usdt=None,
             is_simulated=True,
             timestamp_utc=_now(),
         )

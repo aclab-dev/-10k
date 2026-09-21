@@ -231,10 +231,10 @@ class ExecutionEngine:
         """Reconstruye un ExecutionResult a partir de una Order ya persistida (replay idempotente).
 
         `slippage_usdt` se lee de la columna homónima de `orders` (F17 [162]).
-        Cae en 0 sólo para órdenes anteriores a la migración e5b3a71c9d40, que
-        no tienen el dato y no pueden recuperarlo: el `fill_price` guardado ya
-        incluye el slippage, pero no se conservó el precio de referencia contra
-        el que medirlo.
+        Queda en None cuando el adapter no lo midió, y también para órdenes
+        anteriores a la migración e5b3a71c9d40, que no tienen el dato y no
+        pueden recuperarlo: el `fill_price` guardado ya incluye el slippage,
+        pero no se conservó el precio de referencia contra el que medirlo.
         """
         status = OrderStatus(order_row.status)
         order_result = OrderResult(
@@ -248,7 +248,7 @@ class ExecutionEngine:
             quantity_filled=order_row.quantity if status == OrderStatus.FILLED else Decimal("0"),
             fill_price=order_row.fill_price,
             fee_usdt=order_row.fee or Decimal("0"),
-            slippage_usdt=order_row.slippage_usdt or Decimal("0"),
+            slippage_usdt=order_row.slippage_usdt,
             is_simulated=order_row.is_simulated,
             timestamp_utc=order_row.filled_at or order_row.created_at,
         )
@@ -347,9 +347,10 @@ class ExecutionEngine:
             filled_at=result.timestamp_utc if result.status == OrderStatus.FILLED else None,
             fill_price=result.fill_price,
             fee=result.fee_usdt,
-            # Slippage real sólo tiene sentido sobre una orden que llenó; en
-            # cualquier otro estado el adapter devuelve 0 por defecto y
-            # persistirlo haría pasar "no hubo fill" por "fill sin slippage".
+            # Sólo sobre una orden que llenó, y sólo si el adapter lo midió:
+            # `OrderResult.slippage_usdt` es None cuando no hay medición (BingX
+            # no lo reporta), y persistir un 0 ahí haría pasar "no se midió" por
+            # "se midió y no hubo" — el sesgo que esta columna existe para evitar.
             slippage_usdt=result.slippage_usdt if result.status == OrderStatus.FILLED else None,
             estimated_slippage_usdt=(
                 slippage_estimate.estimated_slippage_usdt if slippage_estimate is not None else None

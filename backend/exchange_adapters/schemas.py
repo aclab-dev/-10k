@@ -98,7 +98,14 @@ class OrderResult(BaseModel):
     quantity_filled: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
     fill_price: Decimal | None = Field(default=None, ge=Decimal("0"))
     fee_usdt: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
-    slippage_usdt: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    # None = el adapter no midió slippage (no que haya sido cero). BingX no lo
+    # informa y no es derivable de su respuesta: `_parse_order` también corre
+    # desde `_query_order`/`get_order_status`, que no tienen precio de
+    # referencia, y el POST de una MARKET suele volver con avgPrice=0. La
+    # distinción importa porque el valor se persiste en `orders.slippage_usdt`
+    # para comparar estimado vs. real (F17 [162], regla no negociable 13):
+    # guardar 0 donde no hubo medición sesga esa comparación.
+    slippage_usdt: Decimal | None = Field(default=None, ge=Decimal("0"))
     is_simulated: bool
     timestamp_utc: datetime
     error: str | None = None

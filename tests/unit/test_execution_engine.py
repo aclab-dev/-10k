@@ -524,8 +524,12 @@ def test_idempotent_replay_returns_persisted_slippage_not_zero() -> None:
     assert result.order_result.slippage_usdt == Decimal("0.03")
 
 
-def test_idempotent_replay_falls_back_to_zero_for_pre_migration_orders() -> None:
-    """Órdenes anteriores a la migración e5b3a71c9d40 no tienen el dato: 0, sin romper."""
+def test_idempotent_replay_reports_none_for_pre_migration_orders() -> None:
+    """Órdenes anteriores a la migración e5b3a71c9d40 no tienen el dato: None, no 0.
+
+    `None` significa "no se midió". Devolver 0 las haría indistinguibles de un
+    fill sin slippage, que es justo el sesgo que la columna viene a evitar.
+    """
     adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
     engine, _session, order_repo = _engine(adapter)
     decision = _make_decision()
@@ -553,4 +557,34 @@ def test_idempotent_replay_falls_back_to_zero_for_pre_migration_orders() -> None
 
     result = engine.execute_approved_plan(decision, risk_result)
 
-    assert result.order_result.slippage_usdt == Decimal("0")
+    assert result.order_result.slippage_usdt is None
+
+
+class _UnmeasuredSlippageAdapter(PaperAdapter):
+    """Adapter que llena pero no mide slippage, como BingX (`slippage_usdt=None`)."""
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        filled = super().place_order(request)
+        return filled.model_copy(update={"slippage_usdt": None, "is_simulated": False})
+
+
+def test_adapter_that_does_not_measure_slippage_persists_null_not_zero() -> None:
+    """Un adapter real que no informa slippage no puede quedar registrado como 0.
+
+    BingX devuelve `slippage_usdt=None` (no lo reporta). Persistir 0 haría pasar
+    "no se midió" por "se midió y no hubo", y en TESTNET/LIVE dejaría toda orden
+    llenada con estimado > 0 y real 0 — el sesgo que esta card viene a corregir.
+    """
+    engine, _session, order_repo = _engine(
+        _UnmeasuredSlippageAdapter(initial_balance_usdt=Decimal("1000"))
+    )
+    decision = _make_decision()
+
+    engine.execute_approved_plan(
+        decision, _make_risk_result(decision), slippage_estimate=_slippage_estimate("0.02")
+    )
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.slippage_usdt is None
+    # El estimado sí se guarda: el gap es la medición real, no la estimación.
+    assert saved_order.estimated_slippage_usdt == Decimal("0.02")

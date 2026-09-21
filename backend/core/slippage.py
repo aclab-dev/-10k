@@ -196,9 +196,9 @@ def estimate_for_decision(
         SlippageEstimate para el notional `margin_usdt × leverage`.
 
     Raises:
-        ValueError: si la decisión no es ejecutable, si el snapshot es de otro
-            símbolo, o si algún parámetro está fuera de rango (ver
-            `estimate_slippage`).
+        ValueError: si la decisión no es ejecutable, si su entry_type es
+            NO_ENTRY, si el snapshot es de otro símbolo, o si algún parámetro
+            está fuera de rango (ver `estimate_slippage`).
     """
     if not decision.execute:
         raise ValueError(
@@ -212,6 +212,15 @@ def estimate_for_decision(
             f"El snapshot es de {snapshot.symbol} pero la decisión es de "
             f"{decision.symbol}: estimar slippage con el libro de otro par "
             "daría un número sin sentido."
+        )
+    if decision.entry_type == EntryType.NO_ENTRY:
+        # Mapearlo a LIMIT (estimado 0) sería mentir en la auditoría: no es que
+        # la orden no cruce el spread, es que no hay orden. Hoy es inalcanzable
+        # —el Execution Engine rechaza NO_ENTRY— pero nada en el schema ata
+        # execute=True a entry_type != NO_ENTRY, así que se falla explícito.
+        raise ValueError(
+            f"entry_type=NO_ENTRY no describe ninguna orden que estimar "
+            f"(decision_id={decision.decision_id})."
         )
     side = OrderSide.BUY if decision.decision == DecisionType.LONG else OrderSide.SELL
     order_type = OrderType.MARKET if decision.entry_type == EntryType.MARKET else OrderType.LIMIT

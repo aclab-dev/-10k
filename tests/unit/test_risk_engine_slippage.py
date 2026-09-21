@@ -336,3 +336,12 @@ class TestEstimateForDecision:
         decision = _long_decision(decision="NO_OPERAR", execute=False, margin_usdt=0.0)
         with pytest.raises(ValueError, match="no ejecutable"):
             _estimate_for(decision, margin_usdt=_D("0"))
+
+    def test_entry_type_no_entry_es_error(self) -> None:
+        # Mapear NO_ENTRY a LIMIT daría un estimado de 0 que parece "orden que no
+        # cruza el spread", cuando en realidad no hay orden. Hoy es inalcanzable
+        # (el Execution Engine rechaza NO_ENTRY), pero nada en el schema ata
+        # execute=True a entry_type != NO_ENTRY.
+        decision = _long_decision().model_copy(update={"entry_type": "NO_ENTRY"})
+        with pytest.raises(ValueError, match="NO_ENTRY"):
+            _estimate_for(decision)
