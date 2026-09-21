@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -39,7 +40,7 @@ from backend.decision_engine.schemas import (
     QuantSignalsSection,
 )
 from backend.market_regime.schemas import PrimaryRegime
-from backend.risk_engine.engine import validate
+from backend.risk_engine.engine import validate as _validate
 from backend.risk_engine.schemas import AdjustedParameters, RiskDecision, RiskValidationResult
 
 # ---------------------------------------------------------------------------
@@ -235,6 +236,13 @@ def _aggregation(decision: ModelDecision) -> DecisionAggregationResult:
         aggregated_score=0.78,
         final_action=action,
     )
+
+
+def validate(
+    *args: Any, funding_rate: float | None = 0.0001, **kwargs: Any
+) -> RiskValidationResult:
+    """`engine.validate` con funding neutro por defecto (el gate tiene sus propios tests)."""
+    return _validate(*args, funding_rate=funding_rate, **kwargs)
 
 
 def _config() -> AppConfig:

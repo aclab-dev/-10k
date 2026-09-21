@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -32,6 +33,7 @@ from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.checks import (
     CheckOutcome,
     check_daily_drawdown,
+    check_funding_gate,
     check_leverage_cap,
     check_margin_cap,
     check_sl_required,
@@ -39,8 +41,8 @@ from backend.risk_engine.checks import (
     check_tp_or_exit_plan,
     leverage_cap_for_env,
 )
-from backend.risk_engine.engine import validate
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine.engine import validate as _validate
+from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -142,6 +144,13 @@ def _aggregation(decision: ModelDecision) -> DecisionAggregationResult:
         aggregated_score=0.78,
         final_action=DecisionType.LONG,
     )
+
+
+def validate(
+    *args: Any, funding_rate: float | None = 0.0001, **kwargs: Any
+) -> RiskValidationResult:
+    """`engine.validate` con funding neutro por defecto (el gate tiene sus propios tests)."""
+    return _validate(*args, funding_rate=funding_rate, **kwargs)
 
 
 def _config() -> AppConfig:
@@ -745,3 +754,122 @@ class TestRiskEngineLiquidationSafetyIntegration:
         aggregation = _aggregation(decision)
         result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg_disabled)
         assert result.decision == RiskDecision.APPROVE
+
+
+# ---------------------------------------------------------------------------
+# Tests: funding gate (F17, regla 14 de la checklist LIVE)
+# ---------------------------------------------------------------------------
+
+
+def _short_decision() -> ModelDecision:
+    return _long_decision(
+        decision="SHORT",
+        stop_loss=100000.0,
+        take_profit=85000.0,
+        invalidation_price=101000.0,
+    )
+
+
+class TestFundingGateCheck:
+    def _cfg(self, **overrides: object):  # type: ignore[no-untyped-def]
+        base = _config().funding_gate
+        return base.model_copy(update=overrides)
+
+    def test_long_paying_funding_below_limit_passes(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit * 0.99, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_long_at_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+        assert r.rule == "funding_gate"
+
+    def test_long_above_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit * 3, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_long_receiving_extreme_funding_passes(self) -> None:
+        # rate muy negativo: el LONG cobra funding, no es adverso.
+        r = check_funding_gate(_long_decision(), -0.05, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_short_paying_negative_funding_at_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_short_decision(), -limit, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_short_below_limit_passes(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_short_decision(), -limit * 0.99, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_short_receiving_extreme_funding_passes(self) -> None:
+        # rate muy positivo: el SHORT cobra funding, no es adverso.
+        r = check_funding_gate(_short_decision(), 0.05, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_unknown_funding_blocks_when_configured(self) -> None:
+        r = check_funding_gate(_long_decision(), None, self._cfg(block_if_funding_unknown=True))
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_unknown_funding_passes_when_not_configured(self) -> None:
+        r = check_funding_gate(_long_decision(), None, self._cfg(block_if_funding_unknown=False))
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_disabled_never_blocks(self) -> None:
+        r = check_funding_gate(_long_decision(), 0.5, self._cfg(enabled=False))
+        assert r.outcome == CheckOutcome.PASS
+
+
+class TestRiskEngineFundingGateIntegration:
+    def test_adverse_funding_blocks_trade_and_reports_rule(self) -> None:
+        cfg = _config()
+        decision = _long_decision()
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=cfg.funding_gate.max_adverse_funding_rate,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "funding_gate" in result.reasons
+
+    def test_neutral_funding_approves_and_reports_rule(self) -> None:
+        decision = _long_decision()
+        result = validate(_aggregation(decision), decision, Decimal("0"), Decimal("0"), _config())
+        assert result.decision == RiskDecision.APPROVE
+        assert "funding_gate" in result.reasons
+
+    def test_omitting_funding_rate_blocks_fail_closed(self) -> None:
+        decision = _long_decision()
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            funding_rate=None,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "funding_gate" in result.reasons
+
+    def test_default_config_is_valid_and_enabled(self) -> None:
+        gate = _config().funding_gate
+        assert gate.enabled is True
+        assert 0 < gate.max_adverse_funding_rate < 1
+
+
+class TestFundingGateConfigValidation:
+    @pytest.mark.parametrize("bad", [0.0, -0.001, 1.0, 5.0])
+    def test_rejects_out_of_range_threshold(self, bad: float) -> None:
+        from backend.core.config import ConfigError, FundingGateConfig
+
+        with pytest.raises((ConfigError, ValueError)):
+            FundingGateConfig(
+                enabled=True, max_adverse_funding_rate=bad, block_if_funding_unknown=True
+            )

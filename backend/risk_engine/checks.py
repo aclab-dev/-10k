@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum, auto
 
-from backend.core.config import AppConfig, Environment, LiquidationSafetyConfig
+from backend.core.config import (
+    AppConfig,
+    Environment,
+    FundingGateConfig,
+    LiquidationSafetyConfig,
+)
 from backend.decision_engine.schemas import DecisionType, ModelDecision
 
 # ---------------------------------------------------------------------------
@@ -205,6 +210,52 @@ def check_leverage_cap(
         outcome=CheckOutcome.PASS,
         rule="leverage_cap",
         reason=f"Leverage {leverage}x dentro del tope de {cap}x para {environment}.",
+    )
+
+
+def check_funding_gate(
+    decision: ModelDecision,
+    funding_rate: float | None,
+    config: FundingGateConfig,
+) -> CheckResult:
+    """Bloquea si el funding que el trade pagaria alcanza el umbral configurado.
+
+    Funding adverso por lado: LONG paga con rate > 0, SHORT paga con rate < 0.
+    Funding a favor (el trade cobra) nunca bloquea. Alcanzar el umbral bloquea (>=).
+    """
+    rule = "funding_gate"
+    if not config.enabled:
+        return CheckResult(
+            CheckOutcome.PASS, rule, "Gate de funding deshabilitado en configuración."
+        )
+    if decision.decision == DecisionType.NO_OPERAR:
+        return CheckResult(CheckOutcome.PASS, rule, "NO_OPERAR: no hay trade que validar.")
+    if funding_rate is None:
+        if config.block_if_funding_unknown:
+            return CheckResult(
+                CheckOutcome.BLOCK,
+                rule,
+                "Funding rate desconocido: revisión de funding obligatoria antes de operar.",
+            )
+        return CheckResult(
+            CheckOutcome.PASS,
+            rule,
+            "Funding rate desconocido; block_if_funding_unknown=False, no se bloquea.",
+        )
+
+    adverse = funding_rate if decision.decision == DecisionType.LONG else -funding_rate
+    limit = config.max_adverse_funding_rate
+    if adverse >= limit:
+        return CheckResult(
+            CheckOutcome.BLOCK,
+            rule,
+            f"Funding adverso {adverse:.6f} para {decision.decision.value} alcanzó el "
+            f"límite {limit:.6f} (funding_rate={funding_rate:.6f}).",
+        )
+    return CheckResult(
+        CheckOutcome.PASS,
+        rule,
+        f"Funding adverso {max(adverse, 0.0):.6f} por debajo del límite {limit:.6f}.",
     )
 
 
