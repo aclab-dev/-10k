@@ -14,7 +14,13 @@ from decimal import Decimal
 import pytest
 
 from backend.core.config import AppConfig, Environment, get_config
-from backend.core.slippage import ESTIMATION_METHOD, SlippageEstimate, estimate_for_decision
+from backend.core.slippage import (
+    ESTIMATION_METHOD,
+    SlippageEstimate,
+    estimate_for_decision,
+    half_spread,
+    is_estimable,
+)
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
     DecisionAggregationResult,
@@ -345,7 +351,7 @@ class TestEstimateForDecision:
         # notional que estimar. Estimar igual reventaba el replay entero, que
         # calcula antes de validar y ve decisiones no ejecutables de rutina.
         decision = _long_decision(decision="NO_OPERAR", execute=False, margin_usdt=0.0)
-        with pytest.raises(ValueError, match="no ejecutable"):
+        with pytest.raises(ValueError, match="no describe una orden estimable"):
             _estimate_for(decision, margin_usdt=_D("0"))
 
     def test_entry_type_no_entry_es_error(self) -> None:
@@ -354,5 +360,39 @@ class TestEstimateForDecision:
         # (el Execution Engine rechaza NO_ENTRY), pero nada en el schema ata
         # execute=True a entry_type != NO_ENTRY.
         decision = _long_decision().model_copy(update={"entry_type": "NO_ENTRY"})
-        with pytest.raises(ValueError, match="NO_ENTRY"):
+        with pytest.raises(ValueError, match="no describe una orden estimable"):
             _estimate_for(decision)
+
+
+# ---------------------------------------------------------------------------
+# is_estimable — el filtro que usan los call sites
+# ---------------------------------------------------------------------------
+
+
+class TestIsEstimable:
+    def test_decision_ejecutable_es_estimable(self) -> None:
+        assert is_estimable(_long_decision()) is True
+
+    def test_no_operar_no_es_estimable(self) -> None:
+        decision = _long_decision(decision="NO_OPERAR", execute=False, margin_usdt=0.0)
+        assert is_estimable(decision) is False
+
+    def test_no_entry_no_es_estimable(self) -> None:
+        # `execute=True` con `entry_type=NO_ENTRY` no está prohibido por el
+        # schema. Antes reventaba la estimación y, con ella, el ciclo del
+        # símbolo o la ventana entera del replay.
+        decision = _long_decision().model_copy(update={"entry_type": "NO_ENTRY"})
+        assert is_estimable(decision) is False
+
+
+class TestHalfSpread:
+    def test_es_medio_spread(self) -> None:
+        assert half_spread(_D("99.90"), _D("100.10")) == _D("0.10")
+
+    def test_rechaza_libro_invertido(self) -> None:
+        with pytest.raises(ValueError, match="debe ser menor que ask"):
+            half_spread(_D("100.10"), _D("99.90"))
+
+    def test_rechaza_precios_no_positivos(self) -> None:
+        with pytest.raises(ValueError, match="bid y ask"):
+            half_spread(_D("0"), _D("100"))

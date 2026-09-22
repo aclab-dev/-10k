@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.backtesting.slippage_model import SlippageModel
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
 from backend.decision_engine.aggregator import DecisionAggregator
@@ -187,7 +188,15 @@ class Orchestrator:
             )
 
         initial_balance = Decimal(str(cfg.challenge.initial_balance_usdt))
-        adapter = PaperAdapter(initial_balance_usdt=initial_balance)
+        # El mismo impacto en BPS que usa la estimación pre-trade: si el
+        # simulador se quedara con el default de SlippageModel, tocar
+        # `slippage.market_impact_bps` movería sólo el estimado y
+        # `orders.estimated_slippage_usdt` divergiría de `orders.slippage_usdt`
+        # en PAPER por puro desacople de config (F17 [162]).
+        adapter = PaperAdapter(
+            initial_balance_usdt=initial_balance,
+            slippage_model=SlippageModel(market_bps=Decimal(str(cfg.slippage.market_impact_bps))),
+        )
         db_session = session or get_session_factory()()
 
         # Debe resolverse ANTES de crear el bot_run nuevo: get_most_recent()

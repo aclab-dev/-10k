@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig
-from backend.core.slippage import estimate_for_decision
+from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.gpt_client import GPTClient, GPTRequest, RequestPurpose
@@ -408,9 +408,9 @@ class CycleRunner:
         # sobre los parámetros *propuestos*, que son los únicos que existen antes
         # de que el Risk Engine se pronuncie — eso es lo que "pre-trade" significa.
         # El gate de arriba filtra el NO_OPERAR del Aggregator, pero el
-        # ModelDecision puede traer execute=False igual (el Risk Engine lo
-        # propaga como NO_OPERAR en su Fase 0): esa decisión admite margin y
-        # entry_price en 0, así que no hay notional que estimar.
+        # ModelDecision puede traer execute=False o entry_type=NO_ENTRY igual
+        # (el schema no las prohíbe): ninguna describe una orden estimable, y
+        # estimarlas de todos modos tiraría el ciclo de este símbolo.
         impact_bps = Decimal(str(self._config.slippage.market_impact_bps))
         slippage_estimate = (
             estimate_for_decision(
@@ -420,7 +420,7 @@ class CycleRunner:
                 leverage=gpt_decision.leverage,
                 market_impact_bps=impact_bps,
             )
-            if gpt_decision.execute
+            if is_estimable(gpt_decision)
             else None
         )
 
@@ -458,23 +458,22 @@ class CycleRunner:
             # junto al slippage real tiene que describir la orden que se colocó,
             # no la que se pidió. El de arriba (propuesto) ya quedó auditado en
             # `risk_validations.reasons`.
-            #
-            # `adjusted_parameters` no es None acá: el validator de
-            # RiskValidationResult lo garantiza para APPROVE/ADJUST_DOWN. El
-            # guard es defensivo — no confiar ciegamente en el invariante de
-            # otro módulo — y cae al estimado propuesto, que describe la misma
-            # orden cuando no hubo ajuste.
             approved = risk_result.adjusted_parameters
-            executed_estimate = (
-                slippage_estimate
-                if approved is None
-                else estimate_for_decision(
-                    snapshot=snapshot,
-                    decision=gpt_decision,
-                    margin_usdt=approved.margin_usdt,
-                    leverage=approved.leverage,
-                    market_impact_bps=impact_bps,
+            if approved is None:
+                # Invariante del validator de RiskValidationResult para
+                # APPROVE/ADJUST_DOWN. Si se rompiera, caer al estimado
+                # propuesto persistiría un número que no describe la orden
+                # colocada: mejor fallar ruidoso que auditar algo falso.
+                raise RuntimeError(
+                    f"RiskValidationResult.decision={risk_result.decision} sin "
+                    f"adjusted_parameters (validation_id={risk_result.validation_id})"
                 )
+            executed_estimate = estimate_for_decision(
+                snapshot=snapshot,
+                decision=gpt_decision,
+                margin_usdt=approved.margin_usdt,
+                leverage=approved.leverage,
+                market_impact_bps=impact_bps,
             )
             self._execution_engine.execute_approved_plan(
                 gpt_decision, risk_result, slippage_estimate=executed_estimate

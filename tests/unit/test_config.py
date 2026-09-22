@@ -344,3 +344,23 @@ def test_apply_env_overrides_float(monkeypatch: pytest.MonkeyPatch) -> None:
     data: dict = {"risk": {"min_confidence_paper": 0.70}}
     result = _apply_env_overrides(data)
     assert result["risk"]["min_confidence_paper"] == pytest.approx(0.85)
+
+
+def test_blocks_market_impact_bps_above_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un typo de config (200 donde iba 2.0) tiene que fallar al boot.
+
+    Sin cota, el valor se acepta y se persiste como estimación; pasado 10 000
+    el fill esperado de un SELL se vuelve negativo.
+    """
+    with pytest.raises((ConfigError, Exception)):
+        _load(monkeypatch, BOT__SLIPPAGE__MARKET_IMPACT_BPS="200")
+
+
+def test_blocks_negative_market_impact_bps(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises((ConfigError, Exception)):
+        _load(monkeypatch, BOT__SLIPPAGE__MARKET_IMPACT_BPS="-1")
+
+
+def test_accepts_market_impact_bps_within_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch, BOT__SLIPPAGE__MARKET_IMPACT_BPS="7.5")
+    assert cfg.slippage.market_impact_bps == 7.5

@@ -346,6 +346,10 @@ class LiquidationSafetyConfig(BaseModel):
     block_if_stop_after_liquidation: bool
 
 
+#: Tope de `slippage.market_impact_bps` (100 BPS = 1 % del precio).
+_MAX_MARKET_IMPACT_BPS = 100.0
+
+
 class SlippageConfig(BaseModel):
     """Parámetros de la estimación de slippage pre-trade (regla no negociable 13).
 
@@ -360,9 +364,16 @@ class SlippageConfig(BaseModel):
 
     @field_validator("market_impact_bps")
     @classmethod
-    def impact_non_negative(cls, v: float) -> float:
-        if v < 0:
-            raise ConfigError(f"market_impact_bps debe ser >= 0, recibido: {v}")
+    def impact_within_bounds(cls, v: float) -> float:
+        # La cota superior existe para que un typo (200 donde iba 2.0) falle al
+        # boot y no se persista como estimación. 100 BPS = 1% del precio ya es
+        # un orden de magnitud por encima de cualquier impacto plausible en los
+        # pares líquidos que opera el bot; a partir de 10 000 el fill esperado
+        # de un SELL se vuelve negativo.
+        if not 0 <= v <= _MAX_MARKET_IMPACT_BPS:
+            raise ConfigError(
+                f"slippage.market_impact_bps={v} debe estar en [0, {_MAX_MARKET_IMPACT_BPS}]"
+            )
         return v
 
 

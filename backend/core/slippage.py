@@ -59,6 +59,39 @@ _CROSSES_SPREAD: frozenset[OrderType] = frozenset({OrderType.MARKET})
 ESTIMATION_METHOD = "half_spread_plus_fixed_impact_bps_v1"
 
 
+def half_spread(bid: Decimal, ask: Decimal) -> Decimal:
+    """Media horquilla por unidad: lo que cuesta cruzar el libro desde el mid.
+
+    Vive acá y no duplicada en cada consumidor para que estimador y simulador
+    de fills no puedan divergir: si esta fórmula cambia (modelo asimétrico,
+    corrección de signo), cambia para los dos a la vez. La usa
+    `estimate_slippage` y `PaperAdapter._cross_spread`.
+
+    Raises:
+        ValueError: si los precios son incoherentes (`bid >= ask`) o no positivos.
+    """
+    if bid <= 0 or ask <= 0:
+        raise ValueError(f"bid y ask deben ser > 0, recibidos bid={bid}, ask={ask}")
+    if bid >= ask:
+        raise ValueError(f"bid={bid} debe ser menor que ask={ask}")
+    return (ask - bid) / _TWO
+
+
+def is_estimable(decision: ModelDecision) -> bool:
+    """¿Esta decisión describe una orden cuyo slippage tenga sentido estimar?
+
+    Falso para las que no llegan a ser una orden: `execute=False` (el Risk
+    Engine las propaga como NO_OPERAR sin evaluarlas) y `entry_type=NO_ENTRY`.
+    Ninguna de las dos está prohibida por el schema junto a la otra, así que
+    los callers preguntan acá en vez de asumir.
+
+    Los callers filtran con esto antes de llamar a `estimate_for_decision`,
+    que trata lo no estimable como violación de contrato y lanza. Sin el
+    filtro, una decisión así abortaría el ciclo o la ventana de replay entera.
+    """
+    return decision.execute and decision.entry_type != EntryType.NO_ENTRY
+
+
 @dataclass(frozen=True)
 class SlippageEstimate:
     """Estimación de slippage pre-trade, con sus componentes desglosados.
@@ -147,7 +180,7 @@ def estimate_slippage(
         )
 
     quantity = notional_usdt / reference_price
-    half_spread_per_unit = (ask - bid) / _TWO
+    half_spread_per_unit = half_spread(bid, ask)
     impact_per_unit = reference_price * market_impact_bps / _BASIS_POINTS
     adverse_move_per_unit = half_spread_per_unit + impact_per_unit
 
@@ -210,27 +243,18 @@ def estimate_for_decision(
             NO_ENTRY, si el snapshot es de otro símbolo, o si algún parámetro
             está fuera de rango (ver `estimate_slippage`).
     """
-    if not decision.execute:
+    if not is_estimable(decision):
         raise ValueError(
-            f"No hay slippage que estimar para una decisión no ejecutable "
-            f"(decision_id={decision.decision_id}, execute=False): sus "
-            "margin_usdt y entry_price pueden ser 0 por schema. El caller debe "
-            "filtrarla antes de estimar."
+            f"La decisión {decision.decision_id} no describe una orden estimable "
+            f"(execute={decision.execute}, entry_type={decision.entry_type}): una "
+            "NO_OPERAR admite margin_usdt y entry_price en 0, y NO_ENTRY no es "
+            "ninguna orden. El caller debe filtrarla con is_estimable()."
         )
     if snapshot.symbol != decision.symbol:
         raise ValueError(
             f"El snapshot es de {snapshot.symbol} pero la decisión es de "
             f"{decision.symbol}: estimar slippage con el libro de otro par "
             "daría un número sin sentido."
-        )
-    if decision.entry_type == EntryType.NO_ENTRY:
-        # Mapearlo a LIMIT (estimado 0) sería mentir en la auditoría: no es que
-        # la orden no cruce el spread, es que no hay orden. Hoy es inalcanzable
-        # —el Execution Engine rechaza NO_ENTRY— pero nada en el schema ata
-        # execute=True a entry_type != NO_ENTRY, así que se falla explícito.
-        raise ValueError(
-            f"entry_type=NO_ENTRY no describe ninguna orden que estimar "
-            f"(decision_id={decision.decision_id})."
         )
     side = OrderSide.BUY if decision.decision == DecisionType.LONG else OrderSide.SELL
     order_type = OrderType.MARKET if decision.entry_type == EntryType.MARKET else OrderType.LIMIT
@@ -253,4 +277,6 @@ __all__ = [
     "SlippageEstimate",
     "estimate_for_decision",
     "estimate_slippage",
+    "half_spread",
+    "is_estimable",
 ]

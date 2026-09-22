@@ -21,7 +21,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import load_config
-from backend.core.slippage import estimate_for_decision
+from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.schemas import ModelDecision
@@ -158,6 +158,8 @@ class HistoricalReplayEngine:
         """
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
+        # Fuera del loop: no cambia entre filas.
+        impact_bps = Decimal(str(config.slippage.market_impact_bps))
         results: list[ReplayStepResult] = []
 
         for row in rows:
@@ -170,17 +172,18 @@ class HistoricalReplayEngine:
             # Slippage estimado pre-trade (F17, regla 13) sobre los parámetros
             # propuestos, igual que en el ciclo real: el replay tiene que ver la
             # misma auditoría que vería en producción. Sólo para decisiones
-            # ejecutables: una NO_OPERAR no tiene trade que estimar (y admite
-            # margin/entry_price en 0, que no son un notional válido).
+            # estimables: un decision_provider puede devolver NO_OPERAR o
+            # NO_ENTRY, y estimarlas abortaría la ventana entera descartando
+            # los pasos ya calculados.
             slippage_estimate = (
                 estimate_for_decision(
                     snapshot=snapshot,
                     decision=decision,
                     margin_usdt=Decimal(str(decision.margin_usdt)),
                     leverage=decision.leverage,
-                    market_impact_bps=Decimal(str(config.slippage.market_impact_bps)),
+                    market_impact_bps=impact_bps,
                 )
-                if decision.execute
+                if is_estimable(decision)
                 else None
             )
             risk_result = risk_engine.validate(

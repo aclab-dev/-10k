@@ -378,6 +378,36 @@ class TestHistoricalReplayEngineRun:
         assert len(results) == 1
         assert results[0].risk_result.decision == RiskDecision.NO_OPERAR
 
+    def test_run_survives_no_entry_decision_without_aborting_the_window(self) -> None:
+        """`execute=True` + `entry_type=NO_ENTRY` no puede tirar la ventana entera.
+
+        El schema no prohíbe esa combinación, y un `decision_provider` de
+        backtesting puede producirla. Estimar su slippage lanzaba ValueError
+        sin capturar dentro del loop por fila, descartando los pasos ya
+        calculados.
+        """
+        rows = [
+            MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1")),
+            MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1")),
+        ]
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        no_entry = _make_gpt_decision().model_copy(update={"entry_type": EntryType.NO_ENTRY})
+
+        with patch.object(engine._loader, "load", return_value=rows):
+            results = engine.run(window, decision_provider=lambda s, q: no_entry)
+
+        assert len(results) == 2
+        for step in results:
+            assert (
+                "Sin estimación de slippage pre-trade"
+                in step.risk_result.reasons["slippage_estimate"]
+            )
+
     def test_run_registers_slippage_estimate_for_executable_decision(self) -> None:
         """El estimado pre-trade llega a `reasons` también en replay (Anexo B)."""
         row = MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1"))

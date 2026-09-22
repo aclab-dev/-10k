@@ -124,6 +124,31 @@ def test_default_construction_wires_paper_position_tick_service(sqlite_session: 
     assert price == mds.get_last_price("BTCUSDT")
 
 
+def test_paper_adapter_uses_configured_market_impact_bps(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El simulador de fills usa el mismo impacto en BPS que la estimación (F17 [162]).
+
+    Con el default de `SlippageModel` hardcodeado, tocar
+    `slippage.market_impact_bps` movía sólo el estimado y
+    `orders.estimated_slippage_usdt` divergía de `orders.slippage_usdt` en PAPER
+    por puro desacople de config — rompiendo la comparación que la fila 13 del
+    checklist declara verificada.
+    """
+    # Un valor distinto del default de SlippageModel (2 BPS): con el default,
+    # config y hardcode coinciden y el test no distingue un caso del otro.
+    base = get_config()
+    tuned = base.model_copy(
+        update={"slippage": base.slippage.model_copy(update={"market_impact_bps": 7.0})}
+    )
+    monkeypatch.setattr("backend.trading_core.orchestrator.get_config", lambda: tuned)
+
+    orch = Orchestrator(session=sqlite_session)
+
+    adapter = orch.execution_engine._adapter  # type: ignore[attr-defined]
+    assert adapter._slip._market_bps == Decimal("7.0")  # type: ignore[attr-defined]
+
+
 def test_default_construction_wires_book_provider_for_exit_fills(
     sqlite_session: Session,
 ) -> None:

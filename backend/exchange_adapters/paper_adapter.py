@@ -39,6 +39,7 @@ from backend.backtesting.fee_model import FeeModel
 from backend.backtesting.slippage_model import SlippageModel
 from backend.core.config import Environment, MarginType
 from backend.core.funding import compute_funding_payment
+from backend.core.slippage import half_spread
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
     AccountState,
@@ -355,10 +356,10 @@ class PaperAdapter(ExchangeAdapter):
         """
         if request.bid is None or request.ask is None:
             return fill_price
-        half_spread = (request.ask - request.bid) / Decimal("2")
-        adjusted = (
-            fill_price + half_spread if request.side == OrderSide.BUY else fill_price - half_spread
-        )
+        # Misma fórmula que usa el estimador, importada y no reescrita: si el
+        # modelo de horquilla cambia, estimado y simulado se mueven juntos.
+        spread = half_spread(request.bid, request.ask)
+        adjusted = fill_price + spread if request.side == OrderSide.BUY else fill_price - spread
         return adjusted.quantize(_QUANT)
 
     def _open_or_net_position(self, request: OrderRequest, fill_price: Decimal) -> None:
