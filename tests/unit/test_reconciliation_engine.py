@@ -648,6 +648,54 @@ def test_failed_symbol_does_not_produce_false_missing_in_adapter(adapter: PaperA
 
 
 # ---------------------------------------------------------------------------
+# Balance de cuenta (F17 [164])
+# ---------------------------------------------------------------------------
+
+
+def test_balance_fetch_failure_marks_report_incomplete(adapter: PaperAdapter) -> None:
+    adapter.get_account_state = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("exchange API down")
+    )
+
+    engine = _make_engine(adapter)
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert report.balance_fetch_failed is True
+    assert not report.is_complete
+    assert not report.is_consistent
+    # No es un failed_symbol: es transversal a toda la cuenta, no aislable.
+    assert report.failed_symbols == []
+
+
+def test_balance_fetch_success_does_not_affect_report(adapter: PaperAdapter) -> None:
+    engine = _make_engine(adapter)
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert report.balance_fetch_failed is False
+    assert report.is_complete
+    assert report.is_consistent
+
+
+def test_balance_fetch_failure_does_not_block_symbol_reconciliation(
+    adapter: PaperAdapter,
+) -> None:
+    """Que falle el balance no debe impedir reconciliar posiciones/órdenes por símbolo."""
+    adapter.get_account_state = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("exchange API down")
+    )
+    db_pos = _db_position("BTCUSDT", Decimal("0.02"), Decimal("49000"))
+
+    engine = _make_engine(adapter, db_positions=[db_pos])
+    report = engine.reconcile(BOT_RUN_ID)
+
+    assert report.balance_fetch_failed is True
+    assert any(
+        d.discrepancy_type == DiscrepancyType.MISSING_IN_ADAPTER
+        for d in report.position_discrepancies
+    )
+
+
+# ---------------------------------------------------------------------------
 # ReconciliationReport helpers
 # ---------------------------------------------------------------------------
 

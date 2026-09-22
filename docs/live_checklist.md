@@ -54,7 +54,7 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 | 18 | Bloqueo si datos faltantes/vencidos/incoherentes | ✅ | [`validate_snapshot`](../backend/market_data/validators.py#L128) rechaza snapshots EXPIRED (>30s) o incoherentes (`SnapshotRejectedError`); datos faltantes escalan a SAFE_MODE vía [`ConnectionHealthMonitor`](../backend/connection_health/monitor.py#L58) (`SYMBOL_DATA_UNAVAILABLE`). Test: `tests/unit/test_validators.py`, `tests/unit/test_connection_health_monitor.py:111`. |
 | 19 | Bloqueo si latencia peligrosa | ✅ | [`LATENCY_EXCEEDED`](../backend/connection_health/monitor.py#L118) → SAFE_MODE; bound duro `_MAX_LATENCY_MS=10_000` en `market_data/schemas.py:29`. Test: `tests/unit/test_connection_health_monitor.py:146`. |
 | 20 | Bloqueo si la API falla | ✅ | `CircuitBreaker`/`retry_async` en [`backend/core/retry.py`](../backend/core/retry.py) envuelven las llamadas a BingX/GPT; agotado el retry, escala a `SYMBOL_DATA_UNAVAILABLE` → SAFE_MODE. Test: `tests/unit/test_retry.py`, `tests/chaos/test_http_5xx_faults.py`, `test_disconnect_faults.py`, `test_timeout_faults.py`. |
-| 21 | Bloqueo si no se puede leer balance/posiciones/órdenes activas | ❌ | [`_reconcile_positions`](../backend/reconciliation/engine.py#L219) captura la excepción de fetch y marca el símbolo en `failed_symbols` (`report.is_complete=False`), pero según el propio docstring de [`gate.py:40`](../backend/reconciliation/gate.py#L40) eso **no** dispara SAFE_MODE por sí solo — solo lo hacen las 3 discrepancias explícitas (huérfanas, protección faltante, etc.). No existe un check dedicado de "falla de lectura de balance". **Acción requerida antes de LIVE**: que un fetch fallido de balance/posiciones/órdenes por sí solo dispare SAFE_MODE, no solo quede como "reporte incompleto". |
+| 21 | Bloqueo si no se puede leer balance/posiciones/órdenes activas | ✅ | Criterio asimétrico, decidido por Rodrigo en la card F17 [164]: la falla de balance (`adapter.get_account_state()`, no aislable — transversal a toda la cuenta) SIEMPRE dispara SAFE_MODE, vía [`ReconciliationEngine._check_balance`](../backend/reconciliation/engine.py#L226) → `report.balance_fetch_failed` → [`ReconciliationGate._blocking_reasons`](../backend/reconciliation/gate.py#L158) (sin flag de config, a diferencia de las otras 3 condiciones). La falla de lectura de posiciones/órdenes por símbolo sigue aislada y tolerada sin bloquear por sí sola — [`_reconcile_positions`](../backend/reconciliation/engine.py#L219)/`_reconcile_orders` marcan el símbolo en `failed_symbols` sin agregar discrepancia, criterio deliberado documentado en [`gate.py:40`](../backend/reconciliation/gate.py#L40) (revisión de Rodrigo, PR #128) que esta tarjeta no cambia. Test: `tests/unit/test_reconciliation_engine.py::test_balance_fetch_failure_marks_report_incomplete`, `tests/unit/test_reconciliation_gate.py::TestBalanceFetchFailure`. |
 | 22 | Bloqueo si no se pueden confirmar órdenes de salida | ✅ | `block_on_unconfirmed_protection` (flag de `config.yaml`, contexto en el [docstring del módulo](../backend/reconciliation/gate.py#L31)) evaluado en [`ReconciliationGate._blocking_reasons`](../backend/reconciliation/gate.py#L177) → discrepancia `MISSING_PROTECTION` → SAFE_MODE. Test: `tests/unit/test_reconciliation_gate.py`. |
 | 23 | Bloqueo si hay órdenes huérfanas | ✅ | `block_on_orphan_orders` (flag de `config.yaml`, contexto en el [docstring del módulo](../backend/reconciliation/gate.py#L14)) evaluado en [`ReconciliationGate._blocking_reasons`](../backend/reconciliation/gate.py#L161) contra [`_ORPHAN_ORDER_TYPES`](../backend/reconciliation/gate.py#L89) → discrepancia `MISSING_IN_DB` → SAFE_MODE (excluye `MISSING_IN_ADAPTER` por diseño documentado, revisado en PR #128). Test: `tests/unit/test_reconciliation_gate.py`. |
 | 24 | Bloqueo si reloj local desincronizado | ✅ | [`CLOCK_SKEW_EXCEEDED`](../backend/connection_health/monitor.py#L107) → SAFE_MODE; bound duro `_MAX_CLOCK_SKEW_MS=5_000` en `market_data/schemas.py:28`. Test: `tests/unit/test_connection_health_monitor.py:121,133`. |
@@ -81,9 +81,9 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
 ## Resumen
 
-- **25/34 reglas verificadas** (✅) con check de código y test.
+- **26/34 reglas verificadas** (✅) con check de código y test.
 - **3/34 son gates de proceso** (⚠️) por diseño (#32, #33, #34) — no verificables por código, pero #33/#34 tienen booleanos de config declarados y nunca leídos (código muerto que conviene wirear o eliminar).
-- **6/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #13 (slippage), #21 (falla de lectura de balance/posiciones no autobloquea), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
+- **5/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #13 (slippage), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
 
 ### Acciones menores sin card de seguimiento (aceptadas como están)
 
@@ -114,7 +114,7 @@ Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems �
 La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
 abiertos violaría la regla que el documento existe para hacer cumplir.
 
-**Próximo paso:** resolver los 6 ítems ❌ (cada uno tiene su acción requerida
+**Próximo paso:** resolver los 5 ítems ❌ (cada uno tiene su acción requerida
 documentada arriba) en tareas de seguimiento dentro de la épica F17, volver a
 correr esta auditoría, y recién entonces firmar.
 

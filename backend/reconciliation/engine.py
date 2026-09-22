@@ -35,6 +35,15 @@ Scope:
   reporte con símbolos fallidos es *parcial*: `is_consistent` devuelve False
   aunque no haya discrepancias (no hay base para afirmar consistencia);
   `is_complete` distingue "todo verificado y OK" de "no se pudo verificar".
+- Balance: además de posiciones/órdenes por símbolo, cada `reconcile()` llama
+  una vez a `adapter.get_account_state()`. Si falla, se marca
+  `ReconciliationReport.balance_fetch_failed=True` — a diferencia de un
+  símbolo individual, esto NO es aislable: no se compara ningún valor de
+  balance (no hay `DiscrepancyType` para eso), solo se registra que no se
+  pudo leer. La respuesta a esa falla (bloquear vía SAFE_MODE, sin excepción
+  configurable) es responsabilidad de `ReconciliationGate` — decisión
+  registrada en la card de Trello F17 [164], que documenta por qué esta falla
+  no sigue el mismo criterio de aislamiento por símbolo del PR #128.
 """
 
 from __future__ import annotations
@@ -130,13 +139,17 @@ class ReconciliationReport(BaseModel):
     # Símbolos donde get_position/get_open_orders lanzó: no se pudo comparar nada
     # para ellos y el reporte es parcial.
     failed_symbols: list[str] = Field(default_factory=list)
+    # True si adapter.get_account_state() lanzó: no se pudo leer el balance de
+    # la cuenta. A diferencia de failed_symbols, esto no es aislable por
+    # símbolo — ver docstring del módulo.
+    balance_fetch_failed: bool = False
 
     model_config = {"frozen": True}
 
     @property
     def is_complete(self) -> bool:
-        """True si se pudo consultar el exchange para todos los símbolos."""
-        return not self.failed_symbols
+        """True si se pudo consultar el exchange para todos los símbolos y el balance."""
+        return not self.failed_symbols and not self.balance_fetch_failed
 
     @property
     def is_consistent(self) -> bool:
@@ -187,10 +200,12 @@ class ReconciliationEngine:
     def reconcile(self, bot_run_id: str) -> ReconciliationReport:
         """Ejecuta la reconciliación completa y retorna el reporte.
 
-        Compara, símbolo por símbolo:
-        1. Posiciones abiertas en el exchange vs posiciones OPEN en DB (+ protección).
-        2. Órdenes vivas en el exchange vs órdenes PENDING registradas en DB.
+        1. Balance de la cuenta: solo se verifica que se pueda leer (no se
+           compara ningún valor — ver docstring del módulo).
+        2. Posiciones abiertas en el exchange vs posiciones OPEN en DB (+ protección).
+        3. Órdenes vivas en el exchange vs órdenes PENDING registradas en DB.
         """
+        balance_fetch_failed = self._check_balance()
         pos_discrepancies, pos_failed = self._reconcile_positions(bot_run_id)
         order_discrepancies, order_failed = self._reconcile_orders(bot_run_id)
 
@@ -199,6 +214,7 @@ class ReconciliationEngine:
             position_discrepancies=pos_discrepancies,
             order_discrepancies=order_discrepancies,
             failed_symbols=sorted(set(pos_failed) | set(order_failed)),
+            balance_fetch_failed=balance_fetch_failed,
         )
 
         _log.info(
@@ -207,10 +223,24 @@ class ReconciliationEngine:
             is_consistent=report.is_consistent,
             is_complete=report.is_complete,
             failed_symbols=report.failed_symbols,
+            balance_fetch_failed=report.balance_fetch_failed,
             position_discrepancies=len(pos_discrepancies),
             order_discrepancies=len(order_discrepancies),
         )
         return report
+
+    def _check_balance(self) -> bool:
+        """Intenta leer el estado de la cuenta. Retorna True si el fetch falló.
+
+        No se compara ningún valor devuelto: solo importa si la lectura en sí
+        fue posible (ver docstring del módulo).
+        """
+        try:
+            self._adapter.get_account_state()
+        except Exception:
+            _log.error("reconciliation.balance_fetch_failed", exc_info=True)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Reconciliación de posiciones
