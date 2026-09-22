@@ -172,6 +172,7 @@ class HistoricalReplayEngine:
                 daily_loss_usdt=daily_loss_usdt,
                 total_loss_usdt=total_loss_usdt,
                 config=config,
+                funding_rate=snapshot.funding_rate,
             )
             results.append(
                 ReplayStepResult(

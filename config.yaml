@@ -133,6 +133,14 @@ liquidation_safety:
   block_if_liquidation_unknown: true
   block_if_stop_after_liquidation: true
 
+funding_gate:
+  # Gate del Risk Engine (F17, regla 14). Umbral por intervalo de funding como
+  # fraccion (0.001 = 0.1%). Solo bloquea el funding que el trade PAGA
+  # (LONG con rate > 0, SHORT con rate < 0); alcanzar el umbral ya bloquea.
+  enabled: true
+  max_adverse_funding_rate: 0.001
+  block_if_funding_unknown: true
+
 capital_management:
   bot_withdrawals_allowed: false
   automatic_profit_withdrawal: false

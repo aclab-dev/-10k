@@ -346,6 +346,26 @@ class LiquidationSafetyConfig(BaseModel):
     block_if_stop_after_liquidation: bool
 
 
+class FundingGateConfig(BaseModel):
+    """Gate de funding del Risk Engine (F17, regla 14 de la checklist LIVE).
+
+    `max_adverse_funding_rate` es una fraccion por intervalo de funding (0.001 = 0.1%).
+    Solo el funding que el trade PAGA cuenta como adverso: LONG con rate positivo,
+    SHORT con rate negativo. Un funding que el trade cobra nunca bloquea.
+    """
+
+    enabled: bool
+    max_adverse_funding_rate: float
+    block_if_funding_unknown: bool
+
+    @field_validator("max_adverse_funding_rate")
+    @classmethod
+    def rate_in_open_unit_interval(cls, v: float) -> float:
+        if not 0 < v < 1:
+            raise ConfigError(f"funding_gate.max_adverse_funding_rate={v} debe estar en (0, 1)")
+        return v
+
+
 class CapitalManagementConfig(BaseModel):
     bot_withdrawals_allowed: bool
     automatic_profit_withdrawal: bool
@@ -555,6 +575,7 @@ class AppConfig(BaseModel):
     connection_health: ConnectionHealthConfig
     idempotency: IdempotencyConfig
     liquidation_safety: LiquidationSafetyConfig
+    funding_gate: FundingGateConfig
     capital_management: CapitalManagementConfig
     position_management: PositionManagementConfig
     failure_policy: FailurePolicyConfig

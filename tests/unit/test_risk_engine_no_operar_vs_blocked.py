@@ -177,6 +177,9 @@ def _aggregation(
     )
 
 
+_NEUTRAL_FUNDING_RATE = 0.0001
+
+
 def _config() -> AppConfig:
     return get_config()
 
@@ -213,7 +216,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.decision == RiskDecision.NO_OPERAR
 
@@ -222,7 +232,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.adjusted_parameters is None
 
@@ -231,7 +248,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert len(result.reasons) >= 1
         assert "no_operar" in result.reasons
@@ -244,7 +268,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.aggregation_id == aggregation.aggregation_id
 
@@ -253,7 +284,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.symbol == "ETHUSDT"
 
@@ -264,7 +302,9 @@ class TestValidateNoOperar:
         daily = Decimal("15.0")
         total = Decimal("40.0")
 
-        result = validate(aggregation, decision, daily, total, cfg)
+        result = validate(
+            aggregation, decision, daily, total, cfg, funding_rate=_NEUTRAL_FUNDING_RATE
+        )
 
         assert result.daily_loss_at_check_usdt == daily
         assert result.total_loss_at_check_usdt == total
@@ -275,7 +315,14 @@ class TestValidateNoOperar:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert isinstance(result, RiskValidationResult)
 
@@ -297,6 +344,7 @@ class TestValidateNoOperar:
             daily_loss_usdt=initial_balance,  # 100% del capital diario perdido
             total_loss_usdt=initial_balance,
             config=cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
         )
 
         # Debe ser NO_OPERAR, no BLOCK
@@ -318,7 +366,14 @@ class TestValidateBlocked:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.decision == RiskDecision.BLOCK
 
@@ -330,7 +385,14 @@ class TestValidateBlocked:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.adjusted_parameters is None
 
@@ -342,7 +404,14 @@ class TestValidateBlocked:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert len(result.reasons) >= 1
 
@@ -358,7 +427,14 @@ class TestNoOperarVsBlockDistinction:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.decision is not RiskDecision.BLOCK
         assert result.decision == RiskDecision.NO_OPERAR
@@ -371,7 +447,14 @@ class TestNoOperarVsBlockDistinction:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert result.decision is not RiskDecision.NO_OPERAR
         assert result.decision == RiskDecision.BLOCK
@@ -382,7 +465,14 @@ class TestNoOperarVsBlockDistinction:
         aggregation = _aggregation(decision, final_action=DecisionType.NO_OPERAR)
         cfg = _config()
 
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         reason_text = result.reasons.get("no_operar", "")
         # La razón debe mencionar que viene del Aggregator (no del Risk Engine)
@@ -397,7 +487,14 @@ class TestNoOperarVsBlockDistinction:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         # La rule "daily_drawdown" debe estar en los reasons
         assert "daily_drawdown" in result.reasons
@@ -411,7 +508,14 @@ class TestNoOperarVsBlockDistinction:
         daily_limit_pct = Decimal(str(cfg.risk.max_daily_loss_percent)) / 100
         exceeding_loss = initial_balance * daily_limit_pct + Decimal("1")
 
-        result = validate(aggregation, decision, exceeding_loss, Decimal("0"), cfg)
+        result = validate(
+            aggregation,
+            decision,
+            exceeding_loss,
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
 
         assert "no_operar" not in result.reasons
 

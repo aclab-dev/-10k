@@ -42,7 +42,7 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 | 11 | Take profit o plan de salida obligatorio | ✅ | [`check_tp_or_exit_plan`](../backend/risk_engine/checks.py#L73) (BLOCK). Test: `tests/unit/test_risk_engine_exhaustive.py`. |
 | 12 | Cálculo de fees obligatorio | ❌ | [`backend/backtesting/fee_model.py`](../backend/backtesting/fee_model.py) solo calcula fees para el simulador de backtesting. No existe ningún check en `risk_engine/checks.py` o en el pipeline de `engine.py` que calcule o verifique fees antes de operar en PAPER/TESTNET/LIVE. **Acción requerida antes de LIVE**: agregar un check de fees al Risk Engine (aunque sea informativo/ADJUST_DOWN si el fee proyectado erosiona el margen). |
 | 13 | Estimación de slippage obligatoria | ❌ | [`backend/backtesting/slippage_model.py`](../backend/backtesting/slippage_model.py) solo se usa en el motor de backtesting. [`execution/engine.py:235`](../backend/execution/engine.py#L235) hardcodea `slippage_usdt=Decimal("0")` en resultados de órdenes live/paper, confirmando que no se calcula. **Acción requerida antes de LIVE**: estimar slippage pre-trade (order book depth o heurística) y registrarlo, aunque no bloquee. |
-| 14 | Revisión de funding obligatoria | ❌ | [`backend/quant_signals/funding.py`](../backend/quant_signals/funding.py) alimenta funding como señal informativa al Decision Aggregator/GPT; [`backend/core/funding.py`](../backend/core/funding.py) solo lo usa para contabilidad post-hoc. No hay ningún BLOCK/ADJUST que exija haber "revisado" funding antes de operar. **Acción requerida antes de LIVE**: decidir si esto debe ser un check de Risk Engine (ej. bloquear si el funding rate absoluto supera un umbral) o si la señal ya cumple el espíritu de la regla — documentar la decisión explícitamente si se acepta como está. |
+| 14 | Revisión de funding obligatoria | ✅ | Gate en el Risk Engine (F17): [`check_funding_gate`](../backend/risk_engine/checks.py#L216), cableado en la fase BLOCK de [`validate`](../backend/risk_engine/engine.py#L132) con el `funding_rate` del snapshot del ciclo (`cycle_runner` y `historical_replay_engine`). Bloquea si el funding que el trade **paga** alcanza el umbral (LONG con rate > 0, SHORT con rate < 0; el funding a favor nunca bloquea; `>=` bloquea). Umbral y política de dato faltante en `config.yaml` → `funding_gate` (`enabled`, `max_adverse_funding_rate`=0.001, `block_if_funding_unknown`=true), validado al boot por [`FundingGateConfig`](../backend/core/config.py#L349) (rango (0, 1)); overrides `BOT__FUNDING_GATE__*` en `.env.example`. Funding desconocido (`None`) bloquea (fail-closed) mientras `block_if_funding_unknown=true`. La señal informativa del Aggregator/GPT se mantiene, pero ya no es lo que satisface la regla. Tests: `TestFundingGateCheck`, `TestRiskEngineFundingGateIntegration` y `TestFundingGateConfigValidation` en `tests/unit/test_risk_engine_validation.py`. |
 
 ## 15–25. Gates de calidad de señal, datos e infraestructura
 
@@ -81,9 +81,9 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
 ## Resumen
 
-- **24/34 reglas verificadas** (✅) con check de código y test.
+- **25/34 reglas verificadas** (✅) con check de código y test.
 - **3/34 son gates de proceso** (⚠️) por diseño (#32, #33, #34) — no verificables por código, pero #33/#34 tienen booleanos de config declarados y nunca leídos (código muerto que conviene wirear o eliminar).
-- **7/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #13 (slippage), #14 (funding no es gate), #21 (falla de lectura de balance/posiciones no autobloquea), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
+- **6/34 tienen un gap de código real** (❌): #4 (cap 3x LIVE inicial no aplicado por Risk Engine), #12 (fees), #13 (slippage), #21 (falla de lectura de balance/posiciones no autobloquea), #28 (sin anti-escalada de leverage tras pérdida), #29 (límite de posiciones concurrentes no se lee en runtime).
 
 ### Acciones menores sin card de seguimiento (aceptadas como están)
 
@@ -114,7 +114,7 @@ Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems �
 La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
 abiertos violaría la regla que el documento existe para hacer cumplir.
 
-**Próximo paso:** resolver los 7 ítems ❌ (cada uno tiene su acción requerida
+**Próximo paso:** resolver los 6 ítems ❌ (cada uno tiene su acción requerida
 documentada arriba) en tareas de seguimiento dentro de la épica F17, volver a
 correr esta auditoría, y recién entonces firmar.
 

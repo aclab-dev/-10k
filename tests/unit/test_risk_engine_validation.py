@@ -32,6 +32,7 @@ from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.checks import (
     CheckOutcome,
     check_daily_drawdown,
+    check_funding_gate,
     check_leverage_cap,
     check_margin_cap,
     check_sl_required,
@@ -40,7 +41,7 @@ from backend.risk_engine.checks import (
     leverage_cap_for_env,
 )
 from backend.risk_engine.engine import validate
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -141,6 +142,35 @@ def _aggregation(decision: ModelDecision) -> DecisionAggregationResult:
         ),
         aggregated_score=0.78,
         final_action=DecisionType.LONG,
+    )
+
+
+_NEUTRAL_FUNDING_RATE = 0.0001
+
+
+def _validate_neutral_funding(
+    aggregation: DecisionAggregationResult,
+    decision: ModelDecision,
+    daily_loss_usdt: Decimal,
+    total_loss_usdt: Decimal,
+    config: AppConfig,
+    last_trade_pnl_usdt: Decimal | None = None,
+    last_trade_margin_usdt: Decimal | None = None,
+    open_position_unrealized_pnl_usdt: Decimal | None = None,
+    *,
+    funding_rate: float | None = _NEUTRAL_FUNDING_RATE,
+) -> RiskValidationResult:
+    """`engine.validate` con funding neutro por defecto (el gate tiene sus propios tests)."""
+    return validate(
+        aggregation,
+        decision,
+        daily_loss_usdt,
+        total_loss_usdt,
+        config,
+        last_trade_pnl_usdt,
+        last_trade_margin_usdt,
+        open_position_unrealized_pnl_usdt,
+        funding_rate=funding_rate,
     )
 
 
@@ -404,14 +434,14 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision(leverage=5, margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
 
     def test_approve_preserves_original_parameters(self) -> None:
         cfg = _config()
         decision = _long_decision(leverage=5, margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.original_margin_usdt == Decimal("5.0")
         assert result.original_leverage == 5
         assert result.adjusted_parameters is not None
@@ -422,7 +452,7 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.aggregation_id == aggregation.aggregation_id
 
     def test_approve_has_correct_symbol(self) -> None:
@@ -435,14 +465,14 @@ class TestRiskEngineApprove:
             invalidation_price=2700.0,
         )
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.symbol == "ETHUSDT"
 
     def test_approve_has_utc_timestamp(self) -> None:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         from datetime import timedelta
 
         assert result.timestamp_utc.utcoffset() == timedelta(0)
@@ -451,7 +481,9 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("3.0"), Decimal("8.0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("3.0"), Decimal("8.0"), cfg
+        )
         assert result.daily_loss_at_check_usdt == Decimal("3.0")
         assert result.total_loss_at_check_usdt == Decimal("8.0")
 
@@ -459,7 +491,7 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert "sl_required" in result.reasons
         assert "tp_or_exit_plan" in result.reasons
         assert "daily_drawdown" in result.reasons
@@ -471,7 +503,7 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
 
     def test_approve_near_daily_drawdown_limit(self) -> None:
@@ -479,7 +511,7 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("9.9"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("9.9"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
 
     def test_approve_near_total_drawdown_limit(self) -> None:
@@ -487,7 +519,9 @@ class TestRiskEngineApprove:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("49.9"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("0"), Decimal("49.9"), cfg
+        )
         assert result.decision == RiskDecision.APPROVE
 
 
@@ -502,7 +536,9 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("10.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("10.0"), Decimal("0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
         assert "daily_drawdown" in result.reasons
 
@@ -510,7 +546,9 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("15.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("15.0"), Decimal("0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
 
     def test_block_when_total_drawdown_reached(self) -> None:
@@ -518,7 +556,9 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("50.0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("0"), Decimal("50.0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
         assert "total_drawdown" in result.reasons
 
@@ -526,21 +566,27 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("75.0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("0"), Decimal("75.0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
 
     def test_block_has_no_adjusted_parameters(self) -> None:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("10.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("10.0"), Decimal("0"), cfg
+        )
         assert result.adjusted_parameters is None
 
     def test_block_records_loss_snapshot(self) -> None:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("10.0"), Decimal("30.0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("10.0"), Decimal("30.0"), cfg
+        )
         assert result.daily_loss_at_check_usdt == Decimal("10.0")
         assert result.total_loss_at_check_usdt == Decimal("30.0")
 
@@ -548,7 +594,9 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("12.0"), Decimal("55.0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("12.0"), Decimal("55.0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
         assert "daily_drawdown" in result.reasons
         assert "total_drawdown" in result.reasons
@@ -558,7 +606,9 @@ class TestRiskEngineBlock:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("10.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("10.0"), Decimal("0"), cfg
+        )
         assert "sl_required" in result.reasons
         assert "tp_or_exit_plan" in result.reasons
 
@@ -574,14 +624,14 @@ class TestRiskEngineAdjustDown:
         cfg = _config_with_lower_margin_cap(3.0)
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.ADJUST_DOWN
 
     def test_adjust_down_reduces_margin_to_cap(self) -> None:
         cfg = _config_with_lower_margin_cap(3.0)
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.adjusted_parameters is not None
         assert result.adjusted_parameters.margin_usdt == Decimal("3.0")
 
@@ -589,7 +639,7 @@ class TestRiskEngineAdjustDown:
         cfg = _config_with_lower_margin_cap(3.0)
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.original_margin_usdt == Decimal("5.0")
 
     def test_adjust_down_when_leverage_exceeds_lower_config_cap(self) -> None:
@@ -597,14 +647,14 @@ class TestRiskEngineAdjustDown:
         cfg = _config_with_lower_leverage_cap_paper(3)
         decision = _long_decision(leverage=5)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.ADJUST_DOWN
 
     def test_adjust_down_reduces_leverage_to_cap(self) -> None:
         cfg = _config_with_lower_leverage_cap_paper(3)
         decision = _long_decision(leverage=5)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.adjusted_parameters is not None
         assert result.adjusted_parameters.leverage == 3
 
@@ -616,7 +666,9 @@ class TestRiskEngineAdjustDown:
         cfg_custom = cfg.model_copy(update={"risk": custom_risk, "leverage": custom_leverage})
         decision = _long_decision(margin_usdt=5.0, leverage=5)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg_custom)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("0"), Decimal("0"), cfg_custom
+        )
         assert result.decision == RiskDecision.ADJUST_DOWN
         assert result.adjusted_parameters is not None
         assert result.adjusted_parameters.margin_usdt == Decimal("3.0")
@@ -626,7 +678,7 @@ class TestRiskEngineAdjustDown:
         cfg = _config_with_lower_margin_cap(3.0)
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         expected_rules = (
             "sl_required",
             "tp_or_exit_plan",
@@ -644,7 +696,7 @@ class TestRiskEngineAdjustDown:
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
         # 5 USDT de 100 = 5% < 10% límite → no bloquea por drawdown
-        result = validate(aggregation, decision, Decimal("5.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("5.0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.ADJUST_DOWN
 
     def test_adjust_down_blocked_when_drawdown_also_exceeded(self) -> None:
@@ -653,7 +705,9 @@ class TestRiskEngineAdjustDown:
         decision = _long_decision(margin_usdt=5.0)
         aggregation = _aggregation(decision)
         # Drawdown excedido Y margen fuera de cap → BLOCK (drawdown gana)
-        result = validate(aggregation, decision, Decimal("10.0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("10.0"), Decimal("0"), cfg
+        )
         assert result.decision == RiskDecision.BLOCK
 
 
@@ -667,7 +721,7 @@ class TestRiskEnginePreconditions:
         """Desde [75] F9: execute=False ya no lanza ValueError; retorna NO_OPERAR.
 
         NO_OPERAR (sin edge, Aggregator) y BLOCK (Risk Engine) son estados distintos.
-        validate() propaga NO_OPERAR sin evaluar reglas de riesgo.
+        _validate_neutral_funding() propaga NO_OPERAR sin evaluar reglas de riesgo.
         """
         from backend.risk_engine.schemas import RiskDecision
 
@@ -682,7 +736,7 @@ class TestRiskEnginePreconditions:
             net_risk_reward=0.0,
         )
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.NO_OPERAR
 
     def test_raises_when_margin_zero(self) -> None:
@@ -692,7 +746,7 @@ class TestRiskEnginePreconditions:
         object.__setattr__(patched, "margin_usdt", 0.0)
         aggregation = _aggregation(decision)
         with pytest.raises(ValueError, match="margin_usdt"):
-            validate(aggregation, patched, Decimal("0"), Decimal("0"), cfg)
+            _validate_neutral_funding(aggregation, patched, Decimal("0"), Decimal("0"), cfg)
 
     def test_result_is_immutable(self) -> None:
         from pydantic import ValidationError
@@ -700,7 +754,7 @@ class TestRiskEnginePreconditions:
         cfg = _config()
         decision = _long_decision()
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         with pytest.raises((ValidationError, TypeError)):
             result.decision = RiskDecision.BLOCK  # type: ignore[misc]
 
@@ -715,7 +769,7 @@ class TestRiskEngineLiquidationSafetyIntegration:
         cfg = _config()
         decision = _long_decision()  # liq_dist=18%, SL conservador → PASS
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
         assert "liquidation_safety" in result.reasons
 
@@ -723,7 +777,7 @@ class TestRiskEngineLiquidationSafetyIntegration:
         cfg = _config()  # block_if_liquidation_unknown=True por defecto
         decision = _long_decision(liquidation_distance_percent_estimated=0.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.BLOCK
         assert "liquidation_unknown" in result.reasons
 
@@ -733,7 +787,7 @@ class TestRiskEngineLiquidationSafetyIntegration:
         decision = _long_decision()
         object.__setattr__(decision, "stop_loss", 77000.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.BLOCK
         assert "sl_after_liquidation" in result.reasons
 
@@ -743,5 +797,128 @@ class TestRiskEngineLiquidationSafetyIntegration:
         cfg_disabled = cfg.model_copy(update={"liquidation_safety": custom_liq})
         decision = _long_decision(liquidation_distance_percent_estimated=0.0)
         aggregation = _aggregation(decision)
-        result = validate(aggregation, decision, Decimal("0"), Decimal("0"), cfg_disabled)
+        result = _validate_neutral_funding(
+            aggregation, decision, Decimal("0"), Decimal("0"), cfg_disabled
+        )
         assert result.decision == RiskDecision.APPROVE
+
+
+# ---------------------------------------------------------------------------
+# Tests: funding gate (F17, regla 14 de la checklist LIVE)
+# ---------------------------------------------------------------------------
+
+
+def _short_decision() -> ModelDecision:
+    return _long_decision(
+        decision="SHORT",
+        stop_loss=100000.0,
+        take_profit=85000.0,
+        invalidation_price=101000.0,
+    )
+
+
+class TestFundingGateCheck:
+    def _cfg(self, **overrides: object):  # type: ignore[no-untyped-def]
+        base = _config().funding_gate
+        return base.model_copy(update=overrides)
+
+    def test_long_paying_funding_below_limit_passes(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit * 0.99, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_long_at_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+        assert r.rule == "funding_gate"
+
+    def test_long_above_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_long_decision(), limit * 3, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_long_receiving_extreme_funding_passes(self) -> None:
+        # rate muy negativo: el LONG cobra funding, no es adverso.
+        r = check_funding_gate(_long_decision(), -0.05, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_short_paying_negative_funding_at_limit_blocks(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_short_decision(), -limit, self._cfg())
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_short_below_limit_passes(self) -> None:
+        limit = self._cfg().max_adverse_funding_rate
+        r = check_funding_gate(_short_decision(), -limit * 0.99, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_short_receiving_extreme_funding_passes(self) -> None:
+        # rate muy positivo: el SHORT cobra funding, no es adverso.
+        r = check_funding_gate(_short_decision(), 0.05, self._cfg())
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_unknown_funding_blocks_when_configured(self) -> None:
+        r = check_funding_gate(_long_decision(), None, self._cfg(block_if_funding_unknown=True))
+        assert r.outcome == CheckOutcome.BLOCK
+
+    def test_unknown_funding_passes_when_not_configured(self) -> None:
+        r = check_funding_gate(_long_decision(), None, self._cfg(block_if_funding_unknown=False))
+        assert r.outcome == CheckOutcome.PASS
+
+    def test_disabled_never_blocks(self) -> None:
+        r = check_funding_gate(_long_decision(), 0.5, self._cfg(enabled=False))
+        assert r.outcome == CheckOutcome.PASS
+
+
+class TestRiskEngineFundingGateIntegration:
+    def test_adverse_funding_blocks_trade_and_reports_rule(self) -> None:
+        cfg = _config()
+        decision = _long_decision()
+        result = _validate_neutral_funding(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=cfg.funding_gate.max_adverse_funding_rate,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "funding_gate" in result.reasons
+
+    def test_neutral_funding_approves_and_reports_rule(self) -> None:
+        decision = _long_decision()
+        result = _validate_neutral_funding(
+            _aggregation(decision), decision, Decimal("0"), Decimal("0"), _config()
+        )
+        assert result.decision == RiskDecision.APPROVE
+        assert "funding_gate" in result.reasons
+
+    def test_omitting_funding_rate_blocks_fail_closed(self) -> None:
+        decision = _long_decision()
+        result = _validate_neutral_funding(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            funding_rate=None,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "funding_gate" in result.reasons
+
+    def test_default_config_is_valid_and_enabled(self) -> None:
+        gate = _config().funding_gate
+        assert gate.enabled is True
+        assert 0 < gate.max_adverse_funding_rate < 1
+
+
+class TestFundingGateConfigValidation:
+    @pytest.mark.parametrize("bad", [0.0, -0.001, 1.0, 5.0])
+    def test_rejects_out_of_range_threshold(self, bad: float) -> None:
+        from backend.core.config import ConfigError, FundingGateConfig
+
+        with pytest.raises((ConfigError, ValueError)):
+            FundingGateConfig(
+                enabled=True, max_adverse_funding_rate=bad, block_if_funding_unknown=True
+            )
