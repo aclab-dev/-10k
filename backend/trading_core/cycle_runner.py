@@ -43,6 +43,11 @@ from backend.quant_signals.engine import compute_quant_signals
 from backend.reconciliation.gate import ReconciliationGate
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from backend.storage.audit import (
+    audit_decision_aggregation,
+    audit_model_decision,
+    audit_risk_validation,
+)
 from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
 from backend.trading_core.bot_state_machine import BotStateMachine, resolve_persisted_state
@@ -392,7 +397,16 @@ class CycleRunner:
             gpt_decision, quant, regime, volatility
         )
 
-        # 5. Gating critico: si el Aggregator dice NO_OPERAR, no ejecutar.
+        # 5. Auditoría de la decisión y su agregación (Anexo B). Antes del gate
+        # de NO_OPERAR: una decisión sin edge es tan auditable como una
+        # ejecutada, y su fila es lo que permite revisar después por qué no se
+        # operó. La decisión va primero: `decision_aggregations.decision_id`
+        # tiene FK a `decisions.id`.
+        if self._config.storage.log_all_decisions:
+            audit_model_decision(self._session, gpt_decision, bot_run_id=self._bot_run_id)
+            audit_decision_aggregation(self._session, aggregation, bot_run_id=self._bot_run_id)
+
+        # 6. Gating critico: si el Aggregator dice NO_OPERAR, no ejecutar.
         # El Risk Engine evalua decision.execute (del ModelDecision original), no
         # aggregation.final_action — por eso el caller debe verificar esto primero.
         if aggregation.final_action == DecisionType.NO_OPERAR:
@@ -404,7 +418,7 @@ class CycleRunner:
             )
             return
 
-        # 6. Slippage estimado pre-trade (F17, regla no negociable 13). Se calcula
+        # 7. Slippage estimado pre-trade (F17, regla no negociable 13). Se calcula
         # sobre los parámetros *propuestos*, que son los únicos que existen antes
         # de que el Risk Engine se pronuncie — eso es lo que "pre-trade" significa.
         # El gate de arriba filtra el NO_OPERAR del Aggregator, pero el
@@ -424,7 +438,7 @@ class CycleRunner:
             else None
         )
 
-        # 7. Risk Engine — valida parámetros del trade con datos de pérdida reales
+        # 8. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
         open_position_pnl = self._execution_engine.get_open_position_unrealized_pnl(symbol)
         risk_result: RiskValidationResult = risk_engine.validate(
@@ -440,7 +454,14 @@ class CycleRunner:
             slippage_estimate=slippage_estimate,
         )
 
-        # 8. Ejecutar si el Risk Engine aprueba o ajusta
+        # Auditoría del Risk Engine (Anexo B). Es el destino de `reasons`, donde
+        # vive el slippage estimado de la regla 13. Se persiste antes de
+        # ejecutar: si la ejecución falla, la validación que la autorizó ya
+        # quedó registrada.
+        if self._config.storage.log_risk_validations:
+            audit_risk_validation(self._session, risk_result, bot_run_id=self._bot_run_id)
+
+        # 9. Ejecutar si el Risk Engine aprueba o ajusta
         if risk_result.decision in (RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN):
             log.info(
                 "cycle_runner.executing_plan",

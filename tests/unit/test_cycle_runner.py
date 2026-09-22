@@ -59,6 +59,9 @@ from backend.risk_engine.schemas import AdjustedParameters, RiskDecision, RiskVa
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
+from backend.storage.models import Decision as DecisionRow
+from backend.storage.models import DecisionAggregation as DecisionAggregationRow
+from backend.storage.models import RiskValidation as RiskValidationRow
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import (
     DEFAULT_INTERVAL_SECONDS,
@@ -747,12 +750,29 @@ def _make_pipeline_runner(
     return runner, execution_engine
 
 
+def _blocked_risk_result(symbol: str) -> RiskValidationResult:
+    """RiskValidationResult BLOCK mínimo y válido, persistible."""
+    return RiskValidationResult(
+        aggregation_id=str(uuid.uuid4()),
+        symbol=symbol,
+        timestamp_utc=datetime.now(UTC),
+        decision=RiskDecision.BLOCK,
+        original_margin_usdt=Decimal("5"),
+        original_leverage=3,
+        adjusted_parameters=None,
+        reasons={"test": "fixture"},
+    )
+
+
 def test_process_symbol_passes_snapshot_funding_rate_to_risk_engine(
     heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.00037})
     runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
-    spy = Mock(return_value=Mock(decision=RiskDecision.BLOCK, reasons={}))
+    # Resultado real y no un Mock: el ciclo persiste la validación en
+    # `risk_validations` (Anexo B), y para eso necesita un objeto que sepa
+    # serializarse.
+    spy = Mock(return_value=_blocked_risk_result(snapshot.symbol))
     monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
 
     asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
@@ -1054,4 +1074,75 @@ def test_process_symbol_skips_estimate_for_non_executable_decision(
     asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
 
     assert seen["slippage_estimate"] is None
+    execution_engine.execute_approved_plan.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Auditoría del Anexo B: decisions / decision_aggregations / risk_validations
+# ---------------------------------------------------------------------------
+
+
+def test_process_symbol_persists_the_decision_audit_chain(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El ciclo escribe las tres tablas del Anexo B, encadenadas por sus FKs.
+
+    Ninguna se escribía: `to_db_kwargs()` no tenía un solo caller y la fila 13
+    del checklist citaba `risk_validations.reasons` como destino del slippage
+    estimado sobre una tabla vacía.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    monkeypatch.setattr(
+        "backend.trading_core.cycle_runner.risk_engine.validate",
+        Mock(return_value=_blocked_risk_result(snapshot.symbol)),
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    decisions = db_session.query(DecisionRow).all()
+    aggregations = db_session.query(DecisionAggregationRow).all()
+    validations = db_session.query(RiskValidationRow).all()
+    assert len(decisions) == 1
+    assert len(aggregations) == 1
+    assert len(validations) == 1
+    # La agregación referencia la decisión que la originó.
+    assert aggregations[0].decision_id == decisions[0].id
+
+
+def test_process_symbol_persists_slippage_estimate_in_risk_validation_reasons(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El estimado de la regla 13 llega a `risk_validations.reasons` (Anexo B)."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    validation = db_session.query(RiskValidationRow).one()
+    assert "slippage_estimate" in (validation.reasons or {})
+    assert "Slippage estimado pre-trade" in validation.reasons["slippage_estimate"]
+
+
+def test_process_symbol_persists_audit_even_when_aggregator_says_no_operar(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Sin edge tampoco se pierde la traza: la decisión y su agregación se guardan.
+
+    No hay `risk_validations`: el Risk Engine no llega a correr, y registrar
+    una validación que no ocurrió sería peor que no tenerla.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    runner._aggregator.aggregate.return_value = (  # type: ignore[attr-defined]
+        runner._aggregator.aggregate.return_value.model_copy(  # type: ignore[attr-defined]
+            update={"final_action": DecisionType.NO_OPERAR}
+        )
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    assert db_session.query(DecisionRow).count() == 1
+    assert db_session.query(DecisionAggregationRow).count() == 1
+    assert db_session.query(RiskValidationRow).count() == 0
     execution_engine.execute_approved_plan.assert_not_called()
