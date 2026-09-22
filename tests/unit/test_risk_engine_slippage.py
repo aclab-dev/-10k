@@ -46,7 +46,7 @@ from backend.market_data.schemas import (
 from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.checks import CheckOutcome, check_slippage_estimate
 from backend.risk_engine.engine import validate
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 
 _D = Decimal
 
@@ -179,6 +179,17 @@ def _config() -> AppConfig:
     return get_config()
 
 
+#: Funding que no dispara el gate de #133 (por debajo de max_adverse_funding_rate).
+#: Estos tests son sobre el registro del slippage; el gate tiene los suyos.
+_NEUTRAL_FUNDING_RATE = 0.0001
+
+
+def _validate_neutral_funding(**kwargs: object) -> RiskValidationResult:
+    """`engine.validate` con funding neutro, para aislar lo que estos tests miden."""
+    kwargs.setdefault("funding_rate", _NEUTRAL_FUNDING_RATE)
+    return validate(**kwargs)  # type: ignore[arg-type]
+
+
 def _estimate_for(decision: ModelDecision, **overrides: object) -> SlippageEstimate:
     kwargs: dict[str, object] = {
         "snapshot": _snapshot(),
@@ -233,7 +244,7 @@ class TestValidateRegistraElSlippage:
     def test_approve_incluye_el_slippage_en_reasons(self) -> None:
         decision = _long_decision()
         estimate = _estimate_for(decision)
-        result = validate(
+        result = _validate_neutral_funding(
             aggregation=_aggregation(decision),
             decision=decision,
             daily_loss_usdt=_D("0"),
@@ -250,7 +261,7 @@ class TestValidateRegistraElSlippage:
         # es el dato que permite revisar después por qué se descartó.
         decision = _long_decision()
         estimate = _estimate_for(decision)
-        result = validate(
+        result = _validate_neutral_funding(
             aggregation=_aggregation(decision),
             decision=decision,
             daily_loss_usdt=_D("100"),  # dispara check_daily_drawdown
@@ -263,14 +274,14 @@ class TestValidateRegistraElSlippage:
 
     def test_el_slippage_nunca_convierte_un_approve_en_block(self) -> None:
         decision = _long_decision()
-        sin_estimado = validate(
+        sin_estimado = _validate_neutral_funding(
             aggregation=_aggregation(decision),
             decision=decision,
             daily_loss_usdt=_D("0"),
             total_loss_usdt=_D("0"),
             config=_config(),
         )
-        con_estimado = validate(
+        con_estimado = _validate_neutral_funding(
             aggregation=_aggregation(decision),
             decision=decision,
             daily_loss_usdt=_D("0"),
@@ -282,7 +293,7 @@ class TestValidateRegistraElSlippage:
 
     def test_sin_estimado_la_ausencia_queda_registrada(self) -> None:
         decision = _long_decision()
-        result = validate(
+        result = _validate_neutral_funding(
             aggregation=_aggregation(decision),
             decision=decision,
             daily_loss_usdt=_D("0"),

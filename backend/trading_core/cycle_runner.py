@@ -436,6 +436,7 @@ class CycleRunner:
             last_trade_pnl_usdt=last_trade.net_pnl if last_trade else None,
             last_trade_margin_usdt=last_trade.margin_usdt if last_trade else None,
             open_position_unrealized_pnl_usdt=open_position_pnl,
+            funding_rate=snapshot.funding_rate,
             slippage_estimate=slippage_estimate,
         )
 

@@ -9,7 +9,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
-from backend.core.config import Environment, load_config
+from backend.core.config import Environment, get_config, load_config
 from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
@@ -65,6 +65,103 @@ from backend.trading_core.cycle_runner import (
     CycleRunner,
     parse_interval_from_env,
 )
+
+_NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+_CANDLE = CandleData(
+    open=Decimal("49200"),
+    high=Decimal("50000"),
+    low=Decimal("49000"),
+    close=Decimal("49800"),
+    volume=Decimal("500"),
+    n_candles=10,
+)
+
+
+def _make_snapshot(symbol: str = "BTCUSDT") -> MarketSnapshot:
+    bid = Decimal("50000")
+    spread_abs = Decimal("20")
+    ask = bid + spread_abs
+    return MarketSnapshot(
+        timestamp_utc=_NOW,
+        exchange=Exchange.PAPER,
+        environment=Environment.PAPER,
+        symbol=symbol,
+        last_price=bid + spread_abs / 2,
+        bid=bid,
+        ask=ask,
+        spread_absolute=spread_abs,
+        spread_percent=spread_abs / bid * 100,
+        candles=Candles(tf_5m=_CANDLE, tf_15m=_CANDLE, tf_1h=_CANDLE, tf_4h=_CANDLE),
+        volume=Decimal("50_000_000"),
+        funding_rate=0.0001,
+        open_interest=Decimal("1_000_000"),
+        account_balance_usdt=Decimal("1000"),
+        open_positions_count=0,
+        active_orders_count=0,
+        latency_ms=50,
+        exchange_server_time=_NOW,
+        local_time=_NOW,
+        clock_skew_ms=0,
+        data_freshness_status=DataFreshnessStatus.FRESH,
+        coherence_status=CoherenceStatus.OK,
+    )
+
+
+def _make_gpt_decision(symbol: str = "BTCUSDT") -> ModelDecision:
+    return ModelDecision(
+        environment=Environment.PAPER,
+        timestamp_utc=_NOW,
+        decision=DecisionType.LONG,
+        symbol=symbol,
+        entry_type=EntryType.MARKET,
+        entry_price=50_100.0,
+        stop_loss=49_500.0,
+        take_profit=51_500.0,
+        invalidation_price=49_000.0,
+        leverage=3,
+        margin_usdt=5.0,
+        estimated_notional_usdt=15.0,
+        estimated_entry_fee_usdt=0.075,
+        estimated_exit_fee_usdt=0.075,
+        estimated_slippage_usdt=0.05,
+        estimated_funding_usdt=0.01,
+        net_risk_reward=2.3,
+        estimated_max_loss_usdt=5.0,
+        liquidation_distance_percent_estimated=15.0,
+        confidence=0.85,
+        market_regime=PrimaryRegime.TRENDING,
+        setup_name="momentum_breakout_v1",
+        timeframes_used=["5m", "15m", "1h", "4h"],
+        quant_signals=QuantSignalsSection(
+            momentum=MomentumInterpretation.BULLISH,
+            mean_reversion=MeanReversionInterpretation.NEUTRAL,
+            breakout_detection=BreakoutInterpretation.CONFIRMED,
+            funding_analysis=FundingInterpretation.NEUTRAL,
+            open_interest_analysis=OpenInterestInterpretation.RISING_WITH_PRICE,
+            order_flow_imbalance=OrderFlowInterpretation.BUY_PRESSURE,
+            liquidity_sweep=LiquiditySweepInterpretation.NONE,
+        ),
+        decision_aggregator=DecisionAggregatorSection(
+            quant_score=0.65,
+            gpt_context_score=0.85,
+            risk_quality_score=0.80,
+            final_trade_quality_score=0.75,
+            contradictions_detected=[],
+        ),
+        news_context=NewsContextSection(
+            used=False, impact=NewsImpact.NEUTRAL, summary="No news data used."
+        ),
+        position_management_plan=PositionManagementPlan(
+            use_trailing_stop=True,
+            move_to_break_even=True,
+            partial_close_plan="none",
+            max_time_in_trade_minutes=480,
+        ),
+        decision_rationale_summary="Bullish momentum with strong quant alignment.",
+        risk_notes=[],
+        execute=True,
+    )
 
 
 @pytest.fixture
@@ -603,6 +700,91 @@ def test_run_decision_pipeline_skips_new_entries_in_safe_mode_but_keeps_looping(
 
 
 # ---------------------------------------------------------------------------
+# Cableado snapshot.funding_rate -> gate de funding del Risk Engine (F17, PR #133)
+# ---------------------------------------------------------------------------
+
+
+def _make_pipeline_runner(
+    db_session: Session, heartbeat_file: Path, snapshot: MarketSnapshot
+) -> tuple[CycleRunner, Mock]:
+    """CycleRunner con GPT y Aggregator mockeados (LONG válido) y Risk Engine real.
+
+    El Aggregator real devuelve NO_OPERAR con el snapshot sintético y el pipeline
+    cortaría antes del Risk Engine, así que se fija su salida para que el gate
+    de funding sea lo único que decide.
+    """
+    bot_run = _make_bot_run(db_session)
+    gpt_decision = _make_gpt_decision(snapshot.symbol)
+    aggregator = Mock()
+    aggregator.aggregate.return_value = DecisionAggregationResult(
+        decision_id=gpt_decision.decision_id,
+        symbol=gpt_decision.symbol,
+        timestamp_utc=snapshot.timestamp_utc,
+        contributing_sources=ContributingSources(
+            quant_score=0.80, gpt_context_score=0.85, regime_factor=0.75, volatility_factor=0.70
+        ),
+        aggregated_score=0.78,
+        final_action=DecisionType.LONG,
+    )
+    execution_engine = Mock()
+    execution_engine.get_open_position_unrealized_pnl.return_value = None
+    gpt_client = Mock()
+    gpt_client.request = AsyncMock(return_value=gpt_decision)
+    prompt_builder = Mock()
+    prompt_builder.build.return_value = ("system", "user")
+    runner = CycleRunner(
+        BotStateMachine(initial=BotState.ACTIVE),
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        execution_engine=execution_engine,
+        gpt_client=gpt_client,
+        prompt_builder=prompt_builder,
+        aggregator=aggregator,
+        config=get_config(),
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+    return runner, execution_engine
+
+
+def test_process_symbol_passes_snapshot_funding_rate_to_risk_engine(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.00037})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    spy = Mock(return_value=Mock(decision=RiskDecision.BLOCK, reasons={}))
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["funding_rate"] == 0.00037
+
+
+def test_process_symbol_blocks_and_skips_execution_on_adverse_snapshot_funding(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.002})  # LONG paga >= 0.001
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_not_called()
+
+
+def test_process_symbol_executes_with_neutral_snapshot_funding(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Control del test anterior: sin funding adverso el mismo pipeline sí ejecuta."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Slippage pre-trade en _process_symbol (F17 [162], regla no negociable 13)
 # ---------------------------------------------------------------------------
 
@@ -632,6 +814,9 @@ def _slippage_snapshot() -> MarketSnapshot:
         environment=Environment.PAPER,
         symbol="BTCUSDT",
         last_price=Decimal("50000"),
+        # Funding benigno: el gate de #133 bloquea con el dato ausente, y esta
+        # fixture describe un ciclo que llega a ejecutar.
+        funding_rate=0.0001,
         bid=_SLIP_BID,
         ask=_SLIP_ASK,
         spread_absolute=_SLIP_ASK - _SLIP_BID,

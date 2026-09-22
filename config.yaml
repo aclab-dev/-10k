@@ -141,6 +141,15 @@ slippage:
   # No hay flag para apagar la estimación: ver SlippageConfig en core/config.py.
   market_impact_bps: 2.0
 
+funding_gate:
+  # Gate del Risk Engine (F17, regla 14). Umbral por intervalo de funding como
+  # fraccion (0.001 = 0.1%). Solo bloquea el funding que el trade PAGA
+  # (LONG con rate > 0, SHORT con rate < 0); alcanzar el umbral ya bloquea.
+  enabled: true
+  max_adverse_funding_rate: 0.001
+  block_if_funding_unknown: true
+
+
 capital_management:
   bot_withdrawals_allowed: false
   automatic_profit_withdrawal: false
