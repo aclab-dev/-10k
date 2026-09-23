@@ -2089,3 +2089,65 @@ class TestInvalidationEventCallback:
         r = pm.tick("BTCUSDT", Decimal("48900"))
 
         assert r.trigger == PositionTriggerReason.SETUP_INVALIDATED
+
+
+# ---------------------------------------------------------------------------
+# Cruce de spread en las salidas (F17 [162])
+# ---------------------------------------------------------------------------
+
+
+class TestCloseOrderCrossesSpread:
+    """El cierre simulado cruza el libro igual que la entrada.
+
+    Sin esto las entradas pagaban la media horquilla y las salidas no, así que
+    el PnL de PAPER quedaba optimista por medio spread en cada cierre — en el
+    entorno con el que se decide promover a TESTNET.
+    """
+
+    @staticmethod
+    def _fill_price_of_close(book: tuple[Decimal, Decimal] | None) -> Decimal:
+        adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+        _open_long(adapter, "BTCUSDT", Decimal("1"), Decimal("50000"))
+        pm = PositionManager(adapter)
+        pm.set_config(PositionConfig(symbol="BTCUSDT", stop_loss=Decimal("48000")))
+
+        result = pm.tick("BTCUSDT", Decimal("47999"), book=book)
+
+        # El símbolo queda desregistrado tras un cierre total: si la orden no se
+        # hubiera colocado, la posición quedaría viva y sin bot que la siga.
+        assert pm.get_config("BTCUSDT") is None
+        assert adapter.get_position("BTCUSDT") is None
+        assert result.close_order_id is not None
+        closed = adapter.get_order_status(result.close_order_id)
+        assert closed is not None and closed.fill_price is not None
+        return closed.fill_price
+
+    def test_close_crosses_the_spread_when_book_is_available(self) -> None:
+        # Cierre de un LONG = SELL: recibe por debajo, media horquilla (10) menos.
+        with_book = self._fill_price_of_close((Decimal("47989"), Decimal("48009")))
+        without_book = self._fill_price_of_close(None)
+        assert with_book == without_book - Decimal("10")
+
+    def test_close_without_book_keeps_previous_behaviour(self) -> None:
+        # 47999 × (1 − 2/10_000) = 47989.4002
+        assert self._fill_price_of_close(None) == Decimal("47989.40020000")
+
+    def test_crossed_book_still_closes_the_position(self) -> None:
+        """Un libro cruzado no puede impedir el cierre ni dejar la posición huérfana.
+
+        `OrderRequest` rechaza `bid >= ask`, y los call sites de cierre corren
+        dentro de un `try/finally` que desregistra el símbolo pase lo que pase:
+        propagar esa excepción dejaría la posición viva en el exchange y al bot
+        sin trackearla. Se descarta el libro y se cierra al mark_price.
+        """
+        fill = self._fill_price_of_close((Decimal("48009"), Decimal("47989")))
+        assert fill == self._fill_price_of_close(None)
+
+    def test_non_positive_book_still_closes_the_position(self) -> None:
+        fill = self._fill_price_of_close((Decimal("0"), Decimal("48009")))
+        assert fill == self._fill_price_of_close(None)
+
+    def test_wider_spread_costs_more_on_exit(self) -> None:
+        narrow = self._fill_price_of_close((Decimal("47998"), Decimal("48000")))
+        wide = self._fill_price_of_close((Decimal("47950"), Decimal("48050")))
+        assert wide < narrow  # SELL: peor precio = menos USDT recibidos

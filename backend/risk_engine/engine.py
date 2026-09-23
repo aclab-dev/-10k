@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from backend.core.config import AppConfig
+from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.schemas import ModelDecision
 from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_adjusted_margin
@@ -38,6 +39,7 @@ from backend.risk_engine.checks import (
     check_liquidation_safety,
     check_margin_cap,
     check_sl_required,
+    check_slippage_estimate,
     check_total_drawdown,
     check_tp_or_exit_plan,
 )
@@ -55,6 +57,7 @@ def validate(
     open_position_unrealized_pnl_usdt: Decimal | None = None,
     *,
     funding_rate: float | None,
+    slippage_estimate: SlippageEstimate | None = None,
 ) -> RiskValidationResult:
     """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
 
@@ -78,6 +81,9 @@ def validate(
             sin default): None significa que el exchange no devolvió el dato, no que el caller
             lo omitió. Fase BLOCK: usado por check_funding_gate; con
             block_if_funding_unknown=True, None bloquea el trade (fail-closed).
+        slippage_estimate: estimación de slippage pre-trade (F17, regla 13).
+            Informativa: se registra en `reasons` para auditoría y nunca
+            bloquea. None = el caller no la proveyó (queda asentado como tal).
 
     Returns:
         RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.
@@ -132,6 +138,12 @@ def validate(
         check_funding_gate(decision, funding_rate, config.funding_gate),
         check_anti_martingala(original_margin, last_trade_pnl_usdt, last_trade_margin_usdt),
         check_anti_averaging(open_position_unrealized_pnl_usdt),
+        # Informativo, siempre PASS: aporta el slippage estimado a `reasons`
+        # sin poder alterar la decisión. Va en esta lista, y no en una aparte,
+        # porque `reasons` se arma desde `block_checks` en los tres caminos de
+        # salida (BLOCK, ADJUST_DOWN y APPROVE) — así el dato queda auditado
+        # también en los trades que el Risk Engine termina rechazando.
+        check_slippage_estimate(slippage_estimate),
     ]
 
     block_reasons: dict[str, str] = {

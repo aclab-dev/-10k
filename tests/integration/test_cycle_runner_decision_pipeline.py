@@ -568,6 +568,46 @@ class TestDecisionPipelineMultiSymbolIsolation:
 
 
 @pytest.mark.integration
+class TestDecisionPipelineAuditFlags:
+    """Las combinaciones válidas de flags de `storage` no pueden costar el ciclo."""
+
+    def test_risk_validations_without_decisions_does_not_violate_the_fk(
+        self, pg_session: Session
+    ) -> None:
+        """`log_all_decisions=False` + `log_risk_validations=True` contra Postgres real.
+
+        Es donde el bug se manifiesta: `decision_aggregation_id` apuntando a una
+        agregación que nunca se insertó viola la FK — `ondelete=SET NULL`
+        describe el borrado, no el insert — y el savepoint del símbolo revierte,
+        perdiendo el ciclo en silencio. En SQLite no se reproduce porque las FKs
+        no se aplican por defecto.
+        """
+        from backend.storage.models import RiskValidation
+
+        bot_run = _build_bot_run(pg_session)
+        gpt_decision = _make_gpt_decision(DecisionType.LONG)
+        runner = _build_pipeline(pg_session, bot_run, gpt_decision)
+        base = runner._config
+        runner._config = base.model_copy(
+            update={"storage": base.storage.model_copy(update={"log_all_decisions": False})}
+        )
+
+        strong_quant = _make_strong_quant_signals()
+        with patch(
+            "backend.trading_core.cycle_runner.compute_quant_signals",
+            return_value=strong_quant,
+        ):
+            runner._tick()
+
+        validations = pg_session.query(RiskValidation).filter_by(bot_run_id=bot_run.id).all()
+        assert len(validations) == 1
+        assert validations[0].decision_aggregation_id is None
+        # El símbolo no perdió el ciclo: la orden se colocó.
+        trades = TradeRepository(pg_session).list_open(bot_run.id)
+        assert len(trades) == 1
+        _close_bot_run(pg_session, bot_run)
+
+
 class TestDecisionPipelineRetryIdempotency:
     """Idempotencia end-to-end (F16 [114]): un reintento del mismo ciclo no duplica Order/Trade.
 

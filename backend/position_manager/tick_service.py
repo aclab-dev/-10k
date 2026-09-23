@@ -63,6 +63,11 @@ class PositionTickService:
         tick reintenta la invalidación completa. Tampoco hay que re-registrar
         acá.
 
+    Contrato de get_book (opcional): devuelve el último `(bid, ask)` conocido
+    del símbolo, para que las órdenes de cierre crucen el spread igual que las
+    de entrada en PAPER (F17 [162]). Sin él, o si devuelve None, el cierre llena
+    al mark_price — el comportamiento previo.
+
     Contrato de get_mark_price: debe imponer su propio timeout. tick_all() llama
     a get_mark_price mientras sostiene el lock; una llamada que cuelga bloquea
     todo el ciclo (y por lo tanto el resto de los símbolos) indefinidamente —
@@ -73,9 +78,11 @@ class PositionTickService:
         self,
         position_manager: PositionManager,
         get_mark_price: Callable[[str], Decimal],
+        get_book: Callable[[str], tuple[Decimal, Decimal] | None] | None = None,
     ) -> None:
         self._pm = position_manager
         self._get_mark_price = get_mark_price
+        self._get_book = get_book
         self._lock = threading.Lock()
 
     def tick_all(self) -> list[TickResult]:
@@ -98,9 +105,22 @@ class PositionTickService:
                     )
                     continue
 
+                # El libro es opcional y su falla no puede costar el cierre: sin
+                # él la orden de salida llena al mark_price, que es el
+                # comportamiento previo. Distinto del mark_price, que sí es
+                # imprescindible y por eso saltea el símbolo si falla.
+                book: tuple[Decimal, Decimal] | None = None
+                if self._get_book is not None:
+                    try:
+                        book = self._get_book(symbol)
+                    except Exception:
+                        _log.warning(
+                            "position_tick_service.book_unavailable", symbol=symbol, exc_info=True
+                        )
+
                 config_before_tick = self._pm.get_config(symbol)
                 try:
-                    results.append(self._pm.tick(symbol, mark_price))
+                    results.append(self._pm.tick(symbol, mark_price, book=book))
                 except Exception:
                     _log.error(
                         "position_tick_service.tick_failed",

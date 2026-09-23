@@ -571,7 +571,9 @@ class BingXAdapter(ExchangeAdapter):
             quantity_filled=Decimal(str(raw.get("executedQty", "0"))),
             fill_price=fill_price,
             fee_usdt=Decimal(str(raw.get("fee", "0") or "0")),
-            slippage_usdt=Decimal("0"),
+            # BingX no reporta slippage y no es derivable acá (ver el comentario
+            # del campo en OrderResult). None, no 0: no se midió.
+            slippage_usdt=None,
             is_simulated=False,
             timestamp_utc=ts,
         )

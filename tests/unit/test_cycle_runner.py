@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -16,7 +17,8 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
-from backend.core.config import Environment, get_config
+from backend.core.config import Environment, get_config, load_config
+from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
     DecisionAggregationResult,
@@ -48,13 +50,18 @@ from backend.market_data.schemas import (
     Exchange,
     MarketSnapshot,
 )
+from backend.market_regime.engine import MarketRegimeEngine
 from backend.market_regime.schemas import PrimaryRegime
 from backend.position_manager.tick_service import PositionTickService
 from backend.reconciliation.gate import ReconciliationGate
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine import engine as risk_engine
+from backend.risk_engine.schemas import AdjustedParameters, RiskDecision, RiskValidationResult
 from backend.storage.database import Base
 from backend.storage.models import BotRun
 from backend.storage.models import BotState as BotStateRow
+from backend.storage.models import Decision as DecisionRow
+from backend.storage.models import DecisionAggregation as DecisionAggregationRow
+from backend.storage.models import RiskValidation as RiskValidationRow
 from backend.trading_core.bot_state_machine import BotState, BotStateMachine
 from backend.trading_core.cycle_runner import (
     DEFAULT_INTERVAL_SECONDS,
@@ -743,12 +750,29 @@ def _make_pipeline_runner(
     return runner, execution_engine
 
 
+def _blocked_risk_result(symbol: str) -> RiskValidationResult:
+    """RiskValidationResult BLOCK mínimo y válido, persistible."""
+    return RiskValidationResult(
+        aggregation_id=str(uuid.uuid4()),
+        symbol=symbol,
+        timestamp_utc=datetime.now(UTC),
+        decision=RiskDecision.BLOCK,
+        original_margin_usdt=Decimal("5"),
+        original_leverage=3,
+        adjusted_parameters=None,
+        reasons={"test": "fixture"},
+    )
+
+
 def test_process_symbol_passes_snapshot_funding_rate_to_risk_engine(
     heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.00037})
     runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
-    spy = Mock(return_value=Mock(decision=RiskDecision.BLOCK, reasons={}))
+    # Resultado real y no un Mock: el ciclo persiste la validación en
+    # `risk_validations` (Anexo B), y para eso necesita un objeto que sepa
+    # serializarse.
+    spy = Mock(return_value=_blocked_risk_result(snapshot.symbol))
     monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
 
     asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
@@ -778,3 +802,447 @@ def test_process_symbol_executes_with_neutral_snapshot_funding(
     asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
 
     execution_engine.execute_approved_plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Slippage pre-trade en _process_symbol (F17 [162], regla no negociable 13)
+# ---------------------------------------------------------------------------
+
+
+_SLIP_BID = Decimal("49990")
+_SLIP_ASK = Decimal("50010")
+_SLIP_ENTRY = 50000.0
+
+
+def _slippage_candle() -> CandleData:
+    return CandleData(
+        open=Decimal("50000"),
+        high=Decimal("50100"),
+        low=Decimal("49900"),
+        close=Decimal("50000"),
+        volume=Decimal("100"),
+        n_candles=10,
+    )
+
+
+def _slippage_snapshot() -> MarketSnapshot:
+    now = datetime.now(UTC)
+    candle = _slippage_candle()
+    return MarketSnapshot(
+        timestamp_utc=now,
+        exchange=Exchange.BINGX,
+        environment=Environment.PAPER,
+        symbol="BTCUSDT",
+        last_price=Decimal("50000"),
+        # Funding benigno: el gate de #133 bloquea con el dato ausente, y esta
+        # fixture describe un ciclo que llega a ejecutar.
+        funding_rate=0.0001,
+        bid=_SLIP_BID,
+        ask=_SLIP_ASK,
+        spread_absolute=_SLIP_ASK - _SLIP_BID,
+        spread_percent=(_SLIP_ASK - _SLIP_BID) / _SLIP_BID * 100,
+        candles=Candles(tf_5m=candle, tf_15m=candle, tf_1h=candle, tf_4h=candle),
+        volume=Decimal("1000"),
+        account_balance_usdt=Decimal("500"),
+        open_positions_count=0,
+        active_orders_count=0,
+        latency_ms=50,
+        exchange_server_time=now,
+        local_time=now,
+        clock_skew_ms=10,
+        data_freshness_status=DataFreshnessStatus.FRESH,
+        coherence_status=CoherenceStatus.OK,
+    )
+
+
+def _slippage_decision(margin_usdt: float = 5.0, leverage: int = 3) -> ModelDecision:
+    return ModelDecision(
+        environment=Environment.PAPER,
+        timestamp_utc=datetime.now(UTC),
+        decision=DecisionType.LONG,
+        symbol="BTCUSDT",
+        entry_type=EntryType.MARKET,
+        entry_price=_SLIP_ENTRY,
+        stop_loss=49_000.0,
+        take_profit=52_000.0,
+        invalidation_price=48_500.0,
+        leverage=leverage,
+        margin_usdt=margin_usdt,
+        estimated_notional_usdt=margin_usdt * leverage,
+        estimated_entry_fee_usdt=0.05,
+        estimated_exit_fee_usdt=0.05,
+        estimated_slippage_usdt=0.05,
+        estimated_funding_usdt=0.01,
+        net_risk_reward=2.0,
+        estimated_max_loss_usdt=5.0,
+        liquidation_distance_percent_estimated=15.0,
+        confidence=0.85,
+        market_regime=PrimaryRegime.TRENDING,
+        setup_name="momentum_breakout_v1",
+        timeframes_used=["5m", "15m", "1h", "4h"],
+        quant_signals=QuantSignalsSection(
+            momentum=MomentumInterpretation.BULLISH,
+            mean_reversion=MeanReversionInterpretation.NEUTRAL,
+            breakout_detection=BreakoutInterpretation.CONFIRMED,
+            funding_analysis=FundingInterpretation.NEUTRAL,
+            open_interest_analysis=OpenInterestInterpretation.RISING_WITH_PRICE,
+            order_flow_imbalance=OrderFlowInterpretation.BUY_PRESSURE,
+            liquidity_sweep=LiquiditySweepInterpretation.NONE,
+        ),
+        decision_aggregator=DecisionAggregatorSection(
+            quant_score=0.65,
+            gpt_context_score=0.85,
+            risk_quality_score=0.80,
+            final_trade_quality_score=0.75,
+        ),
+        news_context=NewsContextSection(used=False, impact=NewsImpact.NEUTRAL, summary="No news."),
+        position_management_plan=PositionManagementPlan(
+            use_trailing_stop=False,
+            move_to_break_even=False,
+            partial_close_plan="none",
+            max_time_in_trade_minutes=0,
+        ),
+        decision_rationale_summary="fixture de slippage",
+        execute=True,
+    )
+
+
+def _slippage_runner(
+    heartbeat_file: Path,
+    db_session: Session,
+    decision,
+    risk_decision: RiskDecision,
+    adjusted: AdjustedParameters | None,
+) -> tuple[CycleRunner, Mock]:
+    """CycleRunner con todo mockeado salvo el cálculo de slippage, que es el sujeto."""
+    config = load_config()
+    execution_engine = Mock(spec=ExecutionEngine)
+    execution_engine.get_open_position_unrealized_pnl.return_value = None
+
+    gpt_client = Mock()
+
+    async def _request(*_args: object, **_kwargs: object):
+        return decision
+
+    gpt_client.request = _request
+
+    aggregation = DecisionAggregationResult(
+        decision_id=decision.decision_id,
+        symbol=decision.symbol,
+        timestamp_utc=decision.timestamp_utc,
+        contributing_sources=ContributingSources(
+            quant_score=0.80,
+            gpt_context_score=0.85,
+            regime_factor=0.75,
+            volatility_factor=0.70,
+        ),
+        aggregated_score=0.78,
+        final_action=DecisionType.LONG,
+    )
+    aggregator = Mock()
+    aggregator.aggregate.return_value = aggregation
+
+    prompt_builder = Mock()
+    prompt_builder.build.return_value = ("system", "user")
+
+    trade_repo = Mock()
+    trade_repo.get_loss_totals.return_value = (Decimal("0"), Decimal("0"))
+    trade_repo.get_last_closed_trade.return_value = None
+
+    risk_result = RiskValidationResult(
+        aggregation_id=aggregation.aggregation_id,
+        symbol=decision.symbol,
+        timestamp_utc=datetime.now(UTC),
+        decision=risk_decision,
+        original_margin_usdt=Decimal(str(decision.margin_usdt)),
+        original_leverage=decision.leverage,
+        adjusted_parameters=adjusted,
+        reasons={"test": "fixture"},
+    )
+
+    runner = CycleRunner(
+        BotStateMachine(initial=BotState.ACTIVE),
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        execution_engine=execution_engine,
+    )
+    runner._config = config  # type: ignore[attr-defined]
+    runner._session = db_session  # type: ignore[attr-defined]
+    runner._bot_run_id = str(uuid.uuid4())  # type: ignore[attr-defined]
+    runner._gpt_client = gpt_client  # type: ignore[attr-defined]
+    runner._prompt_builder = prompt_builder  # type: ignore[attr-defined]
+    runner._aggregator = aggregator  # type: ignore[attr-defined]
+    runner._regime_engine = MarketRegimeEngine()  # type: ignore[attr-defined]
+    runner._trade_repo = trade_repo  # type: ignore[attr-defined]
+    runner._risk_result_for_test = risk_result  # type: ignore[attr-defined]
+    return runner, execution_engine
+
+
+def test_process_symbol_persists_estimate_for_the_adjusted_notional(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tras un ADJUST_DOWN se persiste el estimado del notional ejecutado, no del propuesto.
+
+    Es el número que después se compara contra el slippage real de la misma
+    fila de `orders`: si describiera la orden que se pidió en vez de la que se
+    colocó, la comparación estimado-vs-real mentiría por el factor del ajuste.
+    """
+    decision = _slippage_decision(margin_usdt=10.0, leverage=4)
+    adjusted = AdjustedParameters(margin_usdt=Decimal("5"), leverage=2)
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.ADJUST_DOWN, adjusted
+    )
+    monkeypatch.setattr(
+        risk_engine,
+        "validate",
+        lambda **_kw: runner._risk_result_for_test,  # type: ignore[attr-defined]
+    )
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_called_once()
+    persisted = execution_engine.execute_approved_plan.call_args.kwargs["slippage_estimate"]
+    expected = estimate_for_decision(
+        snapshot=_slippage_snapshot(),
+        decision=decision,
+        margin_usdt=adjusted.margin_usdt,
+        leverage=adjusted.leverage,
+        market_impact_bps=Decimal(str(load_config().slippage.market_impact_bps)),
+    )
+    assert persisted.estimated_slippage_usdt == expected.estimated_slippage_usdt
+    # Y no el del notional propuesto: 10 × 4 = 40 contra 5 × 2 = 10, 4x más grande.
+    proposed = estimate_for_decision(
+        snapshot=_slippage_snapshot(),
+        decision=decision,
+        margin_usdt=Decimal("10"),
+        leverage=4,
+        market_impact_bps=Decimal(str(load_config().slippage.market_impact_bps)),
+    )
+    assert proposed.estimated_slippage_usdt == expected.estimated_slippage_usdt * 4
+    assert persisted.estimated_slippage_usdt != proposed.estimated_slippage_usdt
+
+
+def test_process_symbol_passes_proposed_estimate_to_risk_engine(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El Risk Engine recibe el estimado *propuesto*: es lo único que existe pre-trade."""
+    decision = _slippage_decision(margin_usdt=10.0, leverage=4)
+    adjusted = AdjustedParameters(margin_usdt=Decimal("5"), leverage=2)
+    runner, _engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.ADJUST_DOWN, adjusted
+    )
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs: object):
+        seen.update(kwargs)
+        return runner._risk_result_for_test  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(risk_engine, "validate", _capture)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    proposed = estimate_for_decision(
+        snapshot=_slippage_snapshot(),
+        decision=decision,
+        margin_usdt=Decimal("10"),
+        leverage=4,
+        market_impact_bps=Decimal(str(load_config().slippage.market_impact_bps)),
+    )
+    estimate = seen["slippage_estimate"]
+    assert estimate is not None
+    assert estimate.estimated_slippage_usdt == proposed.estimated_slippage_usdt
+
+
+def test_process_symbol_skips_estimate_for_non_executable_decision(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """execute=False no puede reventar el ciclo: margin y entry_price valen 0 por schema."""
+    decision = _slippage_decision().model_copy(
+        update={"execute": False, "margin_usdt": 0.0, "entry_price": 0.0}
+    )
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.NO_OPERAR, None
+    )
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs: object):
+        seen.update(kwargs)
+        return runner._risk_result_for_test  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(risk_engine, "validate", _capture)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    assert seen["slippage_estimate"] is None
+    execution_engine.execute_approved_plan.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Auditoría del Anexo B: decisions / decision_aggregations / risk_validations
+# ---------------------------------------------------------------------------
+
+
+def test_process_symbol_persists_the_decision_audit_chain(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El ciclo escribe las tres tablas del Anexo B, encadenadas por sus FKs.
+
+    Ninguna se escribía: `to_db_kwargs()` no tenía un solo caller y la fila 13
+    del checklist citaba `risk_validations.reasons` como destino del slippage
+    estimado sobre una tabla vacía.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    monkeypatch.setattr(
+        "backend.trading_core.cycle_runner.risk_engine.validate",
+        Mock(return_value=_blocked_risk_result(snapshot.symbol)),
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    decisions = db_session.query(DecisionRow).all()
+    aggregations = db_session.query(DecisionAggregationRow).all()
+    validations = db_session.query(RiskValidationRow).all()
+    assert len(decisions) == 1
+    assert len(aggregations) == 1
+    assert len(validations) == 1
+    # La agregación referencia la decisión que la originó.
+    assert aggregations[0].decision_id == decisions[0].id
+
+
+def test_process_symbol_persists_slippage_estimate_in_risk_validation_reasons(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El estimado de la regla 13 llega a `risk_validations.reasons` (Anexo B)."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    validation = db_session.query(RiskValidationRow).one()
+    assert "slippage_estimate" in (validation.reasons or {})
+    assert "Slippage estimado pre-trade" in validation.reasons["slippage_estimate"]
+
+
+def test_process_symbol_persists_audit_even_when_aggregator_says_no_operar(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Sin edge tampoco se pierde la traza: la decisión y su agregación se guardan.
+
+    No hay `risk_validations`: el Risk Engine no llega a correr, y registrar
+    una validación que no ocurrió sería peor que no tenerla.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    runner._aggregator.aggregate.return_value = (  # type: ignore[attr-defined]
+        runner._aggregator.aggregate.return_value.model_copy(  # type: ignore[attr-defined]
+            update={"final_action": DecisionType.NO_OPERAR}
+        )
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    assert db_session.query(DecisionRow).count() == 1
+    assert db_session.query(DecisionAggregationRow).count() == 1
+    assert db_session.query(RiskValidationRow).count() == 0
+    execution_engine.execute_approved_plan.assert_not_called()
+
+
+def test_process_symbol_does_not_reestimate_when_risk_approves_unchanged(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En un APPROVE plano se reusa el estimado propuesto: ya describe esa orden."""
+    decision = _slippage_decision(margin_usdt=5.0, leverage=3)
+    approved = AdjustedParameters(margin_usdt=Decimal("5"), leverage=3)
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.APPROVE, approved
+    )
+    monkeypatch.setattr(
+        risk_engine,
+        "validate",
+        lambda **_kw: runner._risk_result_for_test,  # type: ignore[attr-defined]
+    )
+    calls: list[object] = []
+    real = estimate_for_decision
+
+    def counting(**kwargs: object):
+        calls.append(kwargs)
+        return real(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("backend.trading_core.cycle_runner.estimate_for_decision", counting)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_called_once()
+    assert len(calls) == 1, "no debe recalcularse si el Risk Engine no cambió los parámetros"
+
+
+def test_process_symbol_skips_second_estimate_for_non_estimable_decision(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`execute=True` + `NO_ENTRY` aprobado no puede reventar tras auditar el APPROVE.
+
+    La segunda estimación sin el guard de `is_estimable` lanzaba ValueError
+    después de que `audit_risk_validation` ya había persistido el APPROVE,
+    dejando en auditoría un trade aprobado que nunca se ejecutó y sin traza de
+    por qué.
+    """
+    decision = _slippage_decision().model_copy(update={"entry_type": EntryType.NO_ENTRY})
+    approved = AdjustedParameters(margin_usdt=Decimal("5"), leverage=3)
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.APPROVE, approved
+    )
+    monkeypatch.setattr(
+        risk_engine,
+        "validate",
+        lambda **_kw: runner._risk_result_for_test,  # type: ignore[attr-defined]
+    )
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    # Llega a ejecutar (el Execution Engine es quien rechaza NO_ENTRY), sin
+    # estimado y sin excepción en el camino.
+    execution_engine.execute_approved_plan.assert_called_once()
+    assert execution_engine.execute_approved_plan.call_args.kwargs["slippage_estimate"] is None
+
+
+def test_process_symbol_survives_risk_validations_without_decisions(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`log_all_decisions=False` + `log_risk_validations=True` no puede costar el ciclo.
+
+    Sin la agregación persistida, vincularla desde `risk_validations` apunta a
+    una fila inexistente: `ondelete=SET NULL` describe qué pasa al *borrar*, no
+    al insertar, así que Postgres rechaza el insert, el savepoint del símbolo
+    revierte y ese símbolo pierde el ciclo sin ejecutar — y en silencio. La
+    validación se guarda igual, con el vínculo en NULL.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    base = runner._config  # type: ignore[attr-defined]
+    runner._config = base.model_copy(  # type: ignore[attr-defined]
+        update={"storage": base.storage.model_copy(update={"log_all_decisions": False})}
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    assert db_session.query(DecisionRow).count() == 0
+    assert db_session.query(DecisionAggregationRow).count() == 0
+    validation = db_session.query(RiskValidationRow).one()
+    assert validation.decision_aggregation_id is None
+    # El ciclo completó: el símbolo no se perdió.
+    execution_engine.execute_approved_plan.assert_called_once()
+
+
+def test_process_symbol_links_the_aggregation_when_it_was_persisted(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Control del anterior: con ambos flags encendidos el vínculo sí se guarda."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    aggregation = db_session.query(DecisionAggregationRow).one()
+    validation = db_session.query(RiskValidationRow).one()
+    assert validation.decision_aggregation_id == aggregation.id

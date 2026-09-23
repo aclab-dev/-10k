@@ -124,6 +124,68 @@ def test_default_construction_wires_paper_position_tick_service(sqlite_session: 
     assert price == mds.get_last_price("BTCUSDT")
 
 
+def test_paper_adapter_uses_configured_market_impact_bps(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El simulador de fills usa el mismo impacto en BPS que la estimación (F17 [162]).
+
+    Con el default de `SlippageModel` hardcodeado, tocar
+    `slippage.market_impact_bps` movía sólo el estimado y
+    `orders.estimated_slippage_usdt` divergía de `orders.slippage_usdt` en PAPER
+    por puro desacople de config — rompiendo la comparación que la fila 13 del
+    checklist declara verificada.
+    """
+    # Un valor distinto del default de SlippageModel (2 BPS): con el default,
+    # config y hardcode coinciden y el test no distingue un caso del otro.
+    base = get_config()
+    tuned = base.model_copy(
+        update={"slippage": base.slippage.model_copy(update={"market_impact_bps": 7.0})}
+    )
+    monkeypatch.setattr("backend.trading_core.orchestrator.get_config", lambda: tuned)
+
+    orch = Orchestrator(session=sqlite_session)
+
+    adapter = orch.execution_engine._adapter  # type: ignore[attr-defined]
+    assert adapter._slip._market_bps == Decimal("7.0")  # type: ignore[attr-defined]
+
+
+def test_default_construction_wires_book_provider_for_exit_fills(
+    sqlite_session: Session,
+) -> None:
+    """El PositionTickService recibe el proveedor de bid/ask (F17 [162]).
+
+    Sin este wiring las órdenes de cierre llenarían sin cruzar el spread y el
+    PnL simulado de PAPER quedaría optimista por media horquilla en cada
+    salida — y el resto de los tests del feature seguirían pasando, porque
+    ejercitan las capas de abajo con el libro inyectado a mano.
+    """
+    orch = Orchestrator(session=sqlite_session)
+
+    pts = orch.cycle_runner._position_tick_service  # type: ignore[attr-defined]
+    assert pts._get_book is not None  # type: ignore[attr-defined]
+
+    mds = orch.cycle_runner._market_data_service  # type: ignore[attr-defined]
+    mds.tick_all()
+
+    book = pts._get_book("BTCUSDT")  # type: ignore[attr-defined]
+    assert book == mds.get_last_book("BTCUSDT")
+    assert book is not None and book[0] < book[1]
+
+
+def test_book_provider_returns_none_before_first_market_data_tick(
+    sqlite_session: Session,
+) -> None:
+    """Sin snapshot todavía, el libro es None y el cierre llena al mark_price.
+
+    A diferencia de get_mark_price, su ausencia no puede saltear el símbolo:
+    no cerrar una posición es peor que cerrarla sin cruzar el spread.
+    """
+    orch = Orchestrator(session=sqlite_session)
+
+    pts = orch.cycle_runner._position_tick_service  # type: ignore[attr-defined]
+    assert pts._get_book("BTCUSDT") is None  # type: ignore[attr-defined]
+
+
 def test_position_tick_service_mark_price_raises_before_first_market_data_tick(
     sqlite_session: Session,
 ) -> None:
