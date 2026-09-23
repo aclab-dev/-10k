@@ -1146,3 +1146,61 @@ def test_process_symbol_persists_audit_even_when_aggregator_says_no_operar(
     assert db_session.query(DecisionAggregationRow).count() == 1
     assert db_session.query(RiskValidationRow).count() == 0
     execution_engine.execute_approved_plan.assert_not_called()
+
+
+def test_process_symbol_does_not_reestimate_when_risk_approves_unchanged(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En un APPROVE plano se reusa el estimado propuesto: ya describe esa orden."""
+    decision = _slippage_decision(margin_usdt=5.0, leverage=3)
+    approved = AdjustedParameters(margin_usdt=Decimal("5"), leverage=3)
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.APPROVE, approved
+    )
+    monkeypatch.setattr(
+        risk_engine,
+        "validate",
+        lambda **_kw: runner._risk_result_for_test,  # type: ignore[attr-defined]
+    )
+    calls: list[object] = []
+    real = estimate_for_decision
+
+    def counting(**kwargs: object):
+        calls.append(kwargs)
+        return real(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("backend.trading_core.cycle_runner.estimate_for_decision", counting)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    execution_engine.execute_approved_plan.assert_called_once()
+    assert len(calls) == 1, "no debe recalcularse si el Risk Engine no cambió los parámetros"
+
+
+def test_process_symbol_skips_second_estimate_for_non_estimable_decision(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`execute=True` + `NO_ENTRY` aprobado no puede reventar tras auditar el APPROVE.
+
+    La segunda estimación sin el guard de `is_estimable` lanzaba ValueError
+    después de que `audit_risk_validation` ya había persistido el APPROVE,
+    dejando en auditoría un trade aprobado que nunca se ejecutó y sin traza de
+    por qué.
+    """
+    decision = _slippage_decision().model_copy(update={"entry_type": EntryType.NO_ENTRY})
+    approved = AdjustedParameters(margin_usdt=Decimal("5"), leverage=3)
+    runner, execution_engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.APPROVE, approved
+    )
+    monkeypatch.setattr(
+        risk_engine,
+        "validate",
+        lambda **_kw: runner._risk_result_for_test,  # type: ignore[attr-defined]
+    )
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    # Llega a ejecutar (el Execution Engine es quien rechaza NO_ENTRY), sin
+    # estimado y sin excepción en el camino.
+    execution_engine.execute_approved_plan.assert_called_once()
+    assert execution_engine.execute_approved_plan.call_args.kwargs["slippage_estimate"] is None

@@ -2113,6 +2113,10 @@ class TestCloseOrderCrossesSpread:
 
         result = pm.tick("BTCUSDT", Decimal("47999"), book=book)
 
+        # El símbolo queda desregistrado tras un cierre total: si la orden no se
+        # hubiera colocado, la posición quedaría viva y sin bot que la siga.
+        assert pm.get_config("BTCUSDT") is None
+        assert adapter.get_position("BTCUSDT") is None
         assert result.close_order_id is not None
         closed = adapter.get_order_status(result.close_order_id)
         assert closed is not None and closed.fill_price is not None
@@ -2127,6 +2131,21 @@ class TestCloseOrderCrossesSpread:
     def test_close_without_book_keeps_previous_behaviour(self) -> None:
         # 47999 × (1 − 2/10_000) = 47989.4002
         assert self._fill_price_of_close(None) == Decimal("47989.40020000")
+
+    def test_crossed_book_still_closes_the_position(self) -> None:
+        """Un libro cruzado no puede impedir el cierre ni dejar la posición huérfana.
+
+        `OrderRequest` rechaza `bid >= ask`, y los call sites de cierre corren
+        dentro de un `try/finally` que desregistra el símbolo pase lo que pase:
+        propagar esa excepción dejaría la posición viva en el exchange y al bot
+        sin trackearla. Se descarta el libro y se cierra al mark_price.
+        """
+        fill = self._fill_price_of_close((Decimal("48009"), Decimal("47989")))
+        assert fill == self._fill_price_of_close(None)
+
+    def test_non_positive_book_still_closes_the_position(self) -> None:
+        fill = self._fill_price_of_close((Decimal("0"), Decimal("48009")))
+        assert fill == self._fill_price_of_close(None)
 
     def test_wider_spread_costs_more_on_exit(self) -> None:
         narrow = self._fill_price_of_close((Decimal("47998"), Decimal("48000")))

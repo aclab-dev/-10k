@@ -597,6 +597,25 @@ class PositionManager:
         self._smoothed_atr[symbol] = smoothed
         return smoothed
 
+    @staticmethod
+    def _usable_book(
+        symbol: str, book: tuple[Decimal, Decimal] | None
+    ) -> tuple[Decimal, Decimal] | None:
+        """El libro si sirve para cruzar el spread, o None si está cruzado o en cero."""
+        if book is None:
+            return None
+        bid, ask = book
+        if bid <= 0 or ask <= 0 or bid >= ask:
+            _log.warning(
+                "position_manager.unusable_book",
+                symbol=symbol,
+                bid=str(bid),
+                ask=str(ask),
+                detail="libro cruzado o no positivo: se cierra al mark_price",
+            )
+            return None
+        return book
+
     def _place_close_order(
         self,
         symbol: str,
@@ -612,7 +631,15 @@ class PositionManager:
         (F17 [162]): sin él, las salidas llenaban al mark_price y el PnL de
         PAPER quedaba optimista por media horquilla en cada cierre. Los adapters
         de exchange real lo ignoran — tienen su propio libro.
+
+        Un libro incoherente (cruzado o no positivo) se descarta y se registra,
+        no se propaga: `OrderRequest` lo rechazaría con ValueError, y los cinco
+        call sites de cierre corren dentro de un `try/finally` que desregistra
+        el símbolo pase lo que pase. Esa excepción dejaría la posición viva en
+        el exchange y al bot sin trackearla — no cerrar es peor que cerrar sin
+        cruzar el spread.
         """
+        book = self._usable_book(symbol, book)
         close_side = OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY
         client_order_id = str(uuid.uuid4())
 

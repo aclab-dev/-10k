@@ -425,7 +425,7 @@ class CycleRunner:
         # ModelDecision puede traer execute=False o entry_type=NO_ENTRY igual
         # (el schema no las prohíbe): ninguna describe una orden estimable, y
         # estimarlas de todos modos tiraría el ciclo de este símbolo.
-        impact_bps = Decimal(str(self._config.slippage.market_impact_bps))
+        impact_bps = self._config.slippage.impact_bps
         slippage_estimate = (
             estimate_for_decision(
                 snapshot=snapshot,
@@ -474,28 +474,38 @@ class CycleRunner:
                     else None
                 ),
             )
-            # Re-estimar sobre los parámetros aprobados: tras un ADJUST_DOWN el
-            # notional ejecutado no es el propuesto, y el número que se persiste
-            # junto al slippage real tiene que describir la orden que se colocó,
-            # no la que se pidió. El de arriba (propuesto) ya quedó auditado en
-            # `risk_validations.reasons`.
             approved = risk_result.adjusted_parameters
             if approved is None:
                 # Invariante del validator de RiskValidationResult para
-                # APPROVE/ADJUST_DOWN. Si se rompiera, caer al estimado
-                # propuesto persistiría un número que no describe la orden
+                # APPROVE/ADJUST_DOWN. Si se rompiera, persistir el estimado
+                # propuesto guardaría un número que no describe la orden
                 # colocada: mejor fallar ruidoso que auditar algo falso.
                 raise RuntimeError(
                     f"RiskValidationResult.decision={risk_result.decision} sin "
                     f"adjusted_parameters (validation_id={risk_result.validation_id})"
                 )
-            executed_estimate = estimate_for_decision(
-                snapshot=snapshot,
-                decision=gpt_decision,
-                margin_usdt=approved.margin_usdt,
-                leverage=approved.leverage,
-                market_impact_bps=impact_bps,
+
+            # El estimado que se persiste tiene que describir la orden que se
+            # coloca. Sólo hace falta recalcularlo cuando el Risk Engine cambió
+            # los parámetros (ADJUST_DOWN): en un APPROVE plano el propuesto ya
+            # es exactamente ese. Y si no había estimado —decisión no estimable—
+            # no se recalcula nada: volver a llamar sin el guard de
+            # `is_estimable` lanzaría acá, después de que la validación APPROVE
+            # ya quedó persistida, dejando en auditoría un trade aprobado que
+            # nunca se ejecutó y sin traza de por qué.
+            executed_estimate = slippage_estimate
+            parameters_changed = (
+                approved.margin_usdt != Decimal(str(gpt_decision.margin_usdt))
+                or approved.leverage != gpt_decision.leverage
             )
+            if slippage_estimate is not None and parameters_changed:
+                executed_estimate = estimate_for_decision(
+                    snapshot=snapshot,
+                    decision=gpt_decision,
+                    margin_usdt=approved.margin_usdt,
+                    leverage=approved.leverage,
+                    market_impact_bps=impact_bps,
+                )
             self._execution_engine.execute_approved_plan(
                 gpt_decision, risk_result, slippage_estimate=executed_estimate
             )
