@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import Environment, PositionManagementConfig
+from backend.core.constants import QUANT
 from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, EntryType, ModelDecision
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -44,8 +45,6 @@ from backend.storage.repositories.snapshots import VolatilityAssessmentRepositor
 from backend.storage.repositories.trades import OrderRepository
 
 log = structlog.get_logger(__name__)
-
-_QUANT = Decimal("0.00000001")
 
 
 class ExecutionTimeoutError(Exception):
@@ -264,7 +263,7 @@ class ExecutionEngine:
         notional = margin_usdt * leverage
         quantity = notional / Decimal(str(decision.entry_price))
         # ROUND_DOWN: nunca excede el margen aprobado por el Risk Engine.
-        return quantity.quantize(_QUANT, rounding=ROUND_DOWN)
+        return quantity.quantize(QUANT, rounding=ROUND_DOWN)
 
     @staticmethod
     def _build_order_request(

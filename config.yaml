@@ -149,7 +149,6 @@ funding_gate:
   max_adverse_funding_rate: 0.001
   block_if_funding_unknown: true
 
-
 capital_management:
   bot_withdrawals_allowed: false
   automatic_profit_withdrawal: false

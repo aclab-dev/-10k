@@ -10,11 +10,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
+from backend.core.constants import QUANT
+
 OrderType = Literal["MARKET", "LIMIT", "STOP"]
 
 DEFAULT_TAKER_RATE = Decimal("0.0005")
 DEFAULT_MAKER_RATE = Decimal("0.0002")
-_QUANT = Decimal("0.00000001")
 
 _TAKER_TYPES: frozenset[str] = frozenset({"MARKET", "STOP"})
 _VALID_ORDER_TYPES: frozenset[str] = frozenset({"MARKET", "LIMIT", "STOP"})
@@ -54,4 +55,4 @@ class FeeModel:
                 f"Unknown order_type: {order_type!r}. Expected one of {sorted(_VALID_ORDER_TYPES)}"
             )
         rate = self._taker_rate if order_type in _TAKER_TYPES else self._maker_rate
-        return (notional_usdt * rate).quantize(_QUANT)
+        return (notional_usdt * rate).quantize(QUANT)

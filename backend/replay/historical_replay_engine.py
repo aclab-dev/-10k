@@ -159,7 +159,7 @@ class HistoricalReplayEngine:
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
         # Fuera del loop: no cambia entre filas.
-        impact_bps = Decimal(str(config.slippage.market_impact_bps))
+        impact_bps = config.slippage.impact_bps
         results: list[ReplayStepResult] = []
 
         for row in rows:

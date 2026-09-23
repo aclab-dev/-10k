@@ -57,10 +57,10 @@ from backend.backtesting.schemas import (
     TradeSignal,
 )
 from backend.backtesting.slippage_model import Side, SlippageModel
+from backend.core.constants import QUANT
 from backend.position_manager.schemas import TakeProfitLevel
 
 _log = structlog.get_logger(__name__)
-_QUANT = Decimal("0.00000001")
 _ZERO = Decimal("0")
 
 
@@ -284,19 +284,19 @@ class BacktestingEngine:
         order_type: OrderType = "MARKET"
 
         fill_price = self._slip.apply(candle.open, entry_side, order_type)
-        requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(_QUANT)
-        requested_quantity = (requested_notional / fill_price).quantize(_QUANT)
+        requested_notional = (signal.margin_usdt * Decimal(signal.leverage)).quantize(QUANT)
+        requested_quantity = (requested_notional / fill_price).quantize(QUANT)
 
         # Leer fill_ratio una única vez: quantity, notional y margin_usdt deben
         # derivar del mismo valor para no quedar inconsistentes entre sí si
         # PartialFillModel se vuelve estocástico en el futuro.
         fill_ratio = self._partial_fill.fill_ratio
-        quantity = (requested_quantity * fill_ratio).quantize(_QUANT)
+        quantity = (requested_quantity * fill_ratio).quantize(QUANT)
         if quantity <= _ZERO:
             return None
 
-        notional = (requested_notional * fill_ratio).quantize(_QUANT)
-        margin_usdt = (signal.margin_usdt * fill_ratio).quantize(_QUANT)
+        notional = (requested_notional * fill_ratio).quantize(QUANT)
+        margin_usdt = (signal.margin_usdt * fill_ratio).quantize(QUANT)
         fee = self._fee.calculate(notional, order_type)
         slippage_cost = abs(fill_price - candle.open) * quantity
 
@@ -312,7 +312,7 @@ class BacktestingEngine:
             notional_usdt=notional,
             quantity=quantity,
             entry_fee_usdt=fee,
-            entry_slippage_usdt=slippage_cost.quantize(_QUANT),
+            entry_slippage_usdt=slippage_cost.quantize(QUANT),
         )
 
     def _check_sl_tp(
@@ -409,12 +409,12 @@ class BacktestingEngine:
         exit_side: Side = "SELL" if pos.side == "LONG" else "BUY"
         exit_fill = self._slip.apply(close_price, exit_side, order_type)
         exit_slippage = abs(exit_fill - close_price) * pos.quantity
-        exit_fee = self._fee.calculate((exit_fill * pos.quantity).quantize(_QUANT), order_type)
+        exit_fee = self._fee.calculate((exit_fill * pos.quantity).quantize(QUANT), order_type)
 
         if pos.side == "LONG":
-            gross_pnl = ((exit_fill - pos.entry_price) * pos.quantity).quantize(_QUANT)
+            gross_pnl = ((exit_fill - pos.entry_price) * pos.quantity).quantize(QUANT)
         else:
-            gross_pnl = ((pos.entry_price - exit_fill) * pos.quantity).quantize(_QUANT)
+            gross_pnl = ((pos.entry_price - exit_fill) * pos.quantity).quantize(QUANT)
 
         # El funding del candle de cierre ya fue acumulado en step 4 del loop
         # (solo si la posición sobrevivió hasta el final de ese candle, i.e. END_OF_DATA).
@@ -427,9 +427,9 @@ class BacktestingEngine:
             - pos.entry_fee_usdt
             - exit_fee
             - pos.entry_slippage_usdt
-            - exit_slippage.quantize(_QUANT)
+            - exit_slippage.quantize(QUANT)
             - total_funding
-        ).quantize(_QUANT)
+        ).quantize(QUANT)
 
         trade = ClosedTrade(
             side=pos.side,
@@ -445,8 +445,8 @@ class BacktestingEngine:
             entry_fee_usdt=pos.entry_fee_usdt,
             exit_fee_usdt=exit_fee,
             entry_slippage_usdt=pos.entry_slippage_usdt,
-            exit_slippage_usdt=exit_slippage.quantize(_QUANT),
-            funding_cost_usdt=total_funding.quantize(_QUANT),
+            exit_slippage_usdt=exit_slippage.quantize(QUANT),
+            funding_cost_usdt=total_funding.quantize(QUANT),
             net_pnl_usdt=net_pnl,
             hold_candles=exit_candle_index - pos.entry_candle_index,
         )
@@ -478,32 +478,32 @@ class BacktestingEngine:
         en la apertura (fill_ratio → quantity == 0 descarta la orden sin abrir posición).
         """
         close_fraction = level.close_fraction
-        close_qty = (pos.quantity * close_fraction).quantize(_QUANT)
+        close_qty = (pos.quantity * close_fraction).quantize(QUANT)
         if close_qty <= _ZERO:
             return None, pos.model_copy(update={"take_profit_levels": pos.take_profit_levels[1:]})
 
         exit_side: Side = "SELL" if pos.side == "LONG" else "BUY"
         exit_fill = self._slip.apply(level.price, exit_side, "LIMIT")
         exit_slippage = abs(exit_fill - level.price) * close_qty
-        exit_fee = self._fee.calculate((exit_fill * close_qty).quantize(_QUANT), "LIMIT")
+        exit_fee = self._fee.calculate((exit_fill * close_qty).quantize(QUANT), "LIMIT")
 
         if pos.side == "LONG":
-            gross_pnl = ((exit_fill - pos.entry_price) * close_qty).quantize(_QUANT)
+            gross_pnl = ((exit_fill - pos.entry_price) * close_qty).quantize(QUANT)
         else:
-            gross_pnl = ((pos.entry_price - exit_fill) * close_qty).quantize(_QUANT)
+            gross_pnl = ((pos.entry_price - exit_fill) * close_qty).quantize(QUANT)
 
-        partial_entry_fee = (pos.entry_fee_usdt * close_fraction).quantize(_QUANT)
-        partial_entry_slip = (pos.entry_slippage_usdt * close_fraction).quantize(_QUANT)
-        partial_funding = (pos.accrued_funding_usdt * close_fraction).quantize(_QUANT)
+        partial_entry_fee = (pos.entry_fee_usdt * close_fraction).quantize(QUANT)
+        partial_entry_slip = (pos.entry_slippage_usdt * close_fraction).quantize(QUANT)
+        partial_funding = (pos.accrued_funding_usdt * close_fraction).quantize(QUANT)
 
         net_pnl = (
             gross_pnl
             - partial_entry_fee
             - exit_fee
             - partial_entry_slip
-            - exit_slippage.quantize(_QUANT)
+            - exit_slippage.quantize(QUANT)
             - partial_funding
-        ).quantize(_QUANT)
+        ).quantize(QUANT)
 
         trade = ClosedTrade(
             side=pos.side,
@@ -513,13 +513,13 @@ class BacktestingEngine:
             exit_price=exit_fill,
             exit_reason="TP_PARTIAL",
             leverage=pos.leverage,
-            margin_usdt=(pos.margin_usdt * close_fraction).quantize(_QUANT),
-            notional_usdt=(pos.notional_usdt * close_fraction).quantize(_QUANT),
+            margin_usdt=(pos.margin_usdt * close_fraction).quantize(QUANT),
+            notional_usdt=(pos.notional_usdt * close_fraction).quantize(QUANT),
             gross_pnl_usdt=gross_pnl,
             entry_fee_usdt=partial_entry_fee,
             exit_fee_usdt=exit_fee,
             entry_slippage_usdt=partial_entry_slip,
-            exit_slippage_usdt=exit_slippage.quantize(_QUANT),
+            exit_slippage_usdt=exit_slippage.quantize(QUANT),
             funding_cost_usdt=partial_funding,
             net_pnl_usdt=net_pnl,
             hold_candles=candle_index - pos.entry_candle_index,
@@ -529,15 +529,15 @@ class BacktestingEngine:
         remaining_fraction = Decimal("1") - close_fraction
         remaining_pos = pos.model_copy(
             update={
-                "quantity": (pos.quantity - close_qty).quantize(_QUANT),
-                "margin_usdt": (pos.margin_usdt * remaining_fraction).quantize(_QUANT),
-                "notional_usdt": (pos.notional_usdt * remaining_fraction).quantize(_QUANT),
-                "entry_fee_usdt": (pos.entry_fee_usdt * remaining_fraction).quantize(_QUANT),
+                "quantity": (pos.quantity - close_qty).quantize(QUANT),
+                "margin_usdt": (pos.margin_usdt * remaining_fraction).quantize(QUANT),
+                "notional_usdt": (pos.notional_usdt * remaining_fraction).quantize(QUANT),
+                "entry_fee_usdt": (pos.entry_fee_usdt * remaining_fraction).quantize(QUANT),
                 "entry_slippage_usdt": (pos.entry_slippage_usdt * remaining_fraction).quantize(
-                    _QUANT
+                    QUANT
                 ),
                 "accrued_funding_usdt": (pos.accrued_funding_usdt * remaining_fraction).quantize(
-                    _QUANT
+                    QUANT
                 ),
                 "take_profit_levels": pos.take_profit_levels[1:],
             }
@@ -568,8 +568,8 @@ class BacktestingEngine:
         """
         notional = pos.quantity * candle.close
         if pos.side == "LONG":
-            return (notional * candle.funding_rate).quantize(_QUANT)
-        return -(notional * candle.funding_rate).quantize(_QUANT)
+            return (notional * candle.funding_rate).quantize(QUANT)
+        return -(notional * candle.funding_rate).quantize(QUANT)
 
     def _empty_result(self) -> BacktestRunResult:
         return compute_backtest_metrics(

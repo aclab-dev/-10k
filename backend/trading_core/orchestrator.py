@@ -195,7 +195,7 @@ class Orchestrator:
         # en PAPER por puro desacople de config (F17 [162]).
         adapter = PaperAdapter(
             initial_balance_usdt=initial_balance,
-            slippage_model=SlippageModel(market_bps=Decimal(str(cfg.slippage.market_impact_bps))),
+            slippage_model=SlippageModel(market_bps=cfg.slippage.impact_bps),
         )
         db_session = session or get_session_factory()()
 

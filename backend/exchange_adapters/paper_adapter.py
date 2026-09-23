@@ -38,6 +38,7 @@ import structlog
 from backend.backtesting.fee_model import FeeModel
 from backend.backtesting.slippage_model import SlippageModel
 from backend.core.config import Environment, MarginType
+from backend.core.constants import QUANT
 from backend.core.funding import compute_funding_payment
 from backend.core.slippage import half_spread
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -56,7 +57,6 @@ _log = structlog.get_logger(__name__)
 # Leverage máximo permitido en PAPER
 _MAX_LEVERAGE_PAPER = 10
 
-_QUANT = Decimal("0.00000001")
 
 # Mapeo de OrderType (schemas) → tipo que entienden FeeModel y SlippageModel.
 # STOP_MARKET y TAKE_PROFIT_MARKET son órdenes taker con impacto de mercado.
@@ -86,7 +86,7 @@ class FillResult:
 
     @property
     def notional_usdt(self) -> Decimal:
-        return (self.fill_price * self.filled_quantity).quantize(_QUANT)
+        return (self.fill_price * self.filled_quantity).quantize(QUANT)
 
 
 class PaperAdapter(ExchangeAdapter):
@@ -302,9 +302,9 @@ class PaperAdapter(ExchangeAdapter):
         fill_price = self._slip.apply(request.price, request.side.value, model_order_type)
         fill_price = self._cross_spread(fill_price, request)
 
-        notional = (fill_price * request.quantity).quantize(_QUANT)
+        notional = (fill_price * request.quantity).quantize(QUANT)
         fee_usdt = self._fee.calculate(notional, model_order_type)
-        slippage_usdt = (abs(fill_price - request.price) * request.quantity).quantize(_QUANT)
+        slippage_usdt = (abs(fill_price - request.price) * request.quantity).quantize(QUANT)
 
         # Fee se descuenta siempre, independientemente de is_reduce_only
         self._balance_usdt -= fee_usdt
@@ -360,7 +360,7 @@ class PaperAdapter(ExchangeAdapter):
         # modelo de horquilla cambia, estimado y simulado se mueven juntos.
         spread = half_spread(request.bid, request.ask)
         adjusted = fill_price + spread if request.side == OrderSide.BUY else fill_price - spread
-        return adjusted.quantize(_QUANT)
+        return adjusted.quantize(QUANT)
 
     def _open_or_net_position(self, request: OrderRequest, fill_price: Decimal) -> None:
         """Abre una nueva posición o netea con la existente en la misma dirección.

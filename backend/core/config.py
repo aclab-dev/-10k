@@ -1,6 +1,7 @@
 """Config loader: carga config.yaml (Anexo A) con override por env vars y validacion al boot."""
 
 import os
+from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -375,6 +376,18 @@ class SlippageConfig(BaseModel):
                 f"slippage.market_impact_bps={v} debe estar en [0, {_MAX_MARKET_IMPACT_BPS}]"
             )
         return v
+
+    @property
+    def impact_bps(self) -> Decimal:
+        """`market_impact_bps` como Decimal, que es como lo consume el cálculo.
+
+        El campo es float como todo el resto de la config, pero los consumidores
+        trabajan en Decimal. La conversión vive acá y no repetida en cada call
+        site: `Decimal(float)` arrastra el error binario del float, así que hay
+        que pasar por `str()`, y un call site que se olvide introduce un sesgo
+        silencioso en un número que se persiste como evidencia de auditoría.
+        """
+        return Decimal(str(self.market_impact_bps))
 
 
 class FundingGateConfig(BaseModel):

@@ -41,12 +41,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from backend.core.constants import BASIS_POINTS, QUANT
 from backend.decision_engine.schemas import DecisionType, EntryType, ModelDecision
 from backend.exchange_adapters.schemas import OrderSide, OrderType
 from backend.market_data.schemas import MarketSnapshot
 
-_BASIS_POINTS = Decimal("10000")
-_QUANT = Decimal("0.00000001")
 _TWO = Decimal("2")
 
 #: Tipos de orden que cruzan el spread. El resto llena al precio indicado (LIMIT)
@@ -174,22 +173,22 @@ def estimate_slippage(
             estimated_slippage_usdt=Decimal("0"),
             half_spread_usdt=Decimal("0"),
             impact_usdt=Decimal("0"),
-            expected_fill_price=reference_price.quantize(_QUANT),
+            expected_fill_price=reference_price.quantize(QUANT),
             bid=bid,
             ask=ask,
         )
 
     quantity = notional_usdt / reference_price
     half_spread_per_unit = half_spread(bid, ask)
-    impact_per_unit = reference_price * market_impact_bps / _BASIS_POINTS
+    impact_per_unit = reference_price * market_impact_bps / BASIS_POINTS
     adverse_move_per_unit = half_spread_per_unit + impact_per_unit
 
-    half_spread_usdt = (half_spread_per_unit * quantity).quantize(_QUANT)
-    impact_usdt = (impact_per_unit * quantity).quantize(_QUANT)
+    half_spread_usdt = (half_spread_per_unit * quantity).quantize(QUANT)
+    impact_usdt = (impact_per_unit * quantity).quantize(QUANT)
     # Cuantizar el total aparte (y no sumando los componentes ya cuantizados)
     # mantiene el total fiel al cálculo exacto; la diferencia con la suma de
     # los componentes es como mucho 1 ulp.
-    total_usdt = (adverse_move_per_unit * quantity).quantize(_QUANT)
+    total_usdt = (adverse_move_per_unit * quantity).quantize(QUANT)
 
     # BUY paga por encima del precio de referencia, SELL recibe por debajo.
     if side == OrderSide.BUY:
@@ -201,7 +200,7 @@ def estimate_slippage(
         estimated_slippage_usdt=total_usdt,
         half_spread_usdt=half_spread_usdt,
         impact_usdt=impact_usdt,
-        expected_fill_price=expected_fill_price.quantize(_QUANT),
+        expected_fill_price=expected_fill_price.quantize(QUANT),
         bid=bid,
         ask=ask,
     )
