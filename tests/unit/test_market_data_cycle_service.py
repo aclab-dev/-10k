@@ -98,7 +98,12 @@ class _FakeFetcher(DataFetcher):
             raise ValueError(f"fetch failed for {symbol}")
         snap = Mock(spec=MarketSnapshot, name=f"snapshot-{symbol}")
         snap.symbol = symbol
-        snap.last_price = self.prices.get(symbol, Decimal("0"))
+        price = self.prices.get(symbol, Decimal("0"))
+        snap.last_price = price
+        # Libro simétrico alrededor del precio: el servicio lo cachea para que
+        # las órdenes de cierre puedan cruzar el spread (F17 [162]).
+        snap.bid = price - Decimal("1")
+        snap.ask = price + Decimal("1")
         return snap
 
     def is_healthy(self) -> bool:
@@ -311,3 +316,27 @@ def test_tick_all_with_no_symbols_still_commits() -> None:
 
     engine.process_snapshot.assert_not_called()
     session.commit.assert_called_once()
+
+
+def test_get_last_book_is_none_before_any_tick() -> None:
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher()
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, SYMBOLS)
+
+    assert service.get_last_book("BTCUSDT") is None
+
+
+def test_get_last_book_updates_after_successful_tick() -> None:
+    """El libro se cachea junto al precio: lo consume PositionTickService para
+    que los cierres crucen el spread igual que las entradas (F17 [162])."""
+    adapter = _FakeAdapter()
+    fetcher = _FakeFetcher(prices={"BTCUSDT": Decimal("50000")})
+    engine = Mock(spec=MarketDataEngine)
+    session = Mock()
+    service = MarketDataCycleService(adapter, fetcher, engine, session, ["BTCUSDT"])
+
+    service.tick_all()
+
+    assert service.get_last_book("BTCUSDT") == (Decimal("49999"), Decimal("50001"))

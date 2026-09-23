@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from backend.core.config import Environment, load_config
+from backend.core.slippage import SlippageEstimate, estimate_slippage
 from backend.decision_engine.schemas import (
     BreakoutInterpretation,
     DecisionAggregatorSection,
@@ -413,3 +414,218 @@ def test_timeout_does_not_block_subsequent_calls() -> None:
 
     assert result.order_result.status == OrderStatus.FILLED
     assert elapsed < 0.15  # muy por debajo del sleep(0.3) del thread colgado
+
+
+# ---------------------------------------------------------------------------
+# Persistencia del slippage (F17 [162], regla no negociable 13)
+# ---------------------------------------------------------------------------
+
+
+def _slippage_estimate(estimated_usdt: str = "0.02") -> SlippageEstimate:
+    return SlippageEstimate(
+        estimated_slippage_usdt=Decimal(estimated_usdt),
+        half_spread_usdt=Decimal("0.01"),
+        impact_usdt=Decimal("0.01"),
+        expected_fill_price=Decimal("50110"),
+        bid=Decimal("50090"),
+        ask=Decimal("50110"),
+    )
+
+
+def test_execute_approved_plan_persists_real_slippage_on_fill() -> None:
+    """El slippage real del adapter deja de perderse: va a orders.slippage_usdt."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    # PaperAdapter aplica 2 BPS adversos en MARKET, así que el real es > 0 y es
+    # exactamente el que reportó el adapter — no un 0 hardcodeado ni un recálculo.
+    assert result.order_result.slippage_usdt > Decimal("0")
+    assert saved_order.slippage_usdt == result.order_result.slippage_usdt
+
+
+def test_execute_approved_plan_persists_estimated_slippage() -> None:
+    """El estimado pre-trade queda en la misma fila, para comparar contra el real."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    engine.execute_approved_plan(
+        decision, risk_result, slippage_estimate=_slippage_estimate("0.02")
+    )
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.estimated_slippage_usdt == Decimal("0.02")
+    assert saved_order.slippage_usdt is not None
+
+
+def test_execute_approved_plan_without_estimate_persists_null_not_zero() -> None:
+    """Sin estimación se guarda NULL: 'no se estimó' no es 'se estimó y dio 0'."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+
+    engine.execute_approved_plan(decision, _make_risk_result(decision))
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.estimated_slippage_usdt is None
+
+
+def test_unfilled_order_persists_null_real_slippage() -> None:
+    """Una orden que no llenó no tiene slippage real: NULL, no el 0 del default."""
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision(entry_type=EntryType.LIMIT)
+    risk_result = _make_risk_result(decision)
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.status != OrderStatus.FILLED
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.slippage_usdt is None
+
+
+def test_idempotent_replay_returns_persisted_slippage_not_zero() -> None:
+    """El replay idempotente lee orders.slippage_usdt en vez de devolver 0 fijo.
+
+    Era el síntoma del gap de la regla 13: el valor no se persistía, así que un
+    retry del mismo plan devolvía siempre slippage 0 y la auditoría mentía.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    order_repo.get_by_client_order_id.return_value = Order(
+        id="order-db-1",
+        bot_run_id="run-1",
+        trade_id="trade-1",
+        client_order_id=decision.decision_id,
+        symbol=decision.symbol,
+        environment="PAPER",
+        order_type="MARKET",
+        side="BUY",
+        quantity=Decimal("0.001"),
+        price=Decimal(str(decision.entry_price)),
+        status="FILLED",
+        exchange_order_id="exch-1",
+        filled_at=_NOW,
+        fill_price=Decimal(str(decision.entry_price)),
+        fee=Decimal("0.01"),
+        slippage_usdt=Decimal("0.03"),
+        is_simulated=True,
+    )
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.slippage_usdt == Decimal("0.03")
+
+
+def test_idempotent_replay_reports_none_for_pre_migration_orders() -> None:
+    """Órdenes anteriores a la migración e5b3a71c9d40 no tienen el dato: None, no 0.
+
+    `None` significa "no se midió". Devolver 0 las haría indistinguibles de un
+    fill sin slippage, que es justo el sesgo que la columna viene a evitar.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    risk_result = _make_risk_result(decision)
+
+    order_repo.get_by_client_order_id.return_value = Order(
+        id="order-db-1",
+        bot_run_id="run-1",
+        trade_id="trade-1",
+        client_order_id=decision.decision_id,
+        symbol=decision.symbol,
+        environment="PAPER",
+        order_type="MARKET",
+        side="BUY",
+        quantity=Decimal("0.001"),
+        price=Decimal(str(decision.entry_price)),
+        status="FILLED",
+        exchange_order_id="exch-1",
+        filled_at=_NOW,
+        fill_price=Decimal(str(decision.entry_price)),
+        fee=Decimal("0.01"),
+        slippage_usdt=None,
+        is_simulated=True,
+    )
+
+    result = engine.execute_approved_plan(decision, risk_result)
+
+    assert result.order_result.slippage_usdt is None
+
+
+class _UnmeasuredSlippageAdapter(PaperAdapter):
+    """Adapter que llena pero no mide slippage, como BingX (`slippage_usdt=None`)."""
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        filled = super().place_order(request)
+        return filled.model_copy(update={"slippage_usdt": None, "is_simulated": False})
+
+
+def test_adapter_that_does_not_measure_slippage_persists_null_not_zero() -> None:
+    """Un adapter real que no informa slippage no puede quedar registrado como 0.
+
+    BingX devuelve `slippage_usdt=None` (no lo reporta). Persistir 0 haría pasar
+    "no se midió" por "se midió y no hubo", y en TESTNET/LIVE dejaría toda orden
+    llenada con estimado > 0 y real 0 — el sesgo que esta card viene a corregir.
+    """
+    engine, _session, order_repo = _engine(
+        _UnmeasuredSlippageAdapter(initial_balance_usdt=Decimal("1000"))
+    )
+    decision = _make_decision()
+
+    engine.execute_approved_plan(
+        decision, _make_risk_result(decision), slippage_estimate=_slippage_estimate("0.02")
+    )
+
+    saved_order: Order = order_repo.save.call_args[0][0]
+    assert saved_order.slippage_usdt is None
+    # El estimado sí se guarda: el gap es la medición real, no la estimación.
+    assert saved_order.estimated_slippage_usdt == Decimal("0.02")
+
+
+def test_estimated_and_real_slippage_match_in_paper() -> None:
+    """Estimado y real coinciden en PAPER, porque parten del mismo libro.
+
+    `SlippageEstimate.bid/ask` viaja hasta la `OrderRequest`, así que el fill
+    simulado cruza exactamente el spread contra el que se estimó. Si cada lado
+    usara su propia fuente, la diferencia mediría la discrepancia entre dos
+    entradas en vez del error del modelo.
+
+    Coincidir es lo esperado en PAPER y no valida la heurística: ambos lados
+    salen del mismo modelo. El error real sólo se mide contra fills de
+    exchange, en TESTNET/LIVE.
+    """
+    adapter = PaperAdapter(initial_balance_usdt=Decimal("1000"))
+    engine, _session, order_repo = _engine(adapter)
+    decision = _make_decision()
+    entry = Decimal(str(decision.entry_price))
+    estimate = estimate_slippage(
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        notional_usdt=Decimal(str(decision.margin_usdt)) * decision.leverage,
+        bid=entry - Decimal("10"),
+        ask=entry + Decimal("10"),
+        reference_price=entry,
+        market_impact_bps=Decimal("2"),
+    )
+
+    result = engine.execute_approved_plan(
+        decision, _make_risk_result(decision), slippage_estimate=estimate
+    )
+
+    assert result.order_result.fill_price == estimate.expected_fill_price
+    saved_order: Order = order_repo.save.call_args[0][0]
+    # La diferencia residual es el ROUND_DOWN de la cantidad ejecutada, muy por
+    # debajo de un céntimo: el estimado se calcula sobre el notional sin cuantizar.
+    assert saved_order.slippage_usdt is not None
+    assert saved_order.estimated_slippage_usdt is not None
+    assert abs(saved_order.slippage_usdt - saved_order.estimated_slippage_usdt) < Decimal("0.0001")

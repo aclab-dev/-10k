@@ -37,6 +37,9 @@ jobs:
       - name: Type-check (mypy)
         run: uv run mypy backend/ worker/
 
+      - name: Doc anchors (docs/*.md → código)
+        run: uv run python scripts/check_doc_anchors.py
+
       - name: Tests (unit only)
         run: uv run pytest -m "not integration"
 

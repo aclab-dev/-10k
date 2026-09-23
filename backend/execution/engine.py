@@ -21,6 +21,8 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import Environment, PositionManagementConfig
+from backend.core.constants import QUANT
+from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, EntryType, ModelDecision
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
@@ -43,8 +45,6 @@ from backend.storage.repositories.snapshots import VolatilityAssessmentRepositor
 from backend.storage.repositories.trades import OrderRepository
 
 log = structlog.get_logger(__name__)
-
-_QUANT = Decimal("0.00000001")
 
 
 class ExecutionTimeoutError(Exception):
@@ -88,7 +88,10 @@ class ExecutionEngine:
         return position.unrealized_pnl if position is not None else None
 
     def execute_approved_plan(
-        self, decision: ModelDecision, risk_result: RiskValidationResult
+        self,
+        decision: ModelDecision,
+        risk_result: RiskValidationResult,
+        slippage_estimate: SlippageEstimate | None = None,
     ) -> ExecutionResult:
         """Ejecuta un plan aprobado: coloca la orden y, si llena, registra la posición.
 
@@ -97,6 +100,14 @@ class ExecutionEngine:
         resultado ya registrado sin re-ejecutar ni duplicar (el adapter es
         idempotente en memoria via PaperAdapter.place_order, pero eso no evita
         un segundo INSERT en `orders`; acá se chequea la DB primero).
+
+        Args:
+            decision: ModelDecision del GPT Context Evaluator.
+            risk_result: validación del Risk Engine, en {APPROVE, ADJUST_DOWN}.
+            slippage_estimate: estimación pre-trade (F17, regla 13), calculada
+                por el caller que tiene el MarketSnapshot. Se persiste junto al
+                slippage real para poder comparar ambos sobre la misma fila de
+                `orders`. None cuando el caller no la proveyó.
 
         Raises:
             ValueError: risk_result no ejecutable, entry_type inválido, o no hay
@@ -158,11 +169,13 @@ class ExecutionEngine:
         self._adapter.set_leverage(decision.symbol, adjusted.leverage)
 
         quantity = self._compute_quantity(adjusted.margin_usdt, adjusted.leverage, decision)
-        request = self._build_order_request(decision, quantity)
+        request = self._build_order_request(decision, quantity, slippage_estimate)
 
         result = self._place_order_with_timeout(request)
 
-        order_row = self._persist_order(decision, result, trade_id=None)
+        order_row = self._persist_order(
+            decision, result, trade_id=None, slippage_estimate=slippage_estimate
+        )
 
         if result.status != OrderStatus.FILLED:
             self._session.commit()
@@ -216,9 +229,11 @@ class ExecutionEngine:
     def _execution_result_from_existing_order(order_row: Order) -> ExecutionResult:
         """Reconstruye un ExecutionResult a partir de una Order ya persistida (replay idempotente).
 
-        `slippage_usdt` no se persiste en `orders` — no es recuperable en un
-        replay, se devuelve en 0 (no afecta la idempotencia: la orden real ya
-        se colocó una única vez, esto es solo la respuesta al caller repetido).
+        `slippage_usdt` se lee de la columna homónima de `orders` (F17 [162]).
+        Queda en None cuando el adapter no lo midió, y también para órdenes
+        anteriores a la migración e5b3a71c9d40, que no tienen el dato y no
+        pueden recuperarlo: el `fill_price` guardado ya incluye el slippage,
+        pero no se conservó el precio de referencia contra el que medirlo.
         """
         status = OrderStatus(order_row.status)
         order_result = OrderResult(
@@ -232,7 +247,7 @@ class ExecutionEngine:
             quantity_filled=order_row.quantity if status == OrderStatus.FILLED else Decimal("0"),
             fill_price=order_row.fill_price,
             fee_usdt=order_row.fee or Decimal("0"),
-            slippage_usdt=Decimal("0"),
+            slippage_usdt=order_row.slippage_usdt,
             is_simulated=order_row.is_simulated,
             timestamp_utc=order_row.filled_at or order_row.created_at,
         )
@@ -248,10 +263,12 @@ class ExecutionEngine:
         notional = margin_usdt * leverage
         quantity = notional / Decimal(str(decision.entry_price))
         # ROUND_DOWN: nunca excede el margen aprobado por el Risk Engine.
-        return quantity.quantize(_QUANT, rounding=ROUND_DOWN)
+        return quantity.quantize(QUANT, rounding=ROUND_DOWN)
 
     @staticmethod
-    def _build_order_request(decision: ModelDecision, quantity: Decimal) -> OrderRequest:
+    def _build_order_request(
+        decision: ModelDecision, quantity: Decimal, slippage_estimate: SlippageEstimate | None
+    ) -> OrderRequest:
         side = OrderSide.BUY if decision.decision == DecisionType.LONG else OrderSide.SELL
         is_market = decision.entry_type == EntryType.MARKET
         order_type = OrderType.MARKET if is_market else OrderType.LIMIT
@@ -267,6 +284,12 @@ class ExecutionEngine:
             # PaperAdapter usa price como referencia para simular el fill incluso
             # en MARKET (ver _fill_market_order) — siempre requerido, no solo LIMIT.
             price=Decimal(str(decision.entry_price)),
+            # El mismo libro contra el que se estimó, para que el fill simulado
+            # de PAPER cruce ese spread y no otro: si estimador y simulador
+            # usaran fuentes distintas, comparar estimado vs. real no mediría
+            # el error del modelo sino la diferencia entre dos entradas.
+            bid=slippage_estimate.bid if slippage_estimate is not None else None,
+            ask=slippage_estimate.ask if slippage_estimate is not None else None,
         )
 
     def _place_order_with_timeout(self, request: OrderRequest) -> OrderResult:
@@ -308,7 +331,11 @@ class ExecutionEngine:
             ) from exc
 
     def _persist_order(
-        self, decision: ModelDecision, result: OrderResult, trade_id: str | None
+        self,
+        decision: ModelDecision,
+        result: OrderResult,
+        trade_id: str | None,
+        slippage_estimate: SlippageEstimate | None = None,
     ) -> Order:
         order_row = Order(
             bot_run_id=self._bot_run_id,
@@ -327,6 +354,14 @@ class ExecutionEngine:
             filled_at=result.timestamp_utc if result.status == OrderStatus.FILLED else None,
             fill_price=result.fill_price,
             fee=result.fee_usdt,
+            # Sólo sobre una orden que llenó, y sólo si el adapter lo midió:
+            # `OrderResult.slippage_usdt` es None cuando no hay medición (BingX
+            # no lo reporta), y persistir un 0 ahí haría pasar "no se midió" por
+            # "se midió y no hubo" — el sesgo que esta columna existe para evitar.
+            slippage_usdt=result.slippage_usdt if result.status == OrderStatus.FILLED else None,
+            estimated_slippage_usdt=(
+                slippage_estimate.estimated_slippage_usdt if slippage_estimate is not None else None
+            ),
             is_simulated=result.is_simulated,
         )
         self._order_repo.save(order_row)

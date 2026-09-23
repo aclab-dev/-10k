@@ -1,9 +1,12 @@
 """Audit helpers — write auditable events to DB and emit structured logs.
 
-Three public functions cover the event kinds required by F3-DoD:
-  audit_decision  → decisions table
-  audit_snapshot  → market_snapshots table
-  audit_error     → errors table
+Public functions, one per event kind:
+  audit_decision             → decisions table (evento genérico)
+  audit_model_decision       → decisions table (desde un ModelDecision de GPT)
+  audit_decision_aggregation → decision_aggregations table
+  audit_risk_validation      → risk_validations table
+  audit_snapshot             → market_snapshots table
+  audit_error                → errors table
 
 Use audit_context() to set a correlation_id for the block's duration via a
 stdlib ContextVar. This guarantees async-safe isolation: each asyncio coroutine
@@ -34,18 +37,26 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy.orm import Session
 
+from backend.decision_engine.schemas import DecisionType
 from backend.storage.models import (
     Decision,
+    DecisionAggregation,
     ErrorRecord,
     MarketSnapshot,
     ModelRequest,
     ModelResponse,
+    RiskValidation,
 )
+
+if TYPE_CHECKING:
+    from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
+    from backend.decision_engine.schemas import ModelDecision
+    from backend.risk_engine.schemas import RiskValidationResult
 
 _log = structlog.get_logger(__name__)
 
@@ -340,5 +351,132 @@ def audit_error(
         message=message,
         recovered=recovered,
         exc_info=exc is not None,
+    )
+    return record
+
+
+def audit_model_decision(
+    session: Session,
+    decision: ModelDecision,
+    *,
+    bot_run_id: str,
+) -> Decision:
+    """Persist a ModelDecision (Anexo B, tabla decisions).
+
+    La fila toma el `decision_id` del propio ModelDecision como PK, y no un
+    UUID nuevo: `decision_aggregations.decision_id` referencia ese mismo id,
+    así que generar otro dejaría la FK sin destino y la agregación no entraría.
+
+    Idempotente por esa misma razón: reusar el id como PK hace que un retry del
+    mismo ModelDecision (un segundo tick con la decisión ya vista) choque
+    contra la PK y tumbe el ciclo. Si la fila ya existe se devuelve tal cual,
+    sin reescribirla — la decisión es inmutable, no hay nada que actualizar.
+    """
+    existing = session.get(Decision, decision.decision_id)
+    if existing is not None:
+        _log.info(
+            "audit.model_decision.already_persisted",
+            decision_id=existing.id,
+            bot_run_id=bot_run_id,
+        )
+        return existing
+
+    record = Decision(
+        id=decision.decision_id,
+        bot_run_id=bot_run_id,
+        symbol=decision.symbol,
+        timestamp=decision.timestamp_utc,
+        # `action` describe qué se resolvió; `direction` es LONG/SHORT y la
+        # columna admite 8 caracteres, así que NO_OPERAR va en action y deja
+        # direction en NULL — no tiene dirección que registrar.
+        action="OPEN" if decision.execute else "NO_OPERAR",
+        direction=(
+            decision.decision.value if decision.decision != DecisionType.NO_OPERAR else None
+        ),
+        confidence=decision.confidence,
+        margin_usdt=Decimal(str(decision.margin_usdt)),
+        leverage=decision.leverage,
+        stop_loss=Decimal(str(decision.stop_loss)),
+        take_profit=Decimal(str(decision.take_profit)),
+        reasoning=decision.decision_rationale_summary,
+        raw_decision=decision.model_dump(mode="json"),
+    )
+    session.add(record)
+    session.flush()
+
+    _log.info(
+        "audit.model_decision",
+        decision_id=record.id,
+        bot_run_id=bot_run_id,
+        symbol=record.symbol,
+        action=record.action,
+        direction=record.direction,
+    )
+    return record
+
+
+def audit_decision_aggregation(
+    session: Session,
+    result: DecisionAggregationResult,
+    *,
+    bot_run_id: str,
+) -> DecisionAggregation:
+    """Persist a DecisionAggregationResult (Anexo B, tabla decision_aggregations).
+
+    `decision_id` apunta a `decisions.id`. La columna es nullable y la FK es
+    `ondelete=SET NULL`, pero eso sólo describe qué pasa al *borrar* la
+    decisión: insertar un id que no existe viola la FK igual. Por eso el caller
+    persiste la decisión antes, o no llama a esta función.
+    """
+    record = DecisionAggregation(**result.to_db_kwargs(bot_run_id))
+    session.add(record)
+    session.flush()
+
+    _log.info(
+        "audit.decision_aggregation",
+        aggregation_id=record.id,
+        bot_run_id=bot_run_id,
+        symbol=record.symbol,
+        final_action=record.final_action,
+        aggregated_score=record.aggregated_score,
+    )
+    return record
+
+
+def audit_risk_validation(
+    session: Session,
+    result: RiskValidationResult,
+    *,
+    bot_run_id: str,
+    link_aggregation: bool = True,
+) -> RiskValidation:
+    """Persist a RiskValidationResult (Anexo B, tabla risk_validations).
+
+    Es el destino de `RiskValidationResult.reasons`, donde cada check deja su
+    motivo — incluida la estimación de slippage pre-trade de la regla 13. Se
+    persiste en los cuatro resultados (APPROVE, ADJUST_DOWN, BLOCK, NO_OPERAR):
+    un trade rechazado es tan auditable como uno ejecutado, y sin la fila del
+    rechazo no hay forma de revisar después por qué se descartó.
+
+    `link_aggregation=False` guarda la fila con `decision_aggregation_id` en
+    NULL. Lo usa el caller que no persistió la agregación — `log_all_decisions`
+    apagado con `log_risk_validations` encendido es una combinación válida —:
+    apuntar a una agregación inexistente viola la FK al insertar y cuesta el
+    ciclo del símbolo entero. Vale más la validación sin vínculo que sin fila.
+    """
+    kwargs = result.to_db_kwargs(bot_run_id)
+    if not link_aggregation:
+        kwargs["decision_aggregation_id"] = None
+    record = RiskValidation(**kwargs)
+    session.add(record)
+    session.flush()
+
+    _log.info(
+        "audit.risk_validation",
+        validation_id=record.id,
+        bot_run_id=bot_run_id,
+        symbol=record.symbol,
+        result=record.result,
+        rules=sorted(record.reasons or {}),
     )
     return record

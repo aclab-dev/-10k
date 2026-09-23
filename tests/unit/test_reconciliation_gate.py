@@ -320,20 +320,6 @@ class TestBalanceFetchFailure:
 
         assert sm.state == BotState.SAFE_MODE
 
-    def test_failed_symbol_without_balance_failure_still_does_not_block(
-        self, session: Session
-    ) -> None:
-        """failed_symbols por si solo sigue sin bloquear (PR #128 intacto) — solo
-        balance_fetch_failed=True lo hace."""
-        bot_run = make_bot_run(session, status="RUNNING")
-        sm = BotStateMachine(initial=BotState.ACTIVE)
-        report = _incomplete_report(bot_run.id)
-        gate = _gate(session, bot_run.id, report, state_machine=sm)
-
-        gate.run_and_enforce()
-
-        assert sm.state == BotState.ACTIVE
-
 
 class TestStateHandling:
     def test_does_not_retrigger_when_already_safe_mode(self, session: Session) -> None:

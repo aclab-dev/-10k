@@ -45,6 +45,9 @@ reporte incompleto por símbolos, sin más, no bloquea nuevas entradas acá
 fallo de transporte puntual no debe frenar todo el ciclo). Si ese símbolo
 tenía además una condición realmente bloqueante, esa sí se evalúa igual sobre
 lo que se pudo reconciliar de otros símbolos.
+Lo que sí hace `CycleRunner` con `report.failed_symbols`: saltear las entradas
+nuevas de esos símbolos en ese ciclo (sin posición legible podría duplicar
+exposición), sin SAFE_MODE global — no es responsabilidad de este gate.
 
 `balance_fetch_failed`: si `adapter.get_account_state()` falla,
 `ReconciliationEngine` lo marca en `report.balance_fetch_failed`. A

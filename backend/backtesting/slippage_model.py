@@ -10,11 +10,11 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
+from backend.core.constants import BASIS_POINTS, QUANT
+
 Side = Literal["BUY", "SELL"]
 
 _DEFAULT_MARKET_BPS = Decimal("2")
-_BASIS = Decimal("10000")
-_QUANT = Decimal("0.00000001")
 
 _VALID_SIDES: frozenset[str] = frozenset({"BUY", "SELL"})
 _VALID_ORDER_TYPES: frozenset[str] = frozenset({"MARKET", "LIMIT", "STOP"})
@@ -58,9 +58,9 @@ class SlippageModel:
             )
 
         if order_type == "LIMIT":
-            return price.quantize(_QUANT)
+            return price.quantize(QUANT)
 
-        factor = self._market_bps / _BASIS
+        factor = self._market_bps / BASIS_POINTS
         if side == "BUY":
-            return (price * (1 + factor)).quantize(_QUANT)
-        return (price * (1 - factor)).quantize(_QUANT)
+            return (price * (1 + factor)).quantize(QUANT)
+        return (price * (1 - factor)).quantize(QUANT)

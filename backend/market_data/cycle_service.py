@@ -37,7 +37,8 @@ class MarketDataCycleService:
     y persistido (p.ej. `MarketAnalysisService.on_snapshot`, F5/F6). Debe aislar
     sus propias fallas — no se envuelve acá en try/except adicional.
 
-    Mantiene además el último `last_price` conocido por símbolo (`get_last_price`),
+    Mantiene además el último `last_price` y el último `(bid, ask)` conocidos por
+    símbolo (`get_last_price` / `get_last_book`),
     fuente real de `mark_price` para `PositionTickService` (F14): un dict en
     memoria ya poblado por este mismo ciclo, sin I/O adicional. Si un símbolo
     falla el fetch o el snapshot es rechazado, el precio cacheado se mantiene
@@ -62,6 +63,7 @@ class MarketDataCycleService:
         self._symbols = symbols
         self._on_snapshot = on_snapshot
         self._last_prices: dict[str, Decimal] = {}
+        self._last_books: dict[str, tuple[Decimal, Decimal]] = {}
 
     def tick_all(self) -> list[MarketSnapshot]:
         """Obtiene, valida y persiste un MarketSnapshot por símbolo. Commitea al final.
@@ -115,6 +117,7 @@ class MarketDataCycleService:
             if self._on_snapshot is not None:
                 self._on_snapshot(result)
             self._last_prices[symbol] = result.last_price
+            self._last_books[symbol] = (result.bid, result.ask)
             successful.append(result)
         return successful
 
@@ -122,6 +125,16 @@ class MarketDataCycleService:
         """Último `last_price` conocido para `symbol`, o `None` si nunca hubo
         un snapshot exitoso. Ver nota de staleness en el docstring de la clase."""
         return self._last_prices.get(symbol)
+
+    def get_last_book(self, symbol: str) -> tuple[Decimal, Decimal] | None:
+        """Último `(bid, ask)` conocido para `symbol`, o `None` si nunca hubo uno.
+
+        Lo consume el `PositionTickService` para que los cierres simulados de
+        PAPER crucen el spread igual que las entradas (F17 [162]); sin esto el
+        PnL de PAPER queda optimista por media horquilla en cada salida. Misma
+        semántica de staleness que `get_last_price`.
+        """
+        return self._last_books.get(symbol)
 
 
 __all__ = ["MarketDataCycleService"]

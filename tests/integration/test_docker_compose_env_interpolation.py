@@ -91,8 +91,16 @@ def test_escaped_hash_survives_compose_interpolation(tmp_path: Path) -> None:
 
 
 def test_unescaped_hash_gets_corrupted_by_compose_interpolation(tmp_path: Path) -> None:
-    """Confirma que el bug es real: sin escapar, Compose sí corrompe el hash."""
-    original_hash = hash_password("otra-password-de-prueba", **_FAST_HASH_PARAMS)
+    """Confirma que el bug es real: sin escapar, Compose sí corrompe el hash.
+
+    El hash es fijo y no generado, a propósito. Compose sólo interpola `$nombre`
+    cuando el nombre arranca con letra o guion bajo, así que un hash real cuyos
+    segmentos empiecen todos con dígito o `-` sobrevive intacto y este control
+    negativo falla — con salt aleatorio, sale cara o cruz en cada corrida. El
+    literal de abajo respeta el formato de `hash_password` y garantiza al menos
+    un segmento interpolable (`$Salt`), que es la condición que el test afirma.
+    """
+    original_hash = "scrypt$16$1$1$SaltQueEmpiezaConLetra$HashQueEmpiezaConLetra"
 
     env_path = tmp_path / ".env"
     env_path.write_text(

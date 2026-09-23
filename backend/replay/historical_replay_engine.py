@@ -21,6 +21,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from backend.core.config import load_config
+from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.schemas import ModelDecision
@@ -157,6 +158,8 @@ class HistoricalReplayEngine:
         """
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
+        # Fuera del loop: no cambia entre filas.
+        impact_bps = config.slippage.impact_bps
         results: list[ReplayStepResult] = []
 
         for row in rows:
@@ -166,6 +169,23 @@ class HistoricalReplayEngine:
             volatility = compute_volatility_assessment(snapshot)
             decision = decision_provider(snapshot, quant_signals)
             aggregation = self._aggregator.aggregate(decision, quant_signals, regime, volatility)
+            # Slippage estimado pre-trade (F17, regla 13) sobre los parámetros
+            # propuestos, igual que en el ciclo real: el replay tiene que ver la
+            # misma auditoría que vería en producción. Sólo para decisiones
+            # estimables: un decision_provider puede devolver NO_OPERAR o
+            # NO_ENTRY, y estimarlas abortaría la ventana entera descartando
+            # los pasos ya calculados.
+            slippage_estimate = (
+                estimate_for_decision(
+                    snapshot=snapshot,
+                    decision=decision,
+                    margin_usdt=Decimal(str(decision.margin_usdt)),
+                    leverage=decision.leverage,
+                    market_impact_bps=impact_bps,
+                )
+                if is_estimable(decision)
+                else None
+            )
             risk_result = risk_engine.validate(
                 aggregation=aggregation,
                 decision=decision,
@@ -173,6 +193,7 @@ class HistoricalReplayEngine:
                 total_loss_usdt=total_loss_usdt,
                 config=config,
                 funding_rate=snapshot.funding_rate,
+                slippage_estimate=slippage_estimate,
             )
             results.append(
                 ReplayStepResult(

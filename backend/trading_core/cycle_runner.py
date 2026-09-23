@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig
+from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.gpt_client import GPTClient, GPTRequest, RequestPurpose
@@ -42,6 +43,11 @@ from backend.quant_signals.engine import compute_quant_signals
 from backend.reconciliation.gate import ReconciliationGate
 from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from backend.storage.audit import (
+    audit_decision_aggregation,
+    audit_model_decision,
+    audit_risk_validation,
+)
 from backend.storage.repositories.bot import BotStateRepository
 from backend.storage.repositories.trades import TradeRepository
 from backend.trading_core.bot_state_machine import BotStateMachine, resolve_persisted_state
@@ -262,17 +268,24 @@ class CycleRunner:
             self._connection_health_monitor.check_and_enforce(snapshots)
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
+        unverified_symbols: frozenset[str] = frozenset()
         if self._reconciliation_gate is not None:
-            self._reconciliation_gate.run_and_enforce()
+            report = self._reconciliation_gate.run_and_enforce()
+            if report is not None:
+                unverified_symbols = frozenset(report.failed_symbols)
 
         if self._decision_pipeline_ready and snapshots:
-            asyncio.run(self._run_decision_pipeline(snapshots))
+            asyncio.run(self._run_decision_pipeline(snapshots, unverified_symbols))
 
     # ------------------------------------------------------------------
     # Decision pipeline
     # ------------------------------------------------------------------
 
-    async def _run_decision_pipeline(self, snapshots: list[MarketSnapshot]) -> None:
+    async def _run_decision_pipeline(
+        self,
+        snapshots: list[MarketSnapshot],
+        unverified_symbols: frozenset[str] = frozenset(),
+    ) -> None:
         """Ejecuta GPT → Aggregator → Risk → Execution para cada snapshot valido.
 
         Los simbolos se procesan secuencialmente para evitar concurrencia sobre
@@ -300,6 +313,13 @@ class CycleRunner:
         can_trade()==False solo saltea ese simbolo y sigue con el resto: SAFE_MODE
         no detiene el loop (is_running() sigue True), asi que PositionTickService
         debe seguir gestionando salidas de simbolos posteriores en el mismo tick.
+
+        `unverified_symbols` son los `failed_symbols` de la reconciliacion de este
+        tick: simbolos cuya posicion/ordenes no se pudieron leer del exchange.
+        Sin saber si ya hay una posicion abierta ahi, una entrada nueva podria
+        duplicar exposicion, asi que se saltean igual que con can_trade()==False
+        (spec 3.6: "no operar si no se puede leer posiciones u ordenes activas").
+        Es aislable por simbolo: el resto opera normal, sin SAFE_MODE global.
         """
         assert self._session is not None
         for snapshot in snapshots:
@@ -315,6 +335,12 @@ class CycleRunner:
                 log.info(
                     "cycle_runner.new_entries_blocked_by_state",
                     state=self._state_machine.state.value,
+                    symbol=snapshot.symbol,
+                )
+                continue
+            if snapshot.symbol in unverified_symbols:
+                log.warning(
+                    "cycle_runner.new_entries_blocked_unverified_symbol",
                     symbol=snapshot.symbol,
                 )
                 continue
@@ -391,7 +417,16 @@ class CycleRunner:
             gpt_decision, quant, regime, volatility
         )
 
-        # 5. Gating critico: si el Aggregator dice NO_OPERAR, no ejecutar.
+        # 5. Auditoría de la decisión y su agregación (Anexo B). Antes del gate
+        # de NO_OPERAR: una decisión sin edge es tan auditable como una
+        # ejecutada, y su fila es lo que permite revisar después por qué no se
+        # operó. La decisión va primero: `decision_aggregations.decision_id`
+        # tiene FK a `decisions.id`.
+        if self._config.storage.log_all_decisions:
+            audit_model_decision(self._session, gpt_decision, bot_run_id=self._bot_run_id)
+            audit_decision_aggregation(self._session, aggregation, bot_run_id=self._bot_run_id)
+
+        # 6. Gating critico: si el Aggregator dice NO_OPERAR, no ejecutar.
         # El Risk Engine evalua decision.execute (del ModelDecision original), no
         # aggregation.final_action — por eso el caller debe verificar esto primero.
         if aggregation.final_action == DecisionType.NO_OPERAR:
@@ -403,7 +438,27 @@ class CycleRunner:
             )
             return
 
-        # 6. Risk Engine — valida parámetros del trade con datos de pérdida reales
+        # 7. Slippage estimado pre-trade (F17, regla no negociable 13). Se calcula
+        # sobre los parámetros *propuestos*, que son los únicos que existen antes
+        # de que el Risk Engine se pronuncie — eso es lo que "pre-trade" significa.
+        # El gate de arriba filtra el NO_OPERAR del Aggregator, pero el
+        # ModelDecision puede traer execute=False o entry_type=NO_ENTRY igual
+        # (el schema no las prohíbe): ninguna describe una orden estimable, y
+        # estimarlas de todos modos tiraría el ciclo de este símbolo.
+        impact_bps = self._config.slippage.impact_bps
+        slippage_estimate = (
+            estimate_for_decision(
+                snapshot=snapshot,
+                decision=gpt_decision,
+                margin_usdt=Decimal(str(gpt_decision.margin_usdt)),
+                leverage=gpt_decision.leverage,
+                market_impact_bps=impact_bps,
+            )
+            if is_estimable(gpt_decision)
+            else None
+        )
+
+        # 8. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
         open_position_pnl = self._execution_engine.get_open_position_unrealized_pnl(symbol)
         risk_result: RiskValidationResult = risk_engine.validate(
@@ -416,17 +471,73 @@ class CycleRunner:
             last_trade_margin_usdt=last_trade.margin_usdt if last_trade else None,
             open_position_unrealized_pnl_usdt=open_position_pnl,
             funding_rate=snapshot.funding_rate,
+            slippage_estimate=slippage_estimate,
         )
 
-        # 7. Ejecutar si el Risk Engine aprueba o ajusta
+        # Auditoría del Risk Engine (Anexo B). Es el destino de `reasons`, donde
+        # vive el slippage estimado de la regla 13. Se persiste antes de
+        # ejecutar: si la ejecución falla, la validación que la autorizó ya
+        # quedó registrada.
+        if self._config.storage.log_risk_validations:
+            audit_risk_validation(
+                self._session,
+                risk_result,
+                bot_run_id=self._bot_run_id,
+                # Sin la agregación persistida el vínculo apuntaría a una fila
+                # inexistente: la FK rechaza el insert y se pierde el ciclo del
+                # símbolo. `log_all_decisions` apagado con este encendido es una
+                # combinación válida de config.
+                link_aggregation=self._config.storage.log_all_decisions,
+            )
+
+        # 9. Ejecutar si el Risk Engine aprueba o ajusta
         if risk_result.decision in (RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN):
             log.info(
                 "cycle_runner.executing_plan",
                 symbol=symbol,
                 risk_decision=risk_result.decision.value,
                 direction=gpt_decision.decision.value,
+                estimated_slippage_usdt=(
+                    str(slippage_estimate.estimated_slippage_usdt)
+                    if slippage_estimate is not None
+                    else None
+                ),
             )
-            self._execution_engine.execute_approved_plan(gpt_decision, risk_result)
+            approved = risk_result.adjusted_parameters
+            if approved is None:
+                # Invariante del validator de RiskValidationResult para
+                # APPROVE/ADJUST_DOWN. Si se rompiera, persistir el estimado
+                # propuesto guardaría un número que no describe la orden
+                # colocada: mejor fallar ruidoso que auditar algo falso.
+                raise RuntimeError(
+                    f"RiskValidationResult.decision={risk_result.decision} sin "
+                    f"adjusted_parameters (validation_id={risk_result.validation_id})"
+                )
+
+            # El estimado que se persiste tiene que describir la orden que se
+            # coloca. Sólo hace falta recalcularlo cuando el Risk Engine cambió
+            # los parámetros (ADJUST_DOWN): en un APPROVE plano el propuesto ya
+            # es exactamente ese. Y si no había estimado —decisión no estimable—
+            # no se recalcula nada: volver a llamar sin el guard de
+            # `is_estimable` lanzaría acá, después de que la validación APPROVE
+            # ya quedó persistida, dejando en auditoría un trade aprobado que
+            # nunca se ejecutó y sin traza de por qué.
+            executed_estimate = slippage_estimate
+            parameters_changed = (
+                approved.margin_usdt != Decimal(str(gpt_decision.margin_usdt))
+                or approved.leverage != gpt_decision.leverage
+            )
+            if slippage_estimate is not None and parameters_changed:
+                executed_estimate = estimate_for_decision(
+                    snapshot=snapshot,
+                    decision=gpt_decision,
+                    margin_usdt=approved.margin_usdt,
+                    leverage=approved.leverage,
+                    market_impact_bps=impact_bps,
+                )
+            self._execution_engine.execute_approved_plan(
+                gpt_decision, risk_result, slippage_estimate=executed_estimate
+            )
         else:
             log.info(
                 "cycle_runner.risk_blocked",

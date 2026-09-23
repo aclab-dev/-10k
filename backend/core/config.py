@@ -1,6 +1,7 @@
 """Config loader: carga config.yaml (Anexo A) con override por env vars y validacion al boot."""
 
 import os
+from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -346,6 +347,49 @@ class LiquidationSafetyConfig(BaseModel):
     block_if_stop_after_liquidation: bool
 
 
+#: Tope de `slippage.market_impact_bps` (100 BPS = 1 % del precio).
+_MAX_MARKET_IMPACT_BPS = 100.0
+
+
+class SlippageConfig(BaseModel):
+    """Parámetros de la estimación de slippage pre-trade (regla no negociable 13).
+
+    No hay flag `enabled` a propósito: un interruptor para apagar la estimación
+    sería exactamente la violación que esta config viene a cerrar ("sin
+    estimación de fees, slippage y funding → no se opera"). Para desactivar el
+    colchón de impacto y quedarse sólo con la media horquilla, poner
+    `market_impact_bps: 0.0`.
+    """
+
+    market_impact_bps: float
+
+    @field_validator("market_impact_bps")
+    @classmethod
+    def impact_within_bounds(cls, v: float) -> float:
+        # La cota superior existe para que un typo (200 donde iba 2.0) falle al
+        # boot y no se persista como estimación. 100 BPS = 1% del precio ya es
+        # un orden de magnitud por encima de cualquier impacto plausible en los
+        # pares líquidos que opera el bot; a partir de 10 000 el fill esperado
+        # de un SELL se vuelve negativo.
+        if not 0 <= v <= _MAX_MARKET_IMPACT_BPS:
+            raise ConfigError(
+                f"slippage.market_impact_bps={v} debe estar en [0, {_MAX_MARKET_IMPACT_BPS}]"
+            )
+        return v
+
+    @property
+    def impact_bps(self) -> Decimal:
+        """`market_impact_bps` como Decimal, que es como lo consume el cálculo.
+
+        El campo es float como todo el resto de la config, pero los consumidores
+        trabajan en Decimal. La conversión vive acá y no repetida en cada call
+        site: `Decimal(float)` arrastra el error binario del float, así que hay
+        que pasar por `str()`, y un call site que se olvide introduce un sesgo
+        silencioso en un número que se persiste como evidencia de auditoría.
+        """
+        return Decimal(str(self.market_impact_bps))
+
+
 class FundingGateConfig(BaseModel):
     """Gate de funding del Risk Engine (F17, regla 14 de la checklist LIVE).
 
@@ -575,6 +619,7 @@ class AppConfig(BaseModel):
     connection_health: ConnectionHealthConfig
     idempotency: IdempotencyConfig
     liquidation_safety: LiquidationSafetyConfig
+    slippage: SlippageConfig
     funding_gate: FundingGateConfig
     capital_management: CapitalManagementConfig
     position_management: PositionManagementConfig

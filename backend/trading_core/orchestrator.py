@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.backtesting.slippage_model import SlippageModel
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import APP_VERSION, AppConfig, Environment, get_config
 from backend.decision_engine.aggregator import DecisionAggregator
@@ -187,7 +188,15 @@ class Orchestrator:
             )
 
         initial_balance = Decimal(str(cfg.challenge.initial_balance_usdt))
-        adapter = PaperAdapter(initial_balance_usdt=initial_balance)
+        # El mismo impacto en BPS que usa la estimación pre-trade: si el
+        # simulador se quedara con el default de SlippageModel, tocar
+        # `slippage.market_impact_bps` movería sólo el estimado y
+        # `orders.estimated_slippage_usdt` divergiría de `orders.slippage_usdt`
+        # en PAPER por puro desacople de config (F17 [162]).
+        adapter = PaperAdapter(
+            initial_balance_usdt=initial_balance,
+            slippage_model=SlippageModel(market_bps=cfg.slippage.impact_bps),
+        )
         db_session = session or get_session_factory()()
 
         # Debe resolverse ANTES de crear el bot_run nuevo: get_most_recent()
@@ -380,6 +389,12 @@ class Orchestrator:
         """Arma el PositionTickService (F14) con el PositionManager compartido de
         ExecutionEngine y una fuente de mark_price real.
 
+        Fuente de bid/ask: `mds.get_last_book`, el mismo cache. Hace que las
+        órdenes de cierre crucen el spread igual que las de entrada en PAPER
+        (F17 [162]); sin él el PnL simulado quedaba optimista por media
+        horquilla en cada salida. A diferencia de mark_price, su ausencia no
+        saltea el símbolo: el cierre simplemente llena al mark_price.
+
         Fuente de mark_price: `mds.get_last_price`, el cache en memoria que
         MarketDataCycleService puebla en cada tick exitoso. CycleRunner tickea
         market_data_service antes que position_tick_service (ver cycle_runner.py),
@@ -405,7 +420,15 @@ class Orchestrator:
                 )
             return price
 
-        return PositionTickService(position_manager, get_mark_price=get_mark_price)
+        def get_book(symbol: str) -> tuple[Decimal, Decimal] | None:
+            # Opcional por contrato: si todavía no hay snapshot para el símbolo,
+            # el cierre llena al mark_price en vez de saltearse. Misma lectura
+            # de dict en memoria que get_mark_price, sin I/O.
+            return mds.get_last_book(symbol)
+
+        return PositionTickService(
+            position_manager, get_mark_price=get_mark_price, get_book=get_book
+        )
 
     def _build_reconciliation_gate(
         self,
