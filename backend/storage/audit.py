@@ -423,9 +423,10 @@ def audit_decision_aggregation(
 ) -> DecisionAggregation:
     """Persist a DecisionAggregationResult (Anexo B, tabla decision_aggregations).
 
-    `decision_id` apunta a `decisions.id`: la FK es `ondelete=SET NULL` y la
-    columna nullable, así que si la decisión no se persistió la fila entra
-    igual con el vínculo roto en vez de tumbar el ciclo.
+    `decision_id` apunta a `decisions.id`. La columna es nullable y la FK es
+    `ondelete=SET NULL`, pero eso sólo describe qué pasa al *borrar* la
+    decisión: insertar un id que no existe viola la FK igual. Por eso el caller
+    persiste la decisión antes, o no llama a esta función.
     """
     record = DecisionAggregation(**result.to_db_kwargs(bot_run_id))
     session.add(record)
@@ -447,6 +448,7 @@ def audit_risk_validation(
     result: RiskValidationResult,
     *,
     bot_run_id: str,
+    link_aggregation: bool = True,
 ) -> RiskValidation:
     """Persist a RiskValidationResult (Anexo B, tabla risk_validations).
 
@@ -455,8 +457,17 @@ def audit_risk_validation(
     persiste en los cuatro resultados (APPROVE, ADJUST_DOWN, BLOCK, NO_OPERAR):
     un trade rechazado es tan auditable como uno ejecutado, y sin la fila del
     rechazo no hay forma de revisar después por qué se descartó.
+
+    `link_aggregation=False` guarda la fila con `decision_aggregation_id` en
+    NULL. Lo usa el caller que no persistió la agregación — `log_all_decisions`
+    apagado con `log_risk_validations` encendido es una combinación válida —:
+    apuntar a una agregación inexistente viola la FK al insertar y cuesta el
+    ciclo del símbolo entero. Vale más la validación sin vínculo que sin fila.
     """
-    record = RiskValidation(**result.to_db_kwargs(bot_run_id))
+    kwargs = result.to_db_kwargs(bot_run_id)
+    if not link_aggregation:
+        kwargs["decision_aggregation_id"] = None
+    record = RiskValidation(**kwargs)
     session.add(record)
     session.flush()
 

@@ -1204,3 +1204,45 @@ def test_process_symbol_skips_second_estimate_for_non_estimable_decision(
     # estimado y sin excepción en el camino.
     execution_engine.execute_approved_plan.assert_called_once()
     assert execution_engine.execute_approved_plan.call_args.kwargs["slippage_estimate"] is None
+
+
+def test_process_symbol_survives_risk_validations_without_decisions(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`log_all_decisions=False` + `log_risk_validations=True` no puede costar el ciclo.
+
+    Sin la agregación persistida, vincularla desde `risk_validations` apunta a
+    una fila inexistente: `ondelete=SET NULL` describe qué pasa al *borrar*, no
+    al insertar, así que Postgres rechaza el insert, el savepoint del símbolo
+    revierte y ese símbolo pierde el ciclo sin ejecutar — y en silencio. La
+    validación se guarda igual, con el vínculo en NULL.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    base = runner._config  # type: ignore[attr-defined]
+    runner._config = base.model_copy(  # type: ignore[attr-defined]
+        update={"storage": base.storage.model_copy(update={"log_all_decisions": False})}
+    )
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    assert db_session.query(DecisionRow).count() == 0
+    assert db_session.query(DecisionAggregationRow).count() == 0
+    validation = db_session.query(RiskValidationRow).one()
+    assert validation.decision_aggregation_id is None
+    # El ciclo completó: el símbolo no se perdió.
+    execution_engine.execute_approved_plan.assert_called_once()
+
+
+def test_process_symbol_links_the_aggregation_when_it_was_persisted(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Control del anterior: con ambos flags encendidos el vínculo sí se guarda."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    aggregation = db_session.query(DecisionAggregationRow).one()
+    validation = db_session.query(RiskValidationRow).one()
+    assert validation.decision_aggregation_id == aggregation.id

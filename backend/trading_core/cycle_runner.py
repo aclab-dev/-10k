@@ -459,7 +459,16 @@ class CycleRunner:
         # ejecutar: si la ejecución falla, la validación que la autorizó ya
         # quedó registrada.
         if self._config.storage.log_risk_validations:
-            audit_risk_validation(self._session, risk_result, bot_run_id=self._bot_run_id)
+            audit_risk_validation(
+                self._session,
+                risk_result,
+                bot_run_id=self._bot_run_id,
+                # Sin la agregación persistida el vínculo apuntaría a una fila
+                # inexistente: la FK rechaza el insert y se pierde el ciclo del
+                # símbolo. `log_all_decisions` apagado con este encendido es una
+                # combinación válida de config.
+                link_aggregation=self._config.storage.log_all_decisions,
+            )
 
         # 9. Ejecutar si el Risk Engine aprueba o ajusta
         if risk_result.decision in (RiskDecision.APPROVE, RiskDecision.ADJUST_DOWN):
