@@ -9,7 +9,7 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -394,6 +394,7 @@ def test_tick_calls_market_data_before_connection_health_monitor(heartbeat_file:
 def test_tick_calls_reconciliation_gate_when_provided(heartbeat_file: Path) -> None:
     sm = BotStateMachine(initial=BotState.ACTIVE)
     gate = Mock(spec=ReconciliationGate)
+    gate.run_and_enforce.return_value = None
     runner = CycleRunner(
         sm, interval_seconds=1, heartbeat_file=heartbeat_file, reconciliation_gate=gate
     )
@@ -700,6 +701,66 @@ def test_run_decision_pipeline_skips_new_entries_in_safe_mode_but_keeps_looping(
     # Se resincronizo y evaluo cada simbolo (no aborto tras el primero, a
     # diferencia del caso KILL_SWITCH_TRIGGERED de arriba).
     assert sync_calls == 2
+
+
+def test_run_decision_pipeline_skips_entries_for_unverified_symbols_only(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """F17 [164]: un simbolo cuya posicion/ordenes no se pudieron leer
+    (failed_symbols de la reconciliacion) no abre entradas nuevas — podria
+    duplicar exposicion — pero el resto de simbolos opera normal, sin SAFE_MODE."""
+    bot_run = _make_bot_run(db_session)
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        session=db_session,
+        bot_run_id=bot_run.id,
+    )
+
+    processed: list[str] = []
+
+    async def fake_process_symbol(snapshot: Mock) -> None:
+        processed.append(snapshot.symbol)
+
+    runner._process_symbol = fake_process_symbol  # type: ignore[method-assign]
+
+    snapshots = [Mock(symbol="BTCUSDT"), Mock(symbol="ETHUSDT")]
+    asyncio.run(
+        runner._run_decision_pipeline(  # type: ignore[attr-defined]
+            snapshots, frozenset({"BTCUSDT"})
+        )
+    )
+
+    assert processed == ["ETHUSDT"]
+    assert sm.state == BotState.ACTIVE
+
+
+def test_tick_passes_reconciliation_failed_symbols_to_decision_pipeline(
+    heartbeat_file: Path,
+) -> None:
+    """El tick propaga report.failed_symbols del gate al pipeline de decision."""
+    sm = BotStateMachine(initial=BotState.ACTIVE)
+    gate = Mock(spec=ReconciliationGate)
+    gate.run_and_enforce.return_value = Mock(failed_symbols=["BTCUSDT"])
+    market_data = Mock(spec=MarketDataCycleService)
+    snapshot = Mock(symbol="BTCUSDT")
+    market_data.tick_all.return_value = [snapshot]
+    runner = CycleRunner(
+        sm,
+        interval_seconds=1,
+        heartbeat_file=heartbeat_file,
+        market_data_service=market_data,
+        reconciliation_gate=gate,
+    )
+    pipeline = AsyncMock()
+    runner._run_decision_pipeline = pipeline  # type: ignore[method-assign]
+
+    with patch.object(CycleRunner, "_decision_pipeline_ready", True):
+        runner._tick()  # type: ignore[attr-defined]
+
+    pipeline.assert_awaited_once_with([snapshot], frozenset({"BTCUSDT"}))
 
 
 # ---------------------------------------------------------------------------

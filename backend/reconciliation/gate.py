@@ -40,18 +40,32 @@ wireó este componente solo pide estos tres flags.
 `failed_symbols`: si `get_position`/`get_open_orders` falla para un símbolo,
 `ReconciliationEngine` lo marca como no verificado (`report.is_complete` pasa
 a `False`) pero NO agrega ninguna discrepancia por ese símbolo — así que un
-reporte incompleto, sin más, no bloquea nuevas entradas acá (mismo criterio de
-aislamiento por símbolo que `MarketDataCycleService`: un fallo de transporte
-puntual no debe frenar todo el ciclo). Si ese símbolo
+reporte incompleto por símbolos, sin más, no bloquea nuevas entradas acá
+(mismo criterio de aislamiento por símbolo que `MarketDataCycleService`: un
+fallo de transporte puntual no debe frenar todo el ciclo). Si ese símbolo
 tenía además una condición realmente bloqueante, esa sí se evalúa igual sobre
 lo que se pudo reconciliar de otros símbolos.
+Lo que sí hace `CycleRunner` con `report.failed_symbols`: saltear las entradas
+nuevas de esos símbolos en ese ciclo (sin posición legible podría duplicar
+exposición), sin SAFE_MODE global — no es responsabilidad de este gate.
+
+`balance_fetch_failed`: si `adapter.get_account_state()` falla,
+`ReconciliationEngine` lo marca en `report.balance_fetch_failed`. A
+diferencia de `failed_symbols`, esto SÍ bloquea siempre — no hay flag de
+config para desactivarlo (decisión escrita en la card de Trello F17 [164]):
+el balance no es "un símbolo más" aislable, es transversal a toda la cuenta,
+y sin poder leerlo no hay base para seguir abriendo posiciones con
+seguridad. Este es el único criterio de bloqueo de este gate que contradice
+a propósito la asimetría de aislamiento por símbolo del PR #128 — esa
+asimetría sigue intacta para `get_position`/`get_open_orders`.
 
 `manual_balance_change_policy` (hoy siempre `UPDATE_ACCOUNT_STATE_ONLY`) no
-tiene ningún efecto acá a propósito: `ReconciliationEngine` no compara balance
-local vs exchange en su versión actual (no hay ningún `DiscrepancyType` de
-balance) — no hay ningún cambio de balance que este gate pudiera revertir.
-El valor queda leído desde `config.yaml` para cuando exista esa detección,
-sin que este wiring necesite tocarse de nuevo.
+tiene ningún efecto acá a propósito: `ReconciliationEngine` no compara
+*valores* de balance local vs exchange (no hay ningún `DiscrepancyType` de
+balance) — solo verifica que la lectura sea posible. No hay ningún cambio de
+balance que este gate pudiera revertir. El valor queda leído desde
+`config.yaml` para cuando exista esa detección, sin que este wiring necesite
+tocarse de nuevo.
 """
 
 from __future__ import annotations
@@ -121,7 +135,9 @@ class ReconciliationGate:
 
         Un reporte con `failed_symbols` (fetch fallido contra el exchange para
         algún símbolo) no bloquea por sí solo — solo lo hacen las 3 condiciones
-        de `_blocking_reasons`, evaluadas sobre lo que sí se pudo reconciliar.
+        de config en `_blocking_reasons`, evaluadas sobre lo que sí se pudo
+        reconciliar. `balance_fetch_failed` es la excepción: bloquea siempre,
+        sin flag de config (ver docstring del módulo).
         """
         if not (self._config.enabled and self._config.run_before_new_entries):
             return None
@@ -157,6 +173,11 @@ class ReconciliationGate:
 
     def _blocking_reasons(self, report: ReconciliationReport) -> list[str]:
         reasons: list[str] = []
+
+        # Sin flag de config a propósito: el balance no es aislable por
+        # símbolo, ver docstring del módulo.
+        if report.balance_fetch_failed:
+            reasons.append("fallo de lectura de balance de cuenta")
 
         if self._config.block_on_orphan_orders:
             orphan = [
@@ -204,6 +225,7 @@ class ReconciliationGate:
                         d.model_dump(mode="json") for d in report.order_discrepancies
                     ],
                     "failed_symbols": report.failed_symbols,
+                    "balance_fetch_failed": report.balance_fetch_failed,
                 },
             )
 

@@ -268,17 +268,24 @@ class CycleRunner:
             self._connection_health_monitor.check_and_enforce(snapshots)
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
+        unverified_symbols: frozenset[str] = frozenset()
         if self._reconciliation_gate is not None:
-            self._reconciliation_gate.run_and_enforce()
+            report = self._reconciliation_gate.run_and_enforce()
+            if report is not None:
+                unverified_symbols = frozenset(report.failed_symbols)
 
         if self._decision_pipeline_ready and snapshots:
-            asyncio.run(self._run_decision_pipeline(snapshots))
+            asyncio.run(self._run_decision_pipeline(snapshots, unverified_symbols))
 
     # ------------------------------------------------------------------
     # Decision pipeline
     # ------------------------------------------------------------------
 
-    async def _run_decision_pipeline(self, snapshots: list[MarketSnapshot]) -> None:
+    async def _run_decision_pipeline(
+        self,
+        snapshots: list[MarketSnapshot],
+        unverified_symbols: frozenset[str] = frozenset(),
+    ) -> None:
         """Ejecuta GPT → Aggregator → Risk → Execution para cada snapshot valido.
 
         Los simbolos se procesan secuencialmente para evitar concurrencia sobre
@@ -306,6 +313,13 @@ class CycleRunner:
         can_trade()==False solo saltea ese simbolo y sigue con el resto: SAFE_MODE
         no detiene el loop (is_running() sigue True), asi que PositionTickService
         debe seguir gestionando salidas de simbolos posteriores en el mismo tick.
+
+        `unverified_symbols` son los `failed_symbols` de la reconciliacion de este
+        tick: simbolos cuya posicion/ordenes no se pudieron leer del exchange.
+        Sin saber si ya hay una posicion abierta ahi, una entrada nueva podria
+        duplicar exposicion, asi que se saltean igual que con can_trade()==False
+        (spec 3.6: "no operar si no se puede leer posiciones u ordenes activas").
+        Es aislable por simbolo: el resto opera normal, sin SAFE_MODE global.
         """
         assert self._session is not None
         for snapshot in snapshots:
@@ -321,6 +335,12 @@ class CycleRunner:
                 log.info(
                     "cycle_runner.new_entries_blocked_by_state",
                     state=self._state_machine.state.value,
+                    symbol=snapshot.symbol,
+                )
+                continue
+            if snapshot.symbol in unverified_symbols:
+                log.warning(
+                    "cycle_runner.new_entries_blocked_unverified_symbol",
                     symbol=snapshot.symbol,
                 )
                 continue

@@ -48,6 +48,11 @@ def _incomplete_report(bot_run_id: str) -> ReconciliationReport:
     return ReconciliationReport(bot_run_id=bot_run_id, failed_symbols=["BTCUSDT"])
 
 
+def _balance_failed_report(bot_run_id: str) -> ReconciliationReport:
+    """Reporte con fallo de lectura de balance, sin ninguna otra discrepancia."""
+    return ReconciliationReport(bot_run_id=bot_run_id, balance_fetch_failed=True)
+
+
 def _report_with(
     bot_run_id: str,
     *,
@@ -279,6 +284,41 @@ class TestBlockingReasons:
 
         assert sm.state == BotState.ACTIVE
         assert session.scalars(select(SystemEvent)).first() is None
+
+
+class TestBalanceFetchFailure:
+    def test_balance_fetch_failure_triggers_safe_mode(self, session: Session) -> None:
+        bot_run = make_bot_run(session, status="RUNNING")
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        report = _balance_failed_report(bot_run.id)
+        gate = _gate(session, bot_run.id, report, state_machine=sm)
+
+        gate.run_and_enforce()
+
+        assert sm.state == BotState.SAFE_MODE
+        events = session.scalars(select(SystemEvent)).all()
+        assert len(events) == 1
+        assert events[0].event_type == "RECONCILIATION_BLOCKED"
+        assert events[0].details["balance_fetch_failed"] is True
+
+    def test_balance_fetch_failure_has_no_disabling_flag(self, session: Session) -> None:
+        """A diferencia de las 3 discrepancias de config.yaml, esto bloquea
+        siempre — no hay ninguna forma de desactivarlo (decision F17 [164])."""
+        bot_run = make_bot_run(session, status="RUNNING")
+        sm = BotStateMachine(initial=BotState.ACTIVE)
+        config = _ALL_FLAGS_ON.model_copy(
+            update={
+                "block_on_orphan_orders": False,
+                "block_on_untracked_positions": False,
+                "block_on_unconfirmed_protection": False,
+            }
+        )
+        report = _balance_failed_report(bot_run.id)
+        gate = _gate(session, bot_run.id, report, config=config, state_machine=sm)
+
+        gate.run_and_enforce()
+
+        assert sm.state == BotState.SAFE_MODE
 
 
 class TestStateHandling:
