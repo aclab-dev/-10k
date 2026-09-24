@@ -922,3 +922,69 @@ class TestFundingGateConfigValidation:
             FundingGateConfig(
                 enabled=True, max_adverse_funding_rate=bad, block_if_funding_unknown=True
             )
+
+
+class TestRiskEngineAntiLeverageEscalationIntegration:
+    """check_anti_leverage_escalation está wireado en la fase BLOCK de `validate`."""
+
+    def test_higher_leverage_after_account_loss_blocks(self) -> None:
+        decision = _long_decision(leverage=6)
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            last_account_trade_pnl_usdt=Decimal("-2.0"),
+            last_account_trade_leverage=5,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "anti_leverage_escalation" in result.reasons
+        assert "Escalada de leverage" in result.reasons["anti_leverage_escalation"]
+
+    def test_same_leverage_after_account_loss_approves(self) -> None:
+        decision = _long_decision(leverage=5)
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            last_account_trade_pnl_usdt=Decimal("-2.0"),
+            last_account_trade_leverage=5,
+        )
+        assert result.decision == RiskDecision.APPROVE
+        assert "anti_leverage_escalation" in result.reasons
+
+    def test_uses_account_trade_not_symbol_trade(self) -> None:
+        """Ganancia en el símbolo no habilita escalar si la cuenta viene de pérdida."""
+        decision = _long_decision(leverage=6)
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            last_trade_pnl_usdt=Decimal("3.0"),
+            last_trade_margin_usdt=Decimal("5.0"),
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            last_account_trade_pnl_usdt=Decimal("-2.0"),
+            last_account_trade_leverage=5,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "Escalada de leverage" in result.reasons["anti_leverage_escalation"]
+
+    def test_without_account_history_approves(self) -> None:
+        """Callers que no proveen el último trade de la cuenta (p. ej. replay) no se bloquean."""
+        decision = _long_decision(leverage=6)
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            _config(),
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+        )
+        assert result.decision == RiskDecision.APPROVE

@@ -11,7 +11,8 @@ Distinción crítica (regla no negociable del proyecto):
 
 Orden de precedencia para trades ejecutables:
 1. Fase NO_OPERAR: si execute=False → retorno inmediato con NO_OPERAR.
-2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación, funding).
+2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación, funding,
+   anti-martingala, anti-escalada de leverage, anti-averaging).
    Cualquier falla → BLOCK inmediato.
 3. Fase ADJUST_DOWN: margin cap, leverage cap.
    Al menos una falla → ADJUST_DOWN con parámetros reducidos.
@@ -32,6 +33,7 @@ from backend.risk_engine.checks import (
     CheckOutcome,
     CheckResult,
     check_anti_averaging,
+    check_anti_leverage_escalation,
     check_anti_martingala,
     check_daily_drawdown,
     check_funding_gate,
@@ -58,6 +60,8 @@ def validate(
     *,
     funding_rate: float | None,
     slippage_estimate: SlippageEstimate | None = None,
+    last_account_trade_pnl_usdt: Decimal | None = None,
+    last_account_trade_leverage: int | None = None,
 ) -> RiskValidationResult:
     """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
 
@@ -84,6 +88,13 @@ def validate(
         slippage_estimate: estimación de slippage pre-trade (F17, regla 13).
             Informativa: se registra en `reasons` para auditoría y nunca
             bloquea. None = el caller no la proveyó (queda asentado como tal).
+        last_account_trade_pnl_usdt: PnL realizado del último trade cerrado de
+            la cuenta, en cualquier símbolo (None = sin historial).
+        last_account_trade_leverage: leverage de ese mismo trade (None = sin
+            historial). Ambos: Fase BLOCK, usados por
+            check_anti_leverage_escalation (F17, regla 28). Son globales y no
+            por símbolo, a diferencia de los `last_trade_*` de anti-martingala
+            (ADR F17-01).
 
     Returns:
         RiskValidationResult con decisión APPROVE / ADJUST_DOWN / BLOCK / NO_OPERAR.
@@ -137,6 +148,9 @@ def validate(
         check_liquidation_safety(decision, config.liquidation_safety),
         check_funding_gate(decision, funding_rate, config.funding_gate),
         check_anti_martingala(original_margin, last_trade_pnl_usdt, last_trade_margin_usdt),
+        check_anti_leverage_escalation(
+            original_leverage, last_account_trade_pnl_usdt, last_account_trade_leverage
+        ),
         check_anti_averaging(open_position_unrealized_pnl_usdt),
         # Informativo, siempre PASS: aporta el slippage estimado a `reasons`
         # sin poder alterar la decisión. Va en esta lista, y no en una aparte,
