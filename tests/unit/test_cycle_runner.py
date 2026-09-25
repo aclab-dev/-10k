@@ -626,7 +626,7 @@ def test_run_decision_pipeline_aborts_remaining_symbols_after_kill_switch(
 
     processed: list[str] = []
 
-    async def fake_process_symbol(snapshot: Mock) -> None:
+    async def fake_process_symbol(snapshot: Mock, positions_count_reliable: bool = True) -> None:
         processed.append(snapshot.symbol)
         # Simula el kill switch disparado desde la API mientras este simbolo
         # estaba "en medio de su llamada a GPT".
@@ -678,7 +678,7 @@ def test_run_decision_pipeline_skips_new_entries_in_safe_mode_but_keeps_looping(
 
     processed: list[str] = []
 
-    async def fake_process_symbol(snapshot: Mock) -> None:
+    async def fake_process_symbol(snapshot: Mock, positions_count_reliable: bool = True) -> None:
         processed.append(snapshot.symbol)
 
     runner._process_symbol = fake_process_symbol  # type: ignore[method-assign]
@@ -721,7 +721,7 @@ def test_run_decision_pipeline_skips_entries_for_unverified_symbols_only(
 
     processed: list[str] = []
 
-    async def fake_process_symbol(snapshot: Mock) -> None:
+    async def fake_process_symbol(snapshot: Mock, positions_count_reliable: bool = True) -> None:
         processed.append(snapshot.symbol)
 
     runner._process_symbol = fake_process_symbol  # type: ignore[method-assign]
@@ -743,7 +743,7 @@ def test_tick_passes_reconciliation_failed_symbols_to_decision_pipeline(
     """El tick propaga report.failed_symbols del gate al pipeline de decision."""
     sm = BotStateMachine(initial=BotState.ACTIVE)
     gate = Mock(spec=ReconciliationGate)
-    gate.run_and_enforce.return_value = Mock(failed_symbols=["BTCUSDT"])
+    gate.run_and_enforce.return_value = Mock(failed_symbols=["BTCUSDT"], is_complete=False)
     market_data = Mock(spec=MarketDataCycleService)
     snapshot = Mock(symbol="BTCUSDT")
     market_data.tick_all.return_value = [snapshot]
@@ -760,7 +760,7 @@ def test_tick_passes_reconciliation_failed_symbols_to_decision_pipeline(
     with patch.object(CycleRunner, "_decision_pipeline_ready", True):
         runner._tick()  # type: ignore[attr-defined]
 
-    pipeline.assert_awaited_once_with([snapshot], frozenset({"BTCUSDT"}))
+    pipeline.assert_awaited_once_with([snapshot], frozenset({"BTCUSDT"}), False)
 
 
 # ---------------------------------------------------------------------------
@@ -1307,3 +1307,31 @@ def test_process_symbol_links_the_aggregation_when_it_was_persisted(
     aggregation = db_session.query(DecisionAggregationRow).one()
     validation = db_session.query(RiskValidationRow).one()
     assert validation.decision_aggregation_id == aggregation.id
+
+
+def test_process_symbol_passes_snapshot_open_positions_count_to_risk_engine(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"open_positions_count": 1})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    spy = Mock(return_value=_blocked_risk_result(snapshot.symbol))
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    assert spy.call_args.kwargs["open_positions_count"] == 1
+
+
+def test_process_symbol_passes_none_count_when_reconciliation_incomplete(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _make_snapshot().model_copy(update={"open_positions_count": 0})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    spy = Mock(return_value=_blocked_risk_result(snapshot.symbol))
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(
+        runner._process_symbol(snapshot, positions_count_reliable=False)  # type: ignore[attr-defined]
+    )
+
+    assert spy.call_args.kwargs["open_positions_count"] is None

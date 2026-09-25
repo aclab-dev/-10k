@@ -263,6 +263,7 @@ def _validate_neutral_funding(
         last_trade_margin_usdt,
         open_position_unrealized_pnl_usdt,
         funding_rate=funding_rate,
+        open_positions_count=0,
     )
 
 

@@ -193,6 +193,7 @@ class HistoricalReplayEngine:
                 total_loss_usdt=total_loss_usdt,
                 config=config,
                 funding_rate=snapshot.funding_rate,
+                open_positions_count=snapshot.open_positions_count,
                 slippage_estimate=slippage_estimate,
             )
             results.append(
