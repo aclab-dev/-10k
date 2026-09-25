@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from backend.core.config import get_config
 from backend.risk_engine.checks import CheckOutcome, check_max_open_positions
 from backend.risk_engine.engine import validate
-from backend.risk_engine.schemas import RiskDecision
+from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 from tests.unit.test_risk_engine_validation import _aggregation, _long_decision
 
 _LIMIT = 1
@@ -64,16 +62,22 @@ class TestValidateAplicaElLimite:
     def test_conteo_no_confiable_bloquea(self) -> None:
         assert self._validate(None) == RiskDecision.BLOCK
 
-    @pytest.mark.parametrize("count", [0])
-    def test_el_check_queda_auditado_en_reasons(self, count: int) -> None:
+    def test_el_check_queda_auditado_en_reasons_cuando_pasa(self) -> None:
+        assert "max_open_positions" in self._validate_result(0).reasons
+
+    def test_el_check_queda_auditado_en_reasons_cuando_bloquea(self) -> None:
+        limit = get_config().trading.max_open_positions
+        assert "max_open_positions" in self._validate_result(limit).reasons
+
+    @staticmethod
+    def _validate_result(open_positions_count: int) -> RiskValidationResult:
         decision = _long_decision()
-        result = validate(
+        return validate(
             _aggregation(decision),
             decision,
             Decimal("0"),
             Decimal("0"),
             get_config(),
             funding_rate=0.0001,
-            open_positions_count=count,
+            open_positions_count=open_positions_count,
         )
-        assert "max_open_positions" in result.reasons

@@ -1335,3 +1335,71 @@ def test_process_symbol_passes_none_count_when_reconciliation_incomplete(
     )
 
     assert spy.call_args.kwargs["open_positions_count"] is None
+
+
+def _wire_unique_decisions(runner: CycleRunner, snapshot: MarketSnapshot) -> None:
+    """GPT y Aggregator mockeados que devuelven una decision/agregacion nueva por
+    llamada: reutilizar la misma violaria los UNIQUE de auditoria en el 2do simbolo."""
+    decisions: list[ModelDecision] = []
+
+    async def fake_request(*_a: object, symbol: str, **_k: object) -> ModelDecision:
+        decisions.append(_make_gpt_decision(symbol))
+        return decisions[-1]
+
+    def fake_aggregate(*_a: object, **_k: object) -> DecisionAggregationResult:
+        d = decisions[-1]
+        return DecisionAggregationResult(
+            decision_id=d.decision_id,
+            symbol=d.symbol,
+            timestamp_utc=snapshot.timestamp_utc,
+            contributing_sources=ContributingSources(
+                quant_score=0.80, gpt_context_score=0.85, regime_factor=0.75, volatility_factor=0.70
+            ),
+            aggregated_score=0.78,
+            final_action=DecisionType.LONG,
+        )
+
+    runner._gpt_client.request = fake_request  # type: ignore[attr-defined]
+    runner._aggregator.aggregate = fake_aggregate  # type: ignore[attr-defined]
+
+
+def test_run_decision_pipeline_enforces_max_open_positions_across_symbols_in_same_tick(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #136: el conteo del snapshot se leyo antes del pipeline. Con limite 1 y
+    dos simbolos aprobables, el primero abre y el segundo debe terminar en BLOCK
+    porque `_run_decision_pipeline` suma las posiciones abiertas en este tick."""
+    first = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    second = first.model_copy(update={"symbol": "ETHUSDT"})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, first)
+    _wire_unique_decisions(runner, first)
+    assert runner._config.trading.max_open_positions == 1  # type: ignore[attr-defined]
+    execution_engine.execute_approved_plan.return_value = Mock(position_registered=True)
+    real_validate = risk_engine.validate
+    results: list[RiskValidationResult] = []
+
+    def spy(*args: object, **kwargs: object) -> RiskValidationResult:
+        results.append(real_validate(*args, **kwargs))  # type: ignore[arg-type]
+        return results[-1]
+
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(runner._run_decision_pipeline([first, second]))  # type: ignore[attr-defined]
+
+    assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
+    assert "max_open_positions" in results[1].reasons
+    execution_engine.execute_approved_plan.assert_called_once()
+
+
+def test_run_decision_pipeline_resets_opened_count_every_tick(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, first)
+    _wire_unique_decisions(runner, first)
+    execution_engine.execute_approved_plan.return_value = Mock(position_registered=True)
+
+    asyncio.run(runner._run_decision_pipeline([first]))  # type: ignore[attr-defined]
+    asyncio.run(runner._run_decision_pipeline([first]))  # type: ignore[attr-defined]
+
+    assert execution_engine.execute_approved_plan.call_count == 2
