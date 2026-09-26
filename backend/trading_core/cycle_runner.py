@@ -34,6 +34,7 @@ from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.gpt_client import GPTClient, GPTRequest, RequestPurpose
 from backend.decision_engine.prompt_builder import AccountContext, PromptBuilder, PromptContext
 from backend.decision_engine.schemas import DecisionType, ModelDecision
+from backend.exchange_adapters.schemas import OrderStatus
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.schemas import MarketSnapshot
@@ -561,11 +562,17 @@ class CycleRunner:
                     leverage=approved.leverage,
                     market_impact_bps=impact_bps,
                 )
+            # Se cuenta el intento, no sólo el éxito: si la ejecución queda en un
+            # estado incierto (excepción tras `place_order`, timeout, parcial o
+            # PENDING) la exposición puede existir en el exchange, y el conteo
+            # debe fallar cerrado para los símbolos siguientes del tick. Sólo se
+            # descuenta cuando el resultado es definitivamente sin posición.
+            self._opened_this_tick += 1
             execution = self._execution_engine.execute_approved_plan(
                 gpt_decision, risk_result, slippage_estimate=executed_estimate
             )
-            if execution.position_registered:
-                self._opened_this_tick += 1
+            if execution.order_result.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+                self._opened_this_tick -= 1
         else:
             log.info(
                 "cycle_runner.risk_blocked",

@@ -40,6 +40,7 @@ from backend.decision_engine.schemas import (
     PositionManagementPlan,
     QuantSignalsSection,
 )
+from backend.exchange_adapters.schemas import OrderStatus
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.schemas import (
@@ -1389,6 +1390,86 @@ def test_run_decision_pipeline_enforces_max_open_positions_across_symbols_in_sam
     assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
     assert "max_open_positions" in results[1].reasons
     execution_engine.execute_approved_plan.assert_called_once()
+
+
+def _run_two_symbols_with_first_execution(
+    heartbeat_file: Path,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    first_execution: Mock | Exception,
+) -> tuple[list[RiskValidationResult], Mock]:
+    first = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    second = first.model_copy(update={"symbol": "ETHUSDT"})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, first)
+    _wire_unique_decisions(runner, first)
+    execution_engine.execute_approved_plan.side_effect = [first_execution, Mock()]
+    real_validate = risk_engine.validate
+    results: list[RiskValidationResult] = []
+
+    def spy(*args: object, **kwargs: object) -> RiskValidationResult:
+        results.append(real_validate(*args, **kwargs))  # type: ignore[arg-type]
+        return results[-1]
+
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+    asyncio.run(runner._run_decision_pipeline([first, second]))  # type: ignore[attr-defined]
+    return results, execution_engine.execute_approved_plan
+
+
+@pytest.mark.parametrize("status", [OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING])
+def test_run_decision_pipeline_counts_uncertain_execution_status_toward_limit(
+    heartbeat_file: Path,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    status: OrderStatus,
+) -> None:
+    """PR #136 re-review: un parcial o PENDING ya puede tener exposicion en el
+    exchange, asi que el 2do simbolo del tick debe terminar en BLOCK."""
+    results, execute = _run_two_symbols_with_first_execution(
+        heartbeat_file,
+        db_session,
+        monkeypatch,
+        first_execution=Mock(position_registered=False, order_result=Mock(status=status)),
+    )
+
+    assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
+    assert "max_open_positions" in results[1].reasons
+    execute.assert_called_once()
+
+
+def test_run_decision_pipeline_counts_execution_exception_toward_limit(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #136 re-review: si `execute_approved_plan` lanza (p. ej. timeout tras
+    colocar la orden) no se sabe si la posicion existe: fail-closed."""
+    results, execute = _run_two_symbols_with_first_execution(
+        heartbeat_file,
+        db_session,
+        monkeypatch,
+        first_execution=RuntimeError("timeout"),
+    )
+
+    assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
+    assert "max_open_positions" in results[1].reasons
+    execute.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [OrderStatus.CANCELLED, OrderStatus.FAILED])
+def test_run_decision_pipeline_releases_slot_when_execution_definitively_fails(
+    heartbeat_file: Path,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    status: OrderStatus,
+) -> None:
+    results, execute = _run_two_symbols_with_first_execution(
+        heartbeat_file,
+        db_session,
+        monkeypatch,
+        first_execution=Mock(position_registered=False, order_result=Mock(status=status)),
+    )
+
+    assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.APPROVE]
+    assert execute.call_count == 2
 
 
 def test_run_decision_pipeline_resets_opened_count_every_tick(
