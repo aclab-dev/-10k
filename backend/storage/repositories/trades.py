@@ -57,6 +57,24 @@ class TradeRepository(BaseRepository[Trade]):
         )
         return self._session.scalars(stmt).first()
 
+    def get_last_closed_trade_any_symbol(self, bot_run_id: str) -> Trade | None:
+        """Retorna el último trade cerrado del bot run, sin importar el símbolo.
+
+        Lo usa el anti-escalada de leverage (ADR F17-01): la pérdida que se
+        intentaría recuperar es de la cuenta, no de un par.
+        """
+        stmt = (
+            select(Trade)
+            .where(
+                Trade.bot_run_id == bot_run_id,
+                Trade.status == "CLOSED",
+                Trade.closed_at.is_not(None),
+            )
+            .order_by(Trade.closed_at.desc())
+            .limit(1)
+        )
+        return self._session.scalars(stmt).first()
+
     def list_open(self, bot_run_id: str) -> list[Trade]:
         stmt = select(Trade).where(
             Trade.bot_run_id == bot_run_id,

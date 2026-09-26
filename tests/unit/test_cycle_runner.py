@@ -1009,6 +1009,7 @@ def _slippage_runner(
     trade_repo = Mock()
     trade_repo.get_loss_totals.return_value = (Decimal("0"), Decimal("0"))
     trade_repo.get_last_closed_trade.return_value = None
+    trade_repo.get_last_closed_trade_any_symbol.return_value = None
 
     risk_result = RiskValidationResult(
         aggregation_id=aggregation.aggregation_id,
@@ -1112,6 +1113,45 @@ def test_process_symbol_passes_proposed_estimate_to_risk_engine(
     estimate = seen["slippage_estimate"]
     assert estimate is not None
     assert estimate.estimated_slippage_usdt == proposed.estimated_slippage_usdt
+
+
+def test_process_symbol_passes_last_account_trade_to_anti_leverage_escalation(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-escalada recibe el último trade de la cuenta, no el del símbolo (ADR F17-01).
+
+    El último trade del símbolo (ganador, 3x) sigue alimentando anti-martingala;
+    el último de la cuenta (perdedor en otro par, 4x) es el que llega a
+    `last_account_trade_*`.
+    """
+    decision = _slippage_decision(margin_usdt=5.0, leverage=3)
+    approved = AdjustedParameters(margin_usdt=Decimal("5"), leverage=3)
+    runner, _engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.APPROVE, approved
+    )
+    trade_repo = runner._trade_repo  # type: ignore[attr-defined]
+    trade_repo.get_last_closed_trade.return_value = Mock(
+        net_pnl=Decimal("1"), margin_usdt=Decimal("5"), leverage=3
+    )
+    trade_repo.get_last_closed_trade_any_symbol.return_value = Mock(
+        net_pnl=Decimal("-2"), margin_usdt=Decimal("5"), leverage=4
+    )
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs: object):
+        seen.update(kwargs)
+        return runner._risk_result_for_test  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(risk_engine, "validate", _capture)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    trade_repo.get_last_closed_trade_any_symbol.assert_called_once_with(
+        runner._bot_run_id  # type: ignore[attr-defined]
+    )
+    assert seen["last_trade_pnl_usdt"] == Decimal("1")
+    assert seen["last_account_trade_pnl_usdt"] == Decimal("-2")
+    assert seen["last_account_trade_leverage"] == 4
 
 
 def test_process_symbol_skips_estimate_for_non_executable_decision(

@@ -548,6 +548,110 @@ def check_anti_martingala(
     )
 
 
+def check_anti_leverage_escalation(
+    proposed_leverage: int,
+    last_trade_pnl_usdt: Decimal | None,
+    last_trade_leverage: int | None,
+) -> CheckResult:
+    """Bloquea subir el leverage después de una pérdida (F17, regla 28 de la Sección 3.6).
+
+    Complementa a `check_anti_martingala`: aquel cubre el tamaño del margen,
+    éste el apalancamiento. Implementa la regla no negociable "no aumentar
+    apalancamiento para recuperar pérdidas".
+
+    "El último trade" es el último trade CERRADO del bot run **en cualquier
+    símbolo** (`TradeRepository.get_last_closed_trade_any_symbol`), es decir,
+    global a la cuenta. Ver ADR `docs/decisions/F17-01-anti-leverage-escalation-scope.md`:
+    la tabla de límites del spec (§1) mide las pérdidas sobre el capital total y prioriza la
+    seguridad sobre la rentabilidad (§2), así que perder en un par y subir el
+    leverage en otro también es "aumentar apalancamiento para recuperar".
+
+    `proposed_leverage` es el leverage de la decisión antes de
+    `check_leverage_cap` (§3.9: el Risk Engine valida la propuesta, no un
+    valor ya ajustado). Una propuesta que sube el leverage tras una pérdida se
+    bloquea aunque el cap la hubiera recortado al nivel del último trade.
+
+    Args:
+        proposed_leverage: Leverage propuesto para el nuevo trade. Debe ser
+            un int positivo.
+        last_trade_pnl_usdt: PnL realizado del último trade cerrado de la cuenta.
+            None indica que no hay historial — en ese caso no se bloquea.
+        last_trade_leverage: Leverage del último trade cerrado de la cuenta.
+            None indica que no hay historial — en ese caso no se bloquea. Debe
+            ser un int positivo si se provee.
+
+    Returns:
+        CheckResult con outcome PASS o BLOCK.
+
+    Raises:
+        ValueError: Si proposed_leverage no es un int positivo, si
+            last_trade_pnl_usdt no es Decimal ni None, o si last_trade_leverage
+            no es un int positivo cuando se provee.
+    """
+    rule = "anti_leverage_escalation"
+    # bool es subclase de int: se excluye explícitamente para no aceptar True como 1x.
+    if not isinstance(proposed_leverage, int) or isinstance(proposed_leverage, bool):
+        raise ValueError(
+            f"proposed_leverage debe ser int, recibido: {type(proposed_leverage).__name__}."
+        )
+    if proposed_leverage <= 0:
+        raise ValueError(f"proposed_leverage debe ser positivo, recibido: {proposed_leverage}.")
+
+    if last_trade_pnl_usdt is not None and not isinstance(last_trade_pnl_usdt, Decimal):
+        raise ValueError(
+            "last_trade_pnl_usdt debe ser Decimal o None, "
+            f"recibido: {type(last_trade_pnl_usdt).__name__}."
+        )
+    if last_trade_leverage is not None:
+        if not isinstance(last_trade_leverage, int) or isinstance(last_trade_leverage, bool):
+            raise ValueError(
+                "last_trade_leverage debe ser int o None, "
+                f"recibido: {type(last_trade_leverage).__name__}."
+            )
+        if last_trade_leverage <= 0:
+            raise ValueError(
+                f"last_trade_leverage debe ser positivo, recibido: {last_trade_leverage}."
+            )
+
+    if last_trade_pnl_usdt is None or last_trade_leverage is None:
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason="Sin historial de trades suficiente: anti-escalada de leverage no evaluado.",
+        )
+
+    if last_trade_pnl_usdt >= Decimal("0"):
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason=(
+                f"Último trade con PnL={last_trade_pnl_usdt} USDT (≥0): "
+                "anti-escalada de leverage no aplicable."
+            ),
+        )
+
+    if proposed_leverage > last_trade_leverage:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason=(
+                f"Escalada de leverage detectada: el último trade de la cuenta cerró con "
+                f"pérdida de {last_trade_pnl_usdt} USDT a {last_trade_leverage}x y el "
+                f"leverage propuesto ({proposed_leverage}x) es mayor. Aumentar el "
+                "apalancamiento para recuperar pérdidas está prohibido."
+            ),
+        )
+
+    return CheckResult(
+        outcome=CheckOutcome.PASS,
+        rule=rule,
+        reason=(
+            f"Leverage propuesto ({proposed_leverage}x) no supera el del último trade "
+            f"({last_trade_leverage}x) tras pérdida: escalada no detectada."
+        ),
+    )
+
+
 def check_anti_averaging(
     open_position_unrealized_pnl_usdt: Decimal | None,
 ) -> CheckResult:
