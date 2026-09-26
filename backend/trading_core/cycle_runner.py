@@ -566,12 +566,18 @@ class CycleRunner:
             # estado incierto (excepción tras `place_order`, timeout, parcial o
             # PENDING) la exposición puede existir en el exchange, y el conteo
             # debe fallar cerrado para los símbolos siguientes del tick. Sólo se
-            # descuenta cuando el resultado es definitivamente sin posición.
+            # descuenta cuando el resultado es definitivamente sin posición: estado
+            # CANCELLED/FAILED **y** nada ejecutado (una LIMIT parcial que se cancela,
+            # o un estado desconocido mapeado a FAILED, puede tener `quantity_filled > 0`).
             self._opened_this_tick += 1
             execution = self._execution_engine.execute_approved_plan(
                 gpt_decision, risk_result, slippage_estimate=executed_estimate
             )
-            if execution.order_result.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+            order_result = execution.order_result
+            if (
+                order_result.status in (OrderStatus.CANCELLED, OrderStatus.FAILED)
+                and order_result.quantity_filled == 0
+            ):
                 self._opened_this_tick -= 1
         else:
             log.info(

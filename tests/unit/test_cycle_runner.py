@@ -1392,6 +1392,13 @@ def test_run_decision_pipeline_enforces_max_open_positions_across_symbols_in_sam
     execution_engine.execute_approved_plan.assert_called_once()
 
 
+def _execution_result(status: OrderStatus, quantity_filled: str) -> Mock:
+    return Mock(
+        position_registered=False,
+        order_result=Mock(status=status, quantity_filled=Decimal(quantity_filled)),
+    )
+
+
 def _run_two_symbols_with_first_execution(
     heartbeat_file: Path,
     db_session: Session,
@@ -1429,7 +1436,29 @@ def test_run_decision_pipeline_counts_uncertain_execution_status_toward_limit(
         heartbeat_file,
         db_session,
         monkeypatch,
-        first_execution=Mock(position_registered=False, order_result=Mock(status=status)),
+        first_execution=_execution_result(status, "0"),
+    )
+
+    assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
+    assert "max_open_positions" in results[1].reasons
+    execute.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [OrderStatus.CANCELLED, OrderStatus.FAILED])
+def test_run_decision_pipeline_counts_cancelled_order_with_filled_quantity(
+    heartbeat_file: Path,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    status: OrderStatus,
+) -> None:
+    """PR #136 re-review: una LIMIT parcial luego cancelada (o un estado
+    desconocido mapeado a FAILED) con `quantity_filled > 0` deja exposicion:
+    el slot no se libera y el 2do simbolo termina en BLOCK."""
+    results, execute = _run_two_symbols_with_first_execution(
+        heartbeat_file,
+        db_session,
+        monkeypatch,
+        first_execution=_execution_result(status, "0.001"),
     )
 
     assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.BLOCK]
@@ -1465,7 +1494,7 @@ def test_run_decision_pipeline_releases_slot_when_execution_definitively_fails(
         heartbeat_file,
         db_session,
         monkeypatch,
-        first_execution=Mock(position_registered=False, order_result=Mock(status=status)),
+        first_execution=_execution_result(status, "0"),
     )
 
     assert [r.decision for r in results] == [RiskDecision.APPROVE, RiskDecision.APPROVE]
