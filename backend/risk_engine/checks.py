@@ -566,6 +566,11 @@ def check_anti_leverage_escalation(
     seguridad sobre la rentabilidad (§2), así que perder en un par y subir el
     leverage en otro también es "aumentar apalancamiento para recuperar".
 
+    `proposed_leverage` es el leverage de la decisión antes de
+    `check_leverage_cap` (§3.9: el Risk Engine valida la propuesta, no un
+    valor ya ajustado). Una propuesta que sube el leverage tras una pérdida se
+    bloquea aunque el cap la hubiera recortado al nivel del último trade.
+
     Args:
         proposed_leverage: Leverage propuesto para el nuevo trade. Debe ser
             un int positivo.

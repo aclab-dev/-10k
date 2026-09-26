@@ -958,6 +958,23 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
         assert result.decision == RiskDecision.APPROVE
         assert "anti_leverage_escalation" in result.reasons
 
+    def test_compares_proposed_leverage_before_cap(self) -> None:
+        """Subir leverage tras pérdida bloquea aunque el cap lo recorte (ADR F17-01, §3.9)."""
+        cfg = _config_with_lower_leverage_cap_paper(5)
+        decision = _long_decision(leverage=8)
+        result = validate(
+            _aggregation(decision),
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            last_account_trade_pnl_usdt=Decimal("-2.0"),
+            last_account_trade_leverage=5,
+        )
+        assert result.decision == RiskDecision.BLOCK
+        assert "8x" in result.reasons["anti_leverage_escalation"]
+
     def test_uses_account_trade_not_symbol_trade(self) -> None:
         """Ganancia en el símbolo no habilita escalar si la cuenta viene de pérdida."""
         decision = _long_decision(leverage=6)
