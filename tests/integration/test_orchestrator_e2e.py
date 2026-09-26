@@ -312,6 +312,7 @@ class TestOrchestratorE2E:
                 total_loss_usdt=Decimal("0"),
                 config=cfg,
                 funding_rate=0.0001,
+                open_positions_count=0,
             )
 
             assert risk_result.decision == RiskDecision.APPROVE
@@ -387,6 +388,7 @@ class TestOrchestratorE2E:
                 total_loss_usdt=Decimal("0"),
                 config=cfg,
                 funding_rate=0.0001,
+                open_positions_count=0,
             )
             assert risk_result.decision == RiskDecision.APPROVE
 
@@ -455,6 +457,7 @@ class TestOrchestratorE2E:
                 total_loss_usdt=Decimal("0"),
                 config=cfg_for_adjust,
                 funding_rate=0.0001,
+                open_positions_count=0,
             )
 
             assert risk_result.decision == RiskDecision.ADJUST_DOWN
@@ -508,6 +511,7 @@ class TestOrchestratorE2E:
                 total_loss_usdt=Decimal("0"),
                 config=cfg,
                 funding_rate=0.0001,
+                open_positions_count=0,
             )
 
             assert risk_result.decision == RiskDecision.NO_OPERAR
@@ -539,6 +543,7 @@ class TestOrchestratorE2E:
                 total_loss_usdt=Decimal("0"),
                 config=cfg,
                 funding_rate=0.0001,
+                open_positions_count=0,
             )
 
             assert risk_result.decision == RiskDecision.BLOCK

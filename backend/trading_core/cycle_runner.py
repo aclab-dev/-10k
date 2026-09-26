@@ -34,6 +34,7 @@ from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.gpt_client import GPTClient, GPTRequest, RequestPurpose
 from backend.decision_engine.prompt_builder import AccountContext, PromptBuilder, PromptContext
 from backend.decision_engine.schemas import DecisionType, ModelDecision
+from backend.exchange_adapters.schemas import OrderStatus
 from backend.execution.engine import ExecutionEngine
 from backend.market_data.cycle_service import MarketDataCycleService
 from backend.market_data.schemas import MarketSnapshot
@@ -94,6 +95,9 @@ class CycleRunner:
         self._market_data_service = market_data_service
         self._execution_engine = execution_engine
         self._shutdown_event = threading.Event()
+        # Posiciones abiertas por este runner en el tick en curso: el conteo de los
+        # snapshots se leyo antes del pipeline y no las incluye (F17, regla 29).
+        self._opened_this_tick = 0
 
         # Decision pipeline dependencies
         self._gpt_client = gpt_client
@@ -269,13 +273,17 @@ class CycleRunner:
         if self._position_tick_service is not None:
             self._position_tick_service.tick_all()
         unverified_symbols: frozenset[str] = frozenset()
+        positions_count_reliable = True
         if self._reconciliation_gate is not None:
             report = self._reconciliation_gate.run_and_enforce()
             if report is not None:
                 unverified_symbols = frozenset(report.failed_symbols)
+                positions_count_reliable = report.is_complete
 
         if self._decision_pipeline_ready and snapshots:
-            asyncio.run(self._run_decision_pipeline(snapshots, unverified_symbols))
+            asyncio.run(
+                self._run_decision_pipeline(snapshots, unverified_symbols, positions_count_reliable)
+            )
 
     # ------------------------------------------------------------------
     # Decision pipeline
@@ -285,6 +293,7 @@ class CycleRunner:
         self,
         snapshots: list[MarketSnapshot],
         unverified_symbols: frozenset[str] = frozenset(),
+        positions_count_reliable: bool = True,
     ) -> None:
         """Ejecuta GPT → Aggregator → Risk → Execution para cada snapshot valido.
 
@@ -320,8 +329,19 @@ class CycleRunner:
         duplicar exposicion, asi que se saltean igual que con can_trade()==False
         (spec 3.6: "no operar si no se puede leer posiciones u ordenes activas").
         Es aislable por simbolo: el resto opera normal, sin SAFE_MODE global.
+
+        `positions_count_reliable` es `report.is_complete` de la reconciliacion:
+        si es False el conteo de posiciones abiertas no es confiable y el Risk
+        Engine bloquea (fail-closed) el limite `max_open_positions` (F17, regla 29).
+
+        El `open_positions_count` de cada snapshot se leyo una sola vez, antes de
+        este pipeline. Como los simbolos se procesan en secuencia y cada entrada
+        abre su posicion en el momento, `_process_symbol` le suma las abiertas
+        antes en este mismo tick (`_opened_this_tick`) para que el limite se
+        cumpla tambien entre simbolos del mismo ciclo.
         """
         assert self._session is not None
+        self._opened_this_tick = 0
         for snapshot in snapshots:
             self._sync_state_from_db()
             if not self._state_machine.is_running():
@@ -346,7 +366,7 @@ class CycleRunner:
                 continue
             try:
                 with self._session.begin_nested():
-                    await self._process_symbol(snapshot)
+                    await self._process_symbol(snapshot, positions_count_reliable)
             except Exception:
                 log.error(
                     "cycle_runner.decision_pipeline_error",
@@ -354,7 +374,9 @@ class CycleRunner:
                     exc_info=True,
                 )
 
-    async def _process_symbol(self, snapshot: MarketSnapshot) -> None:
+    async def _process_symbol(
+        self, snapshot: MarketSnapshot, positions_count_reliable: bool = True
+    ) -> None:
         """Pipeline completo para un simbolo: GPT → Aggregator → Risk → Execution."""
         assert self._gpt_client is not None
         assert self._prompt_builder is not None
@@ -471,6 +493,11 @@ class CycleRunner:
             last_trade_margin_usdt=last_trade.margin_usdt if last_trade else None,
             open_position_unrealized_pnl_usdt=open_position_pnl,
             funding_rate=snapshot.funding_rate,
+            open_positions_count=(
+                snapshot.open_positions_count + self._opened_this_tick
+                if positions_count_reliable
+                else None
+            ),
             slippage_estimate=slippage_estimate,
         )
 
@@ -535,9 +562,17 @@ class CycleRunner:
                     leverage=approved.leverage,
                     market_impact_bps=impact_bps,
                 )
-            self._execution_engine.execute_approved_plan(
+            # Se cuenta el intento, no sólo el éxito: si la ejecución queda en un
+            # estado incierto (excepción tras `place_order`, timeout, parcial o
+            # PENDING) la exposición puede existir en el exchange, y el conteo
+            # debe fallar cerrado para los símbolos siguientes del tick. Sólo se
+            # descuenta cuando el resultado es definitivamente sin posición.
+            self._opened_this_tick += 1
+            execution = self._execution_engine.execute_approved_plan(
                 gpt_decision, risk_result, slippage_estimate=executed_estimate
             )
+            if execution.order_result.status in (OrderStatus.CANCELLED, OrderStatus.FAILED):
+                self._opened_this_tick -= 1
         else:
             log.info(
                 "cycle_runner.risk_blocked",

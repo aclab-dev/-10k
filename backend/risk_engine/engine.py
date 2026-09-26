@@ -11,7 +11,8 @@ Distinción crítica (regla no negociable del proyecto):
 
 Orden de precedencia para trades ejecutables:
 1. Fase NO_OPERAR: si execute=False → retorno inmediato con NO_OPERAR.
-2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación, funding).
+2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación, funding,
+   límite de posiciones concurrentes).
    Cualquier falla → BLOCK inmediato.
 3. Fase ADJUST_DOWN: margin cap, leverage cap.
    Al menos una falla → ADJUST_DOWN con parámetros reducidos.
@@ -38,6 +39,7 @@ from backend.risk_engine.checks import (
     check_leverage_cap,
     check_liquidation_safety,
     check_margin_cap,
+    check_max_open_positions,
     check_sl_required,
     check_slippage_estimate,
     check_total_drawdown,
@@ -57,6 +59,7 @@ def validate(
     open_position_unrealized_pnl_usdt: Decimal | None = None,
     *,
     funding_rate: float | None,
+    open_positions_count: int | None,
     slippage_estimate: SlippageEstimate | None = None,
 ) -> RiskValidationResult:
     """Evalúa el DecisionAggregationResult y emite un RiskValidationResult.
@@ -81,6 +84,10 @@ def validate(
             sin default): None significa que el exchange no devolvió el dato, no que el caller
             lo omitió. Fase BLOCK: usado por check_funding_gate; con
             block_if_funding_unknown=True, None bloquea el trade (fail-closed).
+        open_positions_count: posiciones abiertas según el exchange en este ciclo. Requerido
+            (keyword-only, sin default): None significa conteo no confiable (reconciliación
+            incompleta) y bloquea (fail-closed). Fase BLOCK: usado por check_max_open_positions
+            contra config.trading.max_open_positions (F17, regla 29).
         slippage_estimate: estimación de slippage pre-trade (F17, regla 13).
             Informativa: se registra en `reasons` para auditoría y nunca
             bloquea. None = el caller no la proveyó (queda asentado como tal).
@@ -136,6 +143,7 @@ def validate(
         check_total_drawdown(total_loss_usdt, initial_balance, config.risk.max_total_loss_percent),
         check_liquidation_safety(decision, config.liquidation_safety),
         check_funding_gate(decision, funding_rate, config.funding_gate),
+        check_max_open_positions(decision, open_positions_count, config.trading.max_open_positions),
         check_anti_martingala(original_margin, last_trade_pnl_usdt, last_trade_margin_usdt),
         check_anti_averaging(open_position_unrealized_pnl_usdt),
         # Informativo, siempre PASS: aporta el slippage estimado a `reasons`

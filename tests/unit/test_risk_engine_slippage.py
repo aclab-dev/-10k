@@ -193,6 +193,7 @@ _NEUTRAL_FUNDING_RATE = 0.0001
 def _validate_neutral_funding(**kwargs: object) -> RiskValidationResult:
     """`engine.validate` con funding neutro, para aislar lo que estos tests miden."""
     kwargs.setdefault("funding_rate", _NEUTRAL_FUNDING_RATE)
+    kwargs.setdefault("open_positions_count", 0)
     return validate(**kwargs)  # type: ignore[arg-type]
 
 
