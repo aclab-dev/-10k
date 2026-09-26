@@ -51,6 +51,7 @@ leverage:
   max_leverage_testnet: 5
   max_leverage_live_initial: 3
   max_leverage_live_absolute: 5
+  live_phase: INITIAL
   volatility_adjustment_enabled: true
   liquidation_distance_required: true
 

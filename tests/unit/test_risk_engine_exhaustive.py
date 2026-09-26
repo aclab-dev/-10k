@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from backend.core.config import AppConfig, Environment, get_config
+from backend.core.config import AppConfig, Environment, LivePhase, get_config
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
     DecisionAggregationResult,
@@ -277,6 +277,13 @@ def _config_for_env(env: Environment) -> AppConfig:
     return cfg.model_copy(update={"execution": custom_exec})
 
 
+def _config_for_live_phase(phase: LivePhase) -> AppConfig:
+    """Config LIVE con la fase de leverage explícita."""
+    cfg = _config_for_env(Environment.LIVE)
+    custom_lev = cfg.leverage.model_copy(update={"live_phase": phase})
+    return cfg.model_copy(update={"leverage": custom_lev})
+
+
 def _config_with_margin_cap(cap: float) -> AppConfig:
     cfg = get_config()
     custom_risk = cfg.risk.model_copy(update={"max_margin_per_trade_usdt": cap})
@@ -477,16 +484,35 @@ class TestRiskEngineTestnet:
 
 
 class TestRiskEngineLive:
-    def test_live_approves_within_absolute_leverage_cap(self) -> None:
+    def test_live_approves_within_initial_leverage_cap(self) -> None:
         cfg = _config_for_env(Environment.LIVE)
-        live_cap = cfg.leverage.max_leverage_live_absolute
-        decision = _long_decision(leverage=min(live_cap, 5))
+        live_cap = cfg.leverage.max_leverage_live_initial
+        decision = _long_decision(leverage=live_cap)
         aggregation = _aggregation(decision)
         result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
         assert result.decision == RiskDecision.APPROVE
 
-    def test_live_adjust_down_when_leverage_exceeds_absolute_cap(self) -> None:
-        cfg = _config_for_env(Environment.LIVE)
+    @pytest.mark.parametrize("leverage", [4, 5])
+    def test_live_initial_adjusts_down_above_3x(self, leverage: int) -> None:
+        """LIVE inicial: una decisión de 4x-5x no pasa; el Risk Engine la baja a 3x."""
+        cfg = _config_for_live_phase(LivePhase.INITIAL)
+        decision = _long_decision(leverage=leverage)
+        aggregation = _aggregation(decision)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.ADJUST_DOWN
+        assert result.adjusted_parameters is not None
+        assert result.adjusted_parameters.leverage == cfg.leverage.max_leverage_live_initial
+
+    def test_live_absolute_approves_5x(self) -> None:
+        cfg = _config_for_live_phase(LivePhase.ABSOLUTE)
+        live_cap = cfg.leverage.max_leverage_live_absolute
+        decision = _long_decision(leverage=live_cap)
+        aggregation = _aggregation(decision)
+        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        assert result.decision == RiskDecision.APPROVE
+
+    def test_live_absolute_adjust_down_when_leverage_exceeds_absolute_cap(self) -> None:
+        cfg = _config_for_live_phase(LivePhase.ABSOLUTE)
         live_cap = cfg.leverage.max_leverage_live_absolute
         decision = _long_decision(leverage=live_cap + 1)
         aggregation = _aggregation(decision)

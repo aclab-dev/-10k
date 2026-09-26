@@ -18,6 +18,7 @@ from backend.core.config import (
     Environment,
     FundingGateConfig,
     LiquidationSafetyConfig,
+    LivePhase,
 )
 from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, ModelDecision
@@ -46,14 +47,20 @@ class CheckResult:
 
 
 def leverage_cap_for_env(config: AppConfig, environment: Environment) -> int:
-    """Devuelve el tope de leverage para el entorno dado."""
+    """Devuelve el tope de leverage para el entorno dado.
+
+    En LIVE el cap depende de la fase explícita (leverage.live_phase): INITIAL → 3x,
+    ABSOLUTE → 5x. El Risk Engine es la última línea: no se delega en la capa de
+    sugerencia de volatilidad, que es bypasseable.
+    """
     lev = config.leverage
     if environment == Environment.PAPER:
         return lev.max_leverage_paper
     if environment == Environment.TESTNET:
         return lev.max_leverage_testnet
-    # LIVE: usa el cap absoluto; el cap inicial (≤3x) lo aplica el execution layer.
-    return lev.max_leverage_live_absolute
+    if lev.live_phase == LivePhase.ABSOLUTE:
+        return lev.max_leverage_live_absolute
+    return lev.max_leverage_live_initial
 
 
 # ---------------------------------------------------------------------------
