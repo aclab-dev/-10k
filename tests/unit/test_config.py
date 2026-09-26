@@ -6,6 +6,7 @@ from backend.core.config import (
     AppConfig,  # noqa: F401
     ConfigError,
     Environment,
+    LivePhase,
     _apply_env_overrides,
     load_config,
 )
@@ -318,6 +319,25 @@ def test_blocks_live_with_wrong_confirmation_value(monkeypatch: pytest.MonkeyPat
             BOT__EXECUTION__ENVIRONMENT="LIVE",
             I_UNDERSTAND_LIVE_RISK="yes",  # lowercase no vale
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests de fase LIVE (leverage.live_phase)
+# ---------------------------------------------------------------------------
+
+
+def test_live_phase_defaults_to_initial(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _load(monkeypatch).leverage.live_phase == LivePhase.INITIAL
+
+
+def test_live_phase_promoted_via_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch, BOT__LEVERAGE__LIVE_PHASE="ABSOLUTE")
+    assert cfg.leverage.live_phase == LivePhase.ABSOLUTE
+
+
+def test_live_phase_invalid_env_var_blocks_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError):
+        _load(monkeypatch, BOT__LEVERAGE__LIVE_PHASE="absolute")  # lowercase no vale
 
 
 # ---------------------------------------------------------------------------

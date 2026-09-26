@@ -313,14 +313,14 @@ class TestCheckLeverageCap:
         result = check_leverage_cap(5, cfg, Environment.TESTNET)
         assert result.outcome == CheckOutcome.PASS
 
-    def test_passes_within_live_absolute_cap(self) -> None:
-        cfg = _config()  # LIVE absolute cap = 5
-        result = check_leverage_cap(5, cfg, Environment.LIVE)
+    def test_passes_within_live_initial_cap(self) -> None:
+        cfg = _config()  # LIVE inicial (default) cap = 3
+        result = check_leverage_cap(3, cfg, Environment.LIVE)
         assert result.outcome == CheckOutcome.PASS
 
-    def test_adjust_down_exceeds_live_cap(self) -> None:
+    def test_adjust_down_exceeds_live_initial_cap(self) -> None:
         cfg = _config()
-        result = check_leverage_cap(6, cfg, Environment.LIVE)
+        result = check_leverage_cap(4, cfg, Environment.LIVE)
         assert result.outcome == CheckOutcome.ADJUST_DOWN
 
 
@@ -417,11 +417,9 @@ class TestLeverageCapForEnv:
         cfg = _config()
         assert leverage_cap_for_env(cfg, Environment.TESTNET) == cfg.leverage.max_leverage_testnet
 
-    def test_live_returns_absolute_cap(self) -> None:
+    def test_live_returns_initial_cap_by_default(self) -> None:
         cfg = _config()
-        assert (
-            leverage_cap_for_env(cfg, Environment.LIVE) == cfg.leverage.max_leverage_live_absolute
-        )
+        assert leverage_cap_for_env(cfg, Environment.LIVE) == cfg.leverage.max_leverage_live_initial
 
 
 # ---------------------------------------------------------------------------

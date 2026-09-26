@@ -46,6 +46,17 @@ class LeverageMode(StrEnum):
     FIXED = "FIXED"
 
 
+class LivePhase(StrEnum):
+    """Fase operativa dentro de LIVE: fija qué cap de leverage aplica el Risk Engine.
+
+    INITIAL usa max_leverage_live_initial (≤3x); ABSOLUTE usa max_leverage_live_absolute
+    (≤5x). La promoción es manual (config/env var), nunca automática.
+    """
+
+    INITIAL = "INITIAL"
+    ABSOLUTE = "ABSOLUTE"
+
+
 class DatabaseEngine(StrEnum):
     POSTGRESQL = "POSTGRESQL"
 
@@ -167,6 +178,8 @@ class LeverageConfig(BaseModel):
     max_leverage_testnet: int
     max_leverage_live_initial: int
     max_leverage_live_absolute: int
+    # Default conservador: sin flag explícito, LIVE opera con el cap inicial.
+    live_phase: LivePhase = LivePhase.INITIAL
     volatility_adjustment_enabled: bool
     liquidation_distance_required: bool
 
