@@ -482,6 +482,9 @@ class CycleRunner:
 
         # 8. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
+        # Anti-escalada de leverage compara contra el último trade de la cuenta,
+        # no del símbolo (ADR F17-01).
+        last_account_trade = self._trade_repo.get_last_closed_trade_any_symbol(self._bot_run_id)
         open_position_pnl = self._execution_engine.get_open_position_unrealized_pnl(symbol)
         risk_result: RiskValidationResult = risk_engine.validate(
             aggregation=aggregation,
@@ -499,6 +502,12 @@ class CycleRunner:
                 else None
             ),
             slippage_estimate=slippage_estimate,
+            last_account_trade_pnl_usdt=(
+                last_account_trade.net_pnl if last_account_trade else None
+            ),
+            last_account_trade_leverage=(
+                last_account_trade.leverage if last_account_trade else None
+            ),
         )
 
         # Auditoría del Risk Engine (Anexo B). Es el destino de `reasons`, donde

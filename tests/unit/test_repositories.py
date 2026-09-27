@@ -720,6 +720,31 @@ class TestTradeRepository:
         assert len(repo.list_by_status(run.id, "OPEN")) == 2
         assert len(repo.list_by_status(run.id, "CLOSED")) == 1
 
+    def test_get_last_closed_trade_any_symbol_ignores_symbol(self, session: Session) -> None:
+        """Devuelve el último cierre de la cuenta aunque sea de otro símbolo (ADR F17-01)."""
+        run = _bot_run(session)
+        older = self._trade(session, run, symbol="BTCUSDT", status="CLOSED")
+        older.closed_at = datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+        newer = self._trade(session, run, symbol="SOLUSDT", status="CLOSED")
+        newer.closed_at = datetime(2026, 1, 1, 11, 0, tzinfo=UTC)
+        self._trade(session, run, symbol="ETHUSDT", status="OPEN")
+        session.flush()
+
+        repo = TradeRepository(session)
+        last = repo.get_last_closed_trade_any_symbol(run.id)
+        assert last is not None
+        assert last.id == newer.id
+
+    def test_get_last_closed_trade_any_symbol_scoped_to_bot_run(self, session: Session) -> None:
+        run = _bot_run(session)
+        other_run = _bot_run(session, status="STOPPED")
+        t = self._trade(session, other_run, status="CLOSED")
+        t.closed_at = _now()
+        session.flush()
+
+        repo = TradeRepository(session)
+        assert repo.get_last_closed_trade_any_symbol(run.id) is None
+
 
 # ---------------------------------------------------------------------------
 # OrderRepository
