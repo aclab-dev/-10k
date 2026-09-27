@@ -181,7 +181,7 @@ Respuesta esperada: `200` con `{"state":"KILL_SWITCH_TRIGGERED", ...}`.
 proceso separado con su propia `BotStateMachine` en memoria y **no se entera al
 instante**: relee `bot_state` al tope de cada iteración del loop y antes de
 cada símbolo del pipeline de decisión
-(`backend/trading_core/cycle_runner.py::_sync_state_from_db`). Latencia real:
+(`backend/trading_core/cycle_runner.py::CycleRunner::_sync_state_from_db`). Latencia real:
 hasta un `WORKER_HEARTBEAT_INTERVAL_SECONDS` (10s por defecto) entre ticks; un
 símbolo que ya está a mitad de su llamada a GPT termina antes de frenar, pero
 los siguientes del mismo tick ya no abren posiciones (`can_trade()` es `False`
