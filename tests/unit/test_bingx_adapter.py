@@ -10,6 +10,7 @@ Tarjeta [100]: idempotencia con clientOrderId UUID.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -19,6 +20,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRatesUnavailableError
 from backend.core.retry import CircuitBreaker, CircuitBreakerConfig
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.bingx_adapter import BingXAdapter, BingXApiError
@@ -1073,3 +1075,72 @@ def test_signed_request_circuit_breaker_opens_after_consecutive_failures() -> No
 
     # La segunda llamada fue cortada por el circuit breaker: no generó tráfico nuevo.
     assert call_count == calls_after_first
+
+
+def test_get_fee_rates_maps_account_commission_rates() -> None:
+    adapter = _make_adapter(
+        {
+            "/user/commissionRate": {
+                "code": 0,
+                "data": {
+                    "commission": {
+                        "takerCommissionRate": 0.0004,
+                        "makerCommissionRate": 0.00018,
+                    }
+                },
+            }
+        }
+    )
+    rates = adapter.get_fee_rates("BTCUSDT")
+    assert rates.taker == Decimal("0.0004")
+    assert rates.maker == Decimal("0.00018")
+
+
+def test_get_fee_rates_raises_on_api_error() -> None:
+    """Sin tasas no se opera: el error sube, no se inventa un default."""
+    adapter = _make_adapter({"/user/commissionRate": {"code": 100001, "msg": "signature"}})
+    with pytest.raises(FeeRatesUnavailableError) as exc_info:
+        adapter.get_fee_rates("BTCUSDT")
+    assert isinstance(exc_info.value.__cause__, BingXApiError)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"commission": {"takerCommissionRate": 0.0005}},
+        {"commission": {"takerCommissionRate": "abc", "makerCommissionRate": 0.0002}},
+        {"commission": {"takerCommissionRate": 0.0005, "makerCommissionRate": -0.0001}},
+    ],
+)
+def test_get_fee_rates_rejects_malformed_payload(data: dict[str, Any]) -> None:
+    adapter = _make_adapter({"/user/commissionRate": {"code": 0, "data": data}})
+    with pytest.raises(FeeRatesUnavailableError):
+        adapter.get_fee_rates("BTCUSDT")
+
+
+def _adapter_with_handler(handler: Callable[[httpx.Request], httpx.Response]) -> BingXAdapter:
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    return BingXAdapter(api_key="test-key", api_secret="test-secret", http_client=client)
+
+
+def test_get_fee_rates_wraps_http_error() -> None:
+    """Un 4xx no se reintenta y sale como HTTPStatusError: tiene que llegar envuelto."""
+    adapter = _adapter_with_handler(lambda _req: httpx.Response(403, json={"code": 0}))
+    with pytest.raises(FeeRatesUnavailableError) as exc_info:
+        adapter.get_fee_rates("BTCUSDT")
+    assert isinstance(exc_info.value.__cause__, httpx.HTTPError)
+    # El mensaje no arrastra la URL firmada.
+    assert "signature" not in str(exc_info.value)
+
+
+def test_get_fee_rates_wraps_non_json_body() -> None:
+    adapter = _adapter_with_handler(lambda _req: httpx.Response(200, text="<html>oops</html>"))
+    with pytest.raises(FeeRatesUnavailableError):
+        adapter.get_fee_rates("BTCUSDT")
+
+
+def test_get_fee_rates_wraps_response_without_data() -> None:
+    adapter = _make_adapter({"/user/commissionRate": {"code": 0}})
+    with pytest.raises(FeeRatesUnavailableError):
+        adapter.get_fee_rates("BTCUSDT")

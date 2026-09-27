@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Literal
 
 from backend.core.constants import QUANT
+from backend.core.fees import FeeRates
 
 OrderType = Literal["MARKET", "LIMIT", "STOP"]
 
@@ -36,6 +37,11 @@ class FeeModel:
     ) -> None:
         self._taker_rate = taker_rate
         self._maker_rate = maker_rate
+
+    @property
+    def rates(self) -> FeeRates:
+        """Tasas con las que este modelo cobra los fills simulados."""
+        return FeeRates(maker=self._maker_rate, taker=self._taker_rate)
 
     def calculate(self, notional_usdt: Decimal, order_type: OrderType) -> Decimal:
         """Return fee in USDT for *notional_usdt* at the given *order_type*.

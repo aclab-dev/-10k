@@ -5,6 +5,7 @@ Métodos de lectura (tarjeta [98]):
   - get_position       →  GET /openApi/swap/v2/user/positions
   - get_open_orders    →  GET /openApi/swap/v2/trade/openOrders
   - get_order_status   →  GET /openApi/swap/v2/trade/order
+  - get_fee_rates      →  GET /openApi/swap/v2/user/commissionRate  (F17, regla 12)
 
 Métodos de escritura (tarjeta [99]):
   - place_order        →  POST   /openApi/swap/v2/trade/order
@@ -43,6 +44,7 @@ import structlog
 
 from backend.core.bingx_http import is_retryable_bingx_error
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRates, FeeRatesUnavailableError
 from backend.core.retry import (
     CircuitBreaker,
     CircuitBreakerOpenError,
@@ -404,6 +406,36 @@ class BingXAdapter(ExchangeAdapter):
             },
         )
         _log.info("bingx_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        # Tasas de la cuenta (dependen del tier VIP), no las del contrato: las de
+        # /quote/contracts son las públicas por defecto y pueden no ser las que
+        # BingX termina cobrando. El endpoint es por cuenta, no por símbolo.
+        #
+        # Un único try para request y parseo: cualquier falla —API, transporte,
+        # cuerpo no JSON o sin `data`, campos ausentes, tasas fuera de rango— se
+        # traduce al error agnóstico del contrato. Si se escapara otra excepción,
+        # el ciclo haría rollback de la auditoría del símbolo.
+        try:
+            data: dict[str, Any] = self._signed_get("/openApi/swap/v2/user/commissionRate", {})
+            commission = data["commission"]
+            return FeeRates(
+                maker=Decimal(str(commission["makerCommissionRate"])),
+                taker=Decimal(str(commission["takerCommissionRate"])),
+            )
+        except (
+            BingXApiError,
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ArithmeticError,
+            ValueError,
+        ) as exc:
+            # Sólo el tipo de error: un HTTPStatusError lleva la URL firmada (ver
+            # _on_retry) y el resto podría arrastrar partes del payload.
+            raise FeeRatesUnavailableError(
+                f"BingX no devolvió tasas de fee válidas ({type(exc).__name__})"
+            ) from exc
 
     # ------------------------------------------------------------------
     # HTTP / firma

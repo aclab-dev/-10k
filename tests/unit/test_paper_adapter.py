@@ -693,3 +693,10 @@ def test_order_request_rejects_half_a_book() -> None:
             price=Decimal("50000"),
             bid=Decimal("49990"),
         )
+
+
+def test_get_fee_rates_returns_the_rates_used_to_charge_fills() -> None:
+    """El Risk Engine proyecta con las mismas tasas que PAPER termina cobrando."""
+    model = FeeModel(taker_rate=Decimal("0.0004"), maker_rate=Decimal("0.0001"))
+    adapter = PaperAdapter(fee_model=model)
+    assert adapter.get_fee_rates("BTCUSDT") == model.rates
