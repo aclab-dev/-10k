@@ -291,6 +291,23 @@ def test_blocks_cross_margin_type(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+@pytest.mark.parametrize("value", [0, -1, 4, 50])
+def test_blocks_max_open_positions_out_of_range(value: int) -> None:
+    from backend.core.config import TradingConfig
+
+    with pytest.raises((ConfigError, ValueError)):
+        TradingConfig(
+            market="USDT_M_FUTURES",
+            preferred_exchange="BINGX",
+            secondary_exchange="BINANCE",
+            margin_type="ISOLATED",
+            position_mode="ONE_WAY",
+            allowed_symbols=["BTCUSDT"],
+            max_open_positions=value,
+            max_open_positions_allowed=3,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests de bloqueo LIVE
 # ---------------------------------------------------------------------------

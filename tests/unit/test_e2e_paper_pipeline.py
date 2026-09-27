@@ -283,6 +283,7 @@ def _run_pipeline(
         total_loss_usdt=total_loss_usdt,
         config=config,
         funding_rate=snapshot.funding_rate,
+        open_positions_count=0,
     )
 
     return regime, volatility, aggregation, risk_result

@@ -223,6 +223,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.decision == RiskDecision.NO_OPERAR
@@ -239,6 +240,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.adjusted_parameters is None
@@ -255,6 +257,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert len(result.reasons) >= 1
@@ -275,6 +278,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.aggregation_id == aggregation.aggregation_id
@@ -291,6 +295,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.symbol == "ETHUSDT"
@@ -303,7 +308,13 @@ class TestValidateNoOperar:
         total = Decimal("40.0")
 
         result = validate(
-            aggregation, decision, daily, total, cfg, funding_rate=_NEUTRAL_FUNDING_RATE
+            aggregation,
+            decision,
+            daily,
+            total,
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.daily_loss_at_check_usdt == daily
@@ -322,6 +333,7 @@ class TestValidateNoOperar:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert isinstance(result, RiskValidationResult)
@@ -345,6 +357,7 @@ class TestValidateNoOperar:
             total_loss_usdt=initial_balance,
             config=cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         # Debe ser NO_OPERAR, no BLOCK
@@ -373,6 +386,7 @@ class TestValidateBlocked:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.decision == RiskDecision.BLOCK
@@ -392,6 +406,7 @@ class TestValidateBlocked:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.adjusted_parameters is None
@@ -411,6 +426,7 @@ class TestValidateBlocked:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert len(result.reasons) >= 1
@@ -434,6 +450,7 @@ class TestNoOperarVsBlockDistinction:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.decision is not RiskDecision.BLOCK
@@ -454,6 +471,7 @@ class TestNoOperarVsBlockDistinction:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert result.decision is not RiskDecision.NO_OPERAR
@@ -472,6 +490,7 @@ class TestNoOperarVsBlockDistinction:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         reason_text = result.reasons.get("no_operar", "")
@@ -494,6 +513,7 @@ class TestNoOperarVsBlockDistinction:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         # La rule "daily_drawdown" debe estar en los reasons
@@ -515,6 +535,7 @@ class TestNoOperarVsBlockDistinction:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
 
         assert "no_operar" not in result.reasons

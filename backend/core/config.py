@@ -109,6 +109,15 @@ class TradingConfig(BaseModel):
             raise ConfigError(f"max_open_positions_allowed={v} supera el maximo permitido de 3")
         return v
 
+    @model_validator(mode="after")
+    def open_positions_within_allowed(self) -> "TradingConfig":
+        if not 1 <= self.max_open_positions <= self.max_open_positions_allowed:
+            raise ConfigError(
+                f"max_open_positions={self.max_open_positions} debe estar entre 1 y "
+                f"max_open_positions_allowed={self.max_open_positions_allowed}"
+            )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Seccion: risk

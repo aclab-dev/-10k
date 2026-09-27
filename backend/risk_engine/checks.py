@@ -271,6 +271,50 @@ def check_funding_gate(
     )
 
 
+def check_max_open_positions(
+    decision: ModelDecision,
+    open_positions_count: int | None,
+    max_open_positions: int,
+) -> CheckResult:
+    """Bloquea nuevas entradas si las posiciones abiertas alcanzan el límite configurado.
+
+    `open_positions_count` viene del estado del exchange leído en este ciclo
+    (no de memoria del proceso). `None` significa que el conteo no es confiable
+    (reconciliación incompleta): se bloquea, fail-closed. Alcanzar el límite
+    bloquea (>=); superarlo (estado inconsistente) también.
+    """
+    rule = "max_open_positions"
+    if decision.decision == DecisionType.NO_OPERAR:
+        return CheckResult(
+            outcome=CheckOutcome.PASS,
+            rule=rule,
+            reason="NO_OPERAR: no hay trade que validar.",
+        )
+    if open_positions_count is None:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason="Conteo de posiciones abiertas no confiable (reconciliación incompleta).",
+        )
+    if open_positions_count >= max_open_positions:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason=(
+                f"Posiciones abiertas {open_positions_count} alcanzó el límite "
+                f"max_open_positions={max_open_positions}."
+            ),
+        )
+    return CheckResult(
+        outcome=CheckOutcome.PASS,
+        rule=rule,
+        reason=(
+            f"Posiciones abiertas {open_positions_count} por debajo del límite "
+            f"max_open_positions={max_open_positions}."
+        ),
+    )
+
+
 def check_liquidation_safety(
     decision: ModelDecision,
     config: LiquidationSafetyConfig,
