@@ -171,6 +171,7 @@ def _validate_neutral_funding(
         last_trade_margin_usdt,
         open_position_unrealized_pnl_usdt,
         funding_rate=funding_rate,
+        open_positions_count=0,
     )
 
 
@@ -934,6 +935,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             Decimal("0"),
             _config(),
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
         )
@@ -950,6 +952,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             Decimal("0"),
             _config(),
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
         )
@@ -967,6 +970,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             Decimal("0"),
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
         )
@@ -985,6 +989,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             last_trade_pnl_usdt=Decimal("3.0"),
             last_trade_margin_usdt=Decimal("5.0"),
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
         )
@@ -1001,5 +1006,6 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             Decimal("0"),
             _config(),
             funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
         )
         assert result.decision == RiskDecision.APPROVE
