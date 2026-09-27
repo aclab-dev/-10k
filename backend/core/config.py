@@ -203,6 +203,20 @@ class LeverageConfig(BaseModel):
             )
         return self
 
+    def cap_for_env(self, environment: Environment) -> int:
+        """Tope de leverage del entorno. Fuente única para Risk Engine, sugerencia y prompt.
+
+        En LIVE depende de la fase explícita: INITIAL → max_leverage_live_initial,
+        ABSOLUTE → max_leverage_live_absolute.
+        """
+        if environment == Environment.PAPER:
+            return self.max_leverage_paper
+        if environment == Environment.TESTNET:
+            return self.max_leverage_testnet
+        if self.live_phase == LivePhase.ABSOLUTE:
+            return self.max_leverage_live_absolute
+        return self.max_leverage_live_initial
+
 
 # ---------------------------------------------------------------------------
 # Seccion: ai_and_quant

@@ -11,9 +11,10 @@ from decimal import Decimal
 
 import pytest
 
-from backend.core.config import AppConfig, Environment, LivePhase, get_config
+from backend.core.config import Environment, LivePhase, get_config
 from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_adjusted_margin
 from backend.risk_engine.checks import leverage_cap_for_env
+from tests.unit.conftest import config_with_live_phase
 
 # ---------------------------------------------------------------------------
 # compute_adjusted_margin
@@ -72,13 +73,6 @@ class TestComputeAdjustedMargin:
 
 def _config():
     return get_config()
-
-
-def _config_with_live_phase(phase: LivePhase) -> AppConfig:
-    cfg = get_config()
-    return cfg.model_copy(
-        update={"leverage": cfg.leverage.model_copy(update={"live_phase": phase})}
-    )
 
 
 class TestComputeAdjustedLeverage:
@@ -153,13 +147,13 @@ class TestComputeAdjustedLeverage:
 
     def test_live_initial_reduces_absolute_cap_to_initial(self) -> None:
         """5x (válido en LIVE absoluto) se recorta a 3x en LIVE inicial."""
-        cfg = _config_with_live_phase(LivePhase.INITIAL)
+        cfg = config_with_live_phase(LivePhase.INITIAL)
         absolute = cfg.leverage.max_leverage_live_absolute
         result = compute_adjusted_leverage(absolute, cfg, Environment.LIVE)
         assert result == cfg.leverage.max_leverage_live_initial
 
     def test_live_absolute_phase_uses_absolute_cap(self) -> None:
-        cfg = _config_with_live_phase(LivePhase.ABSOLUTE)
+        cfg = config_with_live_phase(LivePhase.ABSOLUTE)
         cap = cfg.leverage.max_leverage_live_absolute
         assert compute_adjusted_leverage(cap, cfg, Environment.LIVE) == cap
         assert compute_adjusted_leverage(cap + 1, cfg, Environment.LIVE) == cap

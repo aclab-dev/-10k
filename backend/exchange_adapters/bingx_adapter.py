@@ -97,7 +97,8 @@ _ORDER_TYPE_MAP: dict[str, OrderType] = {
 }
 
 # Leverage máximo permitido por entorno (PDF 01.1 §4.9: PAPER 10x, TESTNET 5x, LIVE absoluto 5x).
-# El tope de 3x "LIVE inicial" es un límite operativo del checklist F17, no de esta clase.
+# El tope de 3x "LIVE inicial" (leverage.live_phase=INITIAL) lo aplica el Risk Engine,
+# no esta clase.
 _MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
     Environment.PAPER: 10,
     Environment.TESTNET: 5,
