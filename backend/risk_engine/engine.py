@@ -12,8 +12,8 @@ Distinción crítica (regla no negociable del proyecto):
 Orden de precedencia para trades ejecutables:
 1. Fase NO_OPERAR: si execute=False → retorno inmediato con NO_OPERAR.
 2. Fase BLOCK: checks de riesgo (drawdown, SL, TP, liquidación, funding,
-   anti-martingala, anti-escalada de leverage, anti-averaging, límite de posiciones
-   concurrentes).
+   fees, anti-martingala, anti-escalada de leverage, anti-averaging, límite de
+   posiciones concurrentes).
    Cualquier falla → BLOCK inmediato.
 3. Fase ADJUST_DOWN: margin cap, leverage cap.
    Al menos una falla → ADJUST_DOWN con parámetros reducidos.
@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from backend.core.config import AppConfig
+from backend.core.fees import FeeEstimate
 from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
 from backend.decision_engine.schemas import ModelDecision
@@ -37,6 +38,7 @@ from backend.risk_engine.checks import (
     check_anti_leverage_escalation,
     check_anti_martingala,
     check_daily_drawdown,
+    check_fee_gate,
     check_funding_gate,
     check_leverage_cap,
     check_liquidation_safety,
@@ -62,6 +64,7 @@ def validate(
     *,
     funding_rate: float | None,
     open_positions_count: int | None,
+    fee_estimate: FeeEstimate | None,
     slippage_estimate: SlippageEstimate | None = None,
     last_account_trade_pnl_usdt: Decimal | None = None,
     last_account_trade_leverage: int | None = None,
@@ -92,6 +95,11 @@ def validate(
             (keyword-only, sin default): None significa conteo no confiable (reconciliación
             incompleta) y bloquea (fail-closed). Fase BLOCK: usado por check_max_open_positions
             contra config.trading.max_open_positions (F17, regla 29).
+        fee_estimate: fees proyectados del round-trip con las tasas reales del
+            adapter (F17, regla 12). Requerido (keyword-only, sin default):
+            None significa que no se pudieron calcular y bloquea (fail-closed).
+            Fase BLOCK: usado por check_fee_gate contra
+            config.risk.min_net_risk_reward. Queda en `reasons` en toda salida.
         slippage_estimate: estimación de slippage pre-trade (F17, regla 13).
             Informativa: se registra en `reasons` para auditoría y nunca
             bloquea. None = el caller no la proveyó (queda asentado como tal).
@@ -154,6 +162,7 @@ def validate(
         check_total_drawdown(total_loss_usdt, initial_balance, config.risk.max_total_loss_percent),
         check_liquidation_safety(decision, config.liquidation_safety),
         check_funding_gate(decision, funding_rate, config.funding_gate),
+        check_fee_gate(fee_estimate, config.risk.min_net_risk_reward),
         check_max_open_positions(decision, open_positions_count, config.trading.max_open_positions),
         check_anti_martingala(original_margin, last_trade_pnl_usdt, last_trade_margin_usdt),
         check_anti_leverage_escalation(

@@ -71,6 +71,7 @@ from backend.risk_engine import engine as risk_engine
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
 from backend.volatility.engine import compute_volatility_assessment
 from backend.volatility.schemas import VolatilityAssessmentPackage
+from tests.unit.conftest import fee_estimate_for
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -284,6 +285,7 @@ def _run_pipeline(
         config=config,
         funding_rate=snapshot.funding_rate,
         open_positions_count=0,
+        fee_estimate=fee_estimate_for(gpt_decision),
     )
 
     return regime, volatility, aggregation, risk_result

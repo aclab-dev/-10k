@@ -53,6 +53,7 @@ from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.checks import CheckOutcome, check_slippage_estimate
 from backend.risk_engine.engine import validate
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from tests.unit.conftest import fee_estimate_for
 
 _D = Decimal
 
@@ -194,6 +195,7 @@ def _validate_neutral_funding(**kwargs: object) -> RiskValidationResult:
     """`engine.validate` con funding neutro, para aislar lo que estos tests miden."""
     kwargs.setdefault("funding_rate", _NEUTRAL_FUNDING_RATE)
     kwargs.setdefault("open_positions_count", 0)
+    kwargs.setdefault("fee_estimate", fee_estimate_for(kwargs["decision"]))  # type: ignore[arg-type]
     return validate(**kwargs)  # type: ignore[arg-type]
 
 

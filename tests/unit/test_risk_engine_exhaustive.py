@@ -41,7 +41,7 @@ from backend.decision_engine.schemas import (
 from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.engine import validate
 from backend.risk_engine.schemas import AdjustedParameters, RiskDecision, RiskValidationResult
-from tests.unit.conftest import config_with_live_phase
+from tests.unit.conftest import config_with_live_phase, fee_estimate_for
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -265,6 +265,7 @@ def _validate_neutral_funding(
         open_position_unrealized_pnl_usdt,
         funding_rate=funding_rate,
         open_positions_count=0,
+        fee_estimate=fee_estimate_for(decision),
     )
 
 
@@ -642,12 +643,24 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=0,
         )
+        valid = _long_decision(position_management_plan=plan.model_dump())
         decision = _bypass_validation(
-            _long_decision(position_management_plan=plan.model_dump()),
+            valid,
             take_profit=0.0,
         )
         aggregation = _aggregation(decision)
-        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        # Sin TP no hay RR que proyectar y el gate de fees bloquearía: se le pasa
+        # el fee estimate del trade válido para aislar el check tp_or_exit_plan.
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
+            fee_estimate=fee_estimate_for(valid),
+        )
         assert result.decision == RiskDecision.APPROVE
 
     def test_approve_when_only_time_limit_present(self) -> None:
@@ -659,12 +672,24 @@ class TestRiskEngineBlockViaTpOrExitPlan:
             partial_close_plan="",
             max_time_in_trade_minutes=60,
         )
+        valid = _long_decision(position_management_plan=plan.model_dump())
         decision = _bypass_validation(
-            _long_decision(position_management_plan=plan.model_dump()),
+            valid,
             take_profit=0.0,
         )
         aggregation = _aggregation(decision)
-        result = _validate_neutral_funding(aggregation, decision, Decimal("0"), Decimal("0"), cfg)
+        # Sin TP no hay RR que proyectar y el gate de fees bloquearía: se le pasa
+        # el fee estimate del trade válido para aislar el check tp_or_exit_plan.
+        result = validate(
+            aggregation,
+            decision,
+            Decimal("0"),
+            Decimal("0"),
+            cfg,
+            funding_rate=_NEUTRAL_FUNDING_RATE,
+            open_positions_count=0,
+            fee_estimate=fee_estimate_for(valid),
+        )
         assert result.decision == RiskDecision.APPROVE
 
 

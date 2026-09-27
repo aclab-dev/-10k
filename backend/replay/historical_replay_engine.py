@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 import structlog
 from sqlalchemy.orm import Session
 
+from backend.backtesting.fee_model import FeeModel
 from backend.core.config import load_config
+from backend.core.fees import FeeRates, estimate_fees_for_decision
 from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
@@ -149,17 +151,24 @@ class HistoricalReplayEngine:
         bot_run_id: str | None = None,
         daily_loss_usdt: Decimal = Decimal("0"),
         total_loss_usdt: Decimal = Decimal("0"),
+        fee_rates: FeeRates | None = None,
     ) -> list[ReplayStepResult]:
         """Carga los snapshots de la ventana ([84]) y recorre cada uno cronológicamente.
 
         daily_loss_usdt y total_loss_usdt se actualizan paso a paso: si el Risk Engine
         aprueba o ajusta un trade (APPROVE / ADJUST_DOWN), el estimated_max_loss_usdt
         de ese paso se acumula antes de validar el paso siguiente (conservative replay).
+
+        fee_rates son las tasas con las que el gate de fees (F17, regla 12)
+        proyecta el costo de cada trade. El replay no tiene exchange al que
+        preguntarle: por defecto usa las del simulador de PAPER (`FeeModel`),
+        que son las que cobraría el PaperAdapter del ciclo real.
         """
         rows = self._loader.load(window, bot_run_id=bot_run_id)
         config = load_config()
         # Fuera del loop: no cambia entre filas.
         impact_bps = config.slippage.impact_bps
+        rates = fee_rates if fee_rates is not None else FeeModel().rates
         results: list[ReplayStepResult] = []
 
         for row in rows:
@@ -186,6 +195,16 @@ class HistoricalReplayEngine:
                 if is_estimable(decision)
                 else None
             )
+            fee_estimate = (
+                estimate_fees_for_decision(
+                    decision=decision,
+                    margin_usdt=Decimal(str(decision.margin_usdt)),
+                    leverage=decision.leverage,
+                    rates=rates,
+                )
+                if is_estimable(decision)
+                else None
+            )
             risk_result = risk_engine.validate(
                 aggregation=aggregation,
                 decision=decision,
@@ -194,6 +213,7 @@ class HistoricalReplayEngine:
                 config=config,
                 funding_rate=snapshot.funding_rate,
                 open_positions_count=snapshot.open_positions_count,
+                fee_estimate=fee_estimate,
                 slippage_estimate=slippage_estimate,
             )
             results.append(

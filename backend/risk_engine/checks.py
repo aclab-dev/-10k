@@ -19,6 +19,7 @@ from backend.core.config import (
     FundingGateConfig,
     LiquidationSafetyConfig,
 )
+from backend.core.fees import FeeEstimate
 from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, ModelDecision
 
@@ -749,6 +750,57 @@ def check_anti_averaging(
             "Agregar exposición a una posición perdedora está prohibido."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Gate de fees pre-trade (F17 [161], regla no negociable 12)
+# ---------------------------------------------------------------------------
+
+
+def check_fee_gate(estimate: FeeEstimate | None, min_net_risk_reward: float) -> CheckResult:
+    """Bloquea si los fees proyectados dejan el RR neto por debajo del mínimo.
+
+    Regla 12 de la Sección 3.6 ("sin cálculo de fees → no se opera") y
+    `net_rr_ok` del checklist pre-trade (§4.10). El RR que declara el
+    ModelDecision lo calcula GPT con fees que estima él mismo; acá se recalcula
+    con las tasas reales del adapter.
+
+    BLOCK y no ADJUST_DOWN: fees, ganancia y pérdida escalan todos con el
+    notional, así que reducir margen o leverage deja el RR neto igual. No hay
+    ajuste que lo arregle.
+
+    Fail-closed: sin estimación (el caller no obtuvo tasas del adapter, o la
+    decisión no describe una orden) no se opera.
+
+    Args:
+        estimate: resultado de `backend.core.fees.estimate_fees_for_decision`,
+            o None si no se pudo calcular.
+        min_net_risk_reward: `config.risk.min_net_risk_reward`.
+
+    Returns:
+        CheckResult PASS con el fee proyectado en `reason`, o BLOCK.
+    """
+    rule = "fee_gate"
+    if estimate is None:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason=(
+                "Sin estimación de fees pre-trade: cálculo de fees obligatorio antes de "
+                "operar (regla 12)."
+            ),
+        )
+    minimum = Decimal(str(min_net_risk_reward))
+    if estimate.net_risk_reward < minimum:
+        return CheckResult(
+            outcome=CheckOutcome.BLOCK,
+            rule=rule,
+            reason=(
+                f"RR neto de fees {estimate.net_risk_reward} por debajo del mínimo "
+                f"{minimum}. {estimate.as_audit_reason()}"
+            ),
+        )
+    return CheckResult(outcome=CheckOutcome.PASS, rule=rule, reason=estimate.as_audit_reason())
 
 
 # ---------------------------------------------------------------------------

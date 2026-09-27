@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from backend.backtesting.fee_model import FeeModel
 from backend.core.config import Environment, load_config
 from backend.core.slippage import SlippageEstimate, estimate_slippage
 from backend.decision_engine.schemas import (
@@ -165,6 +166,12 @@ def _engine(
     engine._order_repo = order_repo  # type: ignore[attr-defined]
     engine._volatility_repo = volatility_repo  # type: ignore[attr-defined]
     return engine, session, order_repo
+
+
+def test_get_fee_rates_delegates_to_adapter() -> None:
+    model = FeeModel(taker_rate=Decimal("0.0004"), maker_rate=Decimal("0.0001"))
+    engine, _session, _order_repo = _engine(PaperAdapter(fee_model=model))
+    assert engine.get_fee_rates("BTCUSDT") == model.rates
 
 
 def test_execute_approved_plan_fills_and_registers_position() -> None:

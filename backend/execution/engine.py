@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.config import Environment, PositionManagementConfig
 from backend.core.constants import QUANT
+from backend.core.fees import FeeRates
 from backend.core.slippage import SlippageEstimate
 from backend.decision_engine.schemas import DecisionType, EntryType, ModelDecision
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -86,6 +87,10 @@ class ExecutionEngine:
         """Retorna el PnL no realizado de la posición abierta para el símbolo, o None si no hay."""
         position = self._adapter.get_position(symbol)
         return position.unrealized_pnl if position is not None else None
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        """Tasas de fee del adapter para el gate de fees pre-trade (F17, regla 12)."""
+        return self._adapter.get_fee_rates(symbol)
 
     def execute_approved_plan(
         self,

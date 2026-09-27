@@ -8,6 +8,7 @@ from backend.core.config import get_config
 from backend.risk_engine.checks import CheckOutcome, check_max_open_positions
 from backend.risk_engine.engine import validate
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from tests.unit.conftest import fee_estimate_for
 from tests.unit.test_risk_engine_validation import _aggregation, _long_decision
 
 _LIMIT = 1
@@ -51,6 +52,7 @@ class TestValidateAplicaElLimite:
             get_config(),
             funding_rate=0.0001,
             open_positions_count=open_positions_count,
+            fee_estimate=fee_estimate_for(decision),
         ).decision
 
     def test_lee_el_limite_de_la_config(self) -> None:
@@ -80,4 +82,5 @@ class TestValidateAplicaElLimite:
             get_config(),
             funding_rate=0.0001,
             open_positions_count=open_positions_count,
+            fee_estimate=fee_estimate_for(decision),
         )

@@ -16,8 +16,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.backtesting.fee_model import FeeModel
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig, Environment, LivePhase, get_config, load_config
+from backend.core.fees import FeeRates, FeeRatesUnavailableError, estimate_fees_for_decision
 from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
@@ -797,6 +799,7 @@ def _make_pipeline_runner(
     )
     execution_engine = Mock()
     execution_engine.get_open_position_unrealized_pnl.return_value = None
+    execution_engine.get_fee_rates.return_value = FeeModel().rates
     gpt_client = Mock()
     gpt_client.request = AsyncMock(return_value=gpt_decision)
     prompt_builder = Mock()
@@ -1018,6 +1021,7 @@ def _slippage_runner(
     config = load_config()
     execution_engine = Mock(spec=ExecutionEngine)
     execution_engine.get_open_position_unrealized_pnl.return_value = None
+    execution_engine.get_fee_rates.return_value = FeeModel().rates
 
     gpt_client = Mock()
 
@@ -1154,6 +1158,32 @@ def test_process_symbol_passes_proposed_estimate_to_risk_engine(
     assert estimate.estimated_slippage_usdt == proposed.estimated_slippage_usdt
 
 
+def test_process_symbol_passes_fee_estimate_with_adapter_rates_to_risk_engine(
+    heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El gate de fees recibe la proyección hecha con las tasas del adapter (regla 12)."""
+    decision = _slippage_decision(margin_usdt=10.0, leverage=4)
+    runner, engine = _slippage_runner(
+        heartbeat_file, db_session, decision, RiskDecision.BLOCK, None
+    )
+    adapter_rates = FeeRates(maker=Decimal("0.0001"), taker=Decimal("0.0003"))
+    engine.get_fee_rates.return_value = adapter_rates
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> RiskValidationResult:
+        seen.update(kwargs)
+        return runner._risk_result_for_test  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(risk_engine, "validate", _capture)
+
+    asyncio.run(runner._process_symbol(_slippage_snapshot()))  # type: ignore[attr-defined]
+
+    engine.get_fee_rates.assert_called_once_with(decision.symbol)
+    assert seen["fee_estimate"] == estimate_fees_for_decision(
+        decision, Decimal("10"), 4, adapter_rates
+    )
+
+
 def test_process_symbol_passes_last_account_trade_to_anti_leverage_escalation(
     heartbeat_file: Path, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1262,6 +1292,41 @@ def test_process_symbol_persists_slippage_estimate_in_risk_validation_reasons(
     validation = db_session.query(RiskValidationRow).one()
     assert "slippage_estimate" in (validation.reasons or {})
     assert "Slippage estimado pre-trade" in validation.reasons["slippage_estimate"]
+
+
+def test_process_symbol_persists_fee_estimate_in_risk_validation_reasons(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """El fee proyectado de la regla 12 llega a `risk_validations.reasons` (Anexo B)."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    validation = db_session.query(RiskValidationRow).one()
+    assert "Fees proyectados" in validation.reasons["fee_gate"]
+
+
+def test_process_symbol_blocks_with_audit_when_adapter_has_no_fee_rates(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """Sin tasas del adapter no se opera, pero el BLOCK queda auditado.
+
+    Si el error subiera, el savepoint del símbolo haría rollback también de la
+    decisión y su agregación, y no quedaría traza en el Anexo B.
+    """
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    execution_engine.get_fee_rates.side_effect = FeeRatesUnavailableError("caído")
+
+    with db_session.begin_nested():
+        asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    validation = db_session.query(RiskValidationRow).one()
+    assert validation.result == RiskDecision.BLOCK.value
+    assert "fee_gate" in validation.reasons
+    assert db_session.query(DecisionRow).count() == 1
+    execution_engine.execute_approved_plan.assert_not_called()
 
 
 def test_process_symbol_persists_audit_even_when_aggregator_says_no_operar(
