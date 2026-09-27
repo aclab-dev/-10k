@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.main import app
 from backend.auth.config import AuthCredentials, get_auth_credentials
 from backend.auth.hashing import hash_password
+from backend.core.config import AppConfig, Environment, LivePhase, get_config
 from backend.storage.database import Base, get_db
 from backend.storage.models import (
     AccountState,
@@ -43,6 +44,17 @@ TEST_TOKEN_TTL_SECONDS = 3600
 # scrypt cuesta ~64 MB y ~100 ms por derivación: hasheamos la password de test
 # una sola vez para todo el módulo en vez de una vez por test.
 _TEST_PASSWORD_HASH = hash_password(TEST_PASSWORD)
+
+
+def config_with_live_phase(phase: LivePhase, environment: Environment | None = None) -> AppConfig:
+    """Config real con `leverage.live_phase` fijado y, opcionalmente, el entorno de ejecución."""
+    cfg = get_config()
+    update: dict[str, object] = {
+        "leverage": cfg.leverage.model_copy(update={"live_phase": phase}),
+    }
+    if environment is not None:
+        update["execution"] = cfg.execution.model_copy(update={"environment": environment})
+    return cfg.model_copy(update=update)
 
 
 def make_auth_credentials(*, enabled: bool = True) -> AuthCredentials:

@@ -23,12 +23,12 @@ CHALLENGE_MODE = "AUTONOMOUS_FUTURES_GPT55_QUANT_CONTROLLED_RISK"
 
 # Leverage caps por entorno (tope absoluto del schema).
 # El spec maestro define LIVE inicial ≤3x · LIVE absoluto ≤5x.
-# Este dict valida el absoluto; el Risk Engine aplica el cap inicial de 3x
-# en LIVE antes de enviar la orden — el schema no necesita conocerlo.
+# Este dict valida el absoluto; el cap por fase LIVE (leverage.live_phase: INITIAL 3x,
+# ABSOLUTE 5x) lo aplica el Risk Engine antes de enviar la orden — el schema no lo conoce.
 _LEVERAGE_CAP: dict[Environment, int] = {
     Environment.PAPER: 10,
     Environment.TESTNET: 5,
-    Environment.LIVE: 5,  # absoluto; Risk Engine limita a 3x en el primer trade LIVE
+    Environment.LIVE: 5,  # absoluto; Risk Engine limita a 3x mientras live_phase=INITIAL
 }
 
 

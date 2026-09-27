@@ -17,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
-from backend.core.config import Environment, get_config, load_config
+from backend.core.config import AppConfig, Environment, LivePhase, get_config, load_config
 from backend.core.slippage import estimate_for_decision
 from backend.decision_engine.aggregator_schemas import (
     ContributingSources,
@@ -69,6 +69,7 @@ from backend.trading_core.cycle_runner import (
     CycleRunner,
     parse_interval_from_env,
 )
+from tests.unit.conftest import config_with_live_phase
 
 _NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
@@ -770,7 +771,10 @@ def test_tick_passes_reconciliation_failed_symbols_to_decision_pipeline(
 
 
 def _make_pipeline_runner(
-    db_session: Session, heartbeat_file: Path, snapshot: MarketSnapshot
+    db_session: Session,
+    heartbeat_file: Path,
+    snapshot: MarketSnapshot,
+    config: AppConfig | None = None,
 ) -> tuple[CycleRunner, Mock]:
     """CycleRunner con GPT y Aggregator mockeados (LONG válido) y Risk Engine real.
 
@@ -805,7 +809,7 @@ def _make_pipeline_runner(
         gpt_client=gpt_client,
         prompt_builder=prompt_builder,
         aggregator=aggregator,
-        config=get_config(),
+        config=config or get_config(),
         session=db_session,
         bot_run_id=bot_run.id,
     )
@@ -864,6 +868,40 @@ def test_process_symbol_executes_with_neutral_snapshot_funding(
     asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
 
     execution_engine.execute_approved_plan.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Leverage máximo informado a GPT = cap real del entorno/fase (F17 [160])
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("environment", "phase", "expected"),
+    [
+        (Environment.PAPER, LivePhase.INITIAL, 10),
+        (Environment.TESTNET, LivePhase.INITIAL, 5),
+        (Environment.LIVE, LivePhase.INITIAL, 3),
+        (Environment.LIVE, LivePhase.ABSOLUTE, 5),
+    ],
+)
+def test_prompt_account_reports_env_leverage_cap(
+    heartbeat_file: Path,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    environment: Environment,
+    phase: LivePhase,
+    expected: int,
+) -> None:
+    config = config_with_live_phase(phase, environment)
+    snapshot = _make_snapshot()
+    runner, _ = _make_pipeline_runner(db_session, heartbeat_file, snapshot, config)
+    spy = Mock(return_value=_blocked_risk_result(snapshot.symbol))
+    monkeypatch.setattr("backend.trading_core.cycle_runner.risk_engine.validate", spy)
+
+    asyncio.run(runner._process_symbol(snapshot))  # type: ignore[attr-defined]
+
+    ctx = runner._prompt_builder.build.call_args.args[0]  # type: ignore[attr-defined]
+    assert ctx.account.max_leverage_for_environment == expected
 
 
 # ---------------------------------------------------------------------------

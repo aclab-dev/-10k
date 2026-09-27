@@ -46,6 +46,17 @@ class LeverageMode(StrEnum):
     FIXED = "FIXED"
 
 
+class LivePhase(StrEnum):
+    """Fase operativa dentro de LIVE: fija qué cap de leverage aplica el Risk Engine.
+
+    INITIAL usa max_leverage_live_initial (≤3x); ABSOLUTE usa max_leverage_live_absolute
+    (≤5x). La promoción es manual (config/env var), nunca automática.
+    """
+
+    INITIAL = "INITIAL"
+    ABSOLUTE = "ABSOLUTE"
+
+
 class DatabaseEngine(StrEnum):
     POSTGRESQL = "POSTGRESQL"
 
@@ -176,6 +187,8 @@ class LeverageConfig(BaseModel):
     max_leverage_testnet: int
     max_leverage_live_initial: int
     max_leverage_live_absolute: int
+    # Default conservador: sin flag explícito, LIVE opera con el cap inicial.
+    live_phase: LivePhase = LivePhase.INITIAL
     volatility_adjustment_enabled: bool
     liquidation_distance_required: bool
 
@@ -198,6 +211,20 @@ class LeverageConfig(BaseModel):
                 f"max_leverage_live_initial={self.max_leverage_live_initial} supera 3x (LIVE)"
             )
         return self
+
+    def cap_for_env(self, environment: Environment) -> int:
+        """Tope de leverage del entorno. Fuente única para Risk Engine, sugerencia y prompt.
+
+        En LIVE depende de la fase explícita: INITIAL → max_leverage_live_initial,
+        ABSOLUTE → max_leverage_live_absolute.
+        """
+        if environment == Environment.PAPER:
+            return self.max_leverage_paper
+        if environment == Environment.TESTNET:
+            return self.max_leverage_testnet
+        if self.live_phase == LivePhase.ABSOLUTE:
+            return self.max_leverage_live_absolute
+        return self.max_leverage_live_initial
 
 
 # ---------------------------------------------------------------------------

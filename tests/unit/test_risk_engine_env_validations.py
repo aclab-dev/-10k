@@ -3,8 +3,17 @@
 Validaciones de leverage por entorno operativo (F9 [71]).
 """
 
-from backend.core.config import Environment, get_config
+import pytest
+
+from backend.core.config import (
+    ConfigError,
+    Environment,
+    LeverageConfig,
+    LivePhase,
+    get_config,
+)
 from backend.risk_engine.checks import CheckOutcome, check_leverage_cap, leverage_cap_for_env
+from tests.unit.conftest import config_with_live_phase
 
 
 def _cfg():
@@ -25,10 +34,61 @@ class TestLeverageCapForEnv:
         cfg = _cfg()
         assert leverage_cap_for_env(cfg, Environment.TESTNET) == cfg.leverage.max_leverage_testnet
 
-    def test_live_returns_absolute_cap(self) -> None:
+    def test_live_returns_initial_cap_by_default(self) -> None:
         cfg = _cfg()
-        cap = cfg.leverage.max_leverage_live_absolute
+        assert cfg.leverage.live_phase == LivePhase.INITIAL
+        cap = cfg.leverage.max_leverage_live_initial
         assert leverage_cap_for_env(cfg, Environment.LIVE) == cap
+
+    def test_live_initial_phase_returns_initial_cap(self) -> None:
+        cfg = config_with_live_phase(LivePhase.INITIAL)
+        assert leverage_cap_for_env(cfg, Environment.LIVE) == 3
+
+    def test_live_absolute_phase_returns_absolute_cap(self) -> None:
+        cfg = config_with_live_phase(LivePhase.ABSOLUTE)
+        assert leverage_cap_for_env(cfg, Environment.LIVE) == 5
+
+    @pytest.mark.parametrize("phase", list(LivePhase))
+    def test_phase_does_not_affect_paper_or_testnet(self, phase: LivePhase) -> None:
+        cfg = config_with_live_phase(phase)
+        assert leverage_cap_for_env(cfg, Environment.PAPER) == cfg.leverage.max_leverage_paper
+        assert leverage_cap_for_env(cfg, Environment.TESTNET) == cfg.leverage.max_leverage_testnet
+
+
+# ---------------------------------------------------------------------------
+# LeverageConfig.live_phase — flag de fase explícito
+# ---------------------------------------------------------------------------
+
+
+class TestLivePhaseConfig:
+    def _base(self) -> dict[str, object]:
+        return get_config().leverage.model_dump(exclude={"live_phase"})
+
+    def test_missing_phase_defaults_to_initial(self) -> None:
+        assert LeverageConfig(**self._base()).live_phase == LivePhase.INITIAL
+
+    def test_accepts_absolute(self) -> None:
+        cfg = LeverageConfig(**self._base(), live_phase="ABSOLUTE")
+        assert cfg.live_phase == LivePhase.ABSOLUTE
+
+    def test_invalid_phase_rejected(self) -> None:
+        with pytest.raises((ValueError, ConfigError)):
+            LeverageConfig(**self._base(), live_phase="PROMOTED")
+
+    @pytest.mark.parametrize(
+        ("environment", "phase", "expected"),
+        [
+            (Environment.PAPER, LivePhase.INITIAL, 10),
+            (Environment.TESTNET, LivePhase.INITIAL, 5),
+            (Environment.LIVE, LivePhase.INITIAL, 3),
+            (Environment.PAPER, LivePhase.ABSOLUTE, 10),
+            (Environment.TESTNET, LivePhase.ABSOLUTE, 5),
+            (Environment.LIVE, LivePhase.ABSOLUTE, 5),
+        ],
+    )
+    def test_cap_for_env(self, environment: Environment, phase: LivePhase, expected: int) -> None:
+        cfg = LeverageConfig(**self._base(), live_phase=phase)
+        assert cfg.cap_for_env(environment) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -92,23 +152,34 @@ class TestTestnetLeverageCap:
 
 
 # ---------------------------------------------------------------------------
-# LIVE — cap absoluto 5x (configuración por defecto)
+# LIVE — cap según fase: INITIAL 3x (default) · ABSOLUTE 5x
 # ---------------------------------------------------------------------------
 
 
 class TestLiveLeverageCap:
     def test_at_absolute_cap_passes(self) -> None:
-        cfg = _cfg()
+        cfg = config_with_live_phase(LivePhase.ABSOLUTE)
         cap = cfg.leverage.max_leverage_live_absolute
         result = check_leverage_cap(cap, cfg, Environment.LIVE)
         assert result.outcome == CheckOutcome.PASS
+
+    @pytest.mark.parametrize("leverage", [4, 5])
+    def test_live_initial_above_3x_triggers_adjust_down(self, leverage: int) -> None:
+        cfg = config_with_live_phase(LivePhase.INITIAL)
+        result = check_leverage_cap(leverage, cfg, Environment.LIVE)
+        assert result.outcome == CheckOutcome.ADJUST_DOWN
+        assert "3x" in result.reason
+
+    def test_live_initial_at_3x_passes(self) -> None:
+        cfg = config_with_live_phase(LivePhase.INITIAL)
+        assert check_leverage_cap(3, cfg, Environment.LIVE).outcome == CheckOutcome.PASS
 
     def test_below_cap_passes(self) -> None:
         cfg = _cfg()
         assert check_leverage_cap(1, cfg, Environment.LIVE).outcome == CheckOutcome.PASS
 
     def test_above_absolute_cap_triggers_adjust_down(self) -> None:
-        cfg = _cfg()
+        cfg = config_with_live_phase(LivePhase.ABSOLUTE)
         cap = cfg.leverage.max_leverage_live_absolute
         result = check_leverage_cap(cap + 1, cfg, Environment.LIVE)
         assert result.outcome == CheckOutcome.ADJUST_DOWN

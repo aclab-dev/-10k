@@ -405,7 +405,9 @@ class CycleRunner:
             balance_usdt=float(snapshot.account_balance_usdt),
             open_positions_count=snapshot.open_positions_count,
             daily_drawdown_percent=daily_drawdown_pct,
-            max_leverage_for_environment=self._config.leverage.max_leverage_paper,
+            max_leverage_for_environment=self._config.leverage.cap_for_env(
+                self._config.execution.environment
+            ),
         )
         ctx = PromptContext(
             snapshot=snapshot,

@@ -46,14 +46,13 @@ class CheckResult:
 
 
 def leverage_cap_for_env(config: AppConfig, environment: Environment) -> int:
-    """Devuelve el tope de leverage para el entorno dado."""
-    lev = config.leverage
-    if environment == Environment.PAPER:
-        return lev.max_leverage_paper
-    if environment == Environment.TESTNET:
-        return lev.max_leverage_testnet
-    # LIVE: usa el cap absoluto; el cap inicial (≤3x) lo aplica el execution layer.
-    return lev.max_leverage_live_absolute
+    """Devuelve el tope de leverage para el entorno dado.
+
+    En LIVE el cap depende de la fase explícita (leverage.live_phase): INITIAL → 3x,
+    ABSOLUTE → 5x. El Risk Engine es la última línea: no se delega en la capa de
+    sugerencia de volatilidad, que es bypasseable.
+    """
+    return config.leverage.cap_for_env(environment)
 
 
 # ---------------------------------------------------------------------------

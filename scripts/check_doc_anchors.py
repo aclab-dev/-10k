@@ -1,25 +1,23 @@
-"""Verifica que los enlaces a línea de los docs sigan apuntando a lo que anuncian.
+"""Verifica que las referencias a código de los docs sigan apuntando a algo que existe.
 
 `docs/live_checklist.md` es el gate de la regla 34: su valor está en que cada
-fila cite evidencia verificable. Esas citas son enlaces a un archivo y una
-línea, y cualquier commit que agregue un import o una constante los corre en
-silencio — el documento sigue renderizando, pero apunta a una línea en blanco
-o a otra función. Pasó cuatro veces en una sola card.
+fila cite evidencia verificable y auditable (spec §3.6). Las citas por número
+de línea (`archivo.py#L123`, `archivo.py:123`) se corren en silencio con
+cualquier import o constante nueva — pasó en casi cada card de F17 — y un
+linter que sólo mira la línea destino no distingue "se corrió dentro del mismo
+cuerpo" de "ahora apunta a otra cosa".
 
-Regla que aplica este script: si la etiqueta del enlace es un símbolo Python
-(`` [`check_funding_gate`](../backend/risk_engine/checks.py#L217) ``), ese
-símbolo tiene que aparecer en la línea destino o en la definición que la
-contiene. Un enlace que apunta a propósito al *cuerpo* de algo — una línea
-concreta dentro de una función — se etiqueta con su ubicación
-(`` [`engine.py:146`](...#L146) ``) y el script no le exige símbolo, sólo que
-la línea no esté vacía.
+Por eso la evidencia se cita por símbolo, que no se mueve cuando el archivo
+cambia, y este script la verifica con `ast`:
 
-Lo que NO detecta, a propósito: que un ancla se corra unas líneas pero siga
-dentro del mismo cuerpo. Exigir la línea exacta daría falsos positivos en cada
-enlace que apunta al medio de una función, y un linter ruidoso se termina
-ignorando. Atrapa lo que rompe el documento de verdad — el ancla que aterriza
-en otra función, en una línea en blanco o fuera de rango — que es justo lo que
-produce agregar un import o una constante más arriba.
+- Enlace a código: `` [`check_funding_gate`](../backend/risk_engine/checks.py) ``.
+  Cada símbolo entre backticks de la etiqueta tiene que estar definido en el
+  archivo destino (función, clase, método, campo de clase o constante de
+  módulo). Un nombre cualificado (`RiskConfig.no_cross`) se resuelve exacto;
+  uno suelto, contra el nombre de módulo o el último componente.
+- Test: `` `tests/unit/test_config.py::test_rejects_cross` `` (node id de
+  pytest). El archivo y cada nombre de la ruta tienen que existir.
+- Prohibido: `#L<n>` en un enlace y `` `archivo.py:<n>` `` en el texto.
 
 Uso: `python scripts/check_doc_anchors.py [docs/live_checklist.md ...]`
 Sin argumentos revisa todos los .md de docs/. Sale con 1 si algo no verifica.
@@ -27,73 +25,86 @@ Sin argumentos revisa todos los .md de docs/. Sale con 1 si algo no verifica.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
+from functools import cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: [etiqueta](../ruta/al/archivo.py#L123)
-_LINK = re.compile(r"\[([^\]]+)\]\((\.\./[A-Za-z0-9_./-]+\.py)#L(\d+)\)")
-#: Etiquetas que son una ubicación, no un símbolo: `engine.py:146`, `execution/engine.py:362`.
-_LOCATION_LABEL = re.compile(r"^`?[A-Za-z0-9_/]+\.py:\d+`?$")
-#: Un símbolo Python, eventualmente cualificado: `PaperAdapter._cross_spread`.
-_SYMBOL_LABEL = re.compile(r"^`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`$")
-_DEF = re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+#: [etiqueta](../ruta/al/archivo.py) con `#L123` opcional (que se rechaza).
+_LINK = re.compile(r"\[([^\]]+)\]\((\.\./[A-Za-z0-9_./-]+\.py)(#L\d+)?\)")
+#: Un símbolo Python entre backticks, eventualmente cualificado: `PaperAdapter._cross_spread`.
+_SYMBOL = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`")
+#: Cita por línea en el texto: `engine.py:146`, `tests/unit/test_x.py:23-172`.
+_LINE_REF = re.compile(r"`[A-Za-z0-9_./-]+\.py:\d[\d,-]*`")
+#: Node id de pytest: `tests/unit/test_x.py::TestA::test_b`.
+_NODE_ID = re.compile(
+    r"`((?:tests|scripts|backend|worker)/[A-Za-z0-9_./-]+\.py)((?:::[A-Za-z_]\w*)+)`"
+)
 
 
-def _enclosing_definitions(lines: list[str], index: int) -> list[str]:
-    """Nombres de las definiciones que contienen a `lines[index]`, de dentro hacia fuera."""
-    names: list[str] = []
-    indent = len(lines[index]) - len(lines[index].lstrip())
-    for i in range(index, -1, -1):
-        m = _DEF.match(lines[i])
-        if m is None:
-            continue
-        def_indent = len(m.group(1))
-        if i == index or def_indent < indent:
-            names.append(m.group(2))
-            indent = def_indent
-            if def_indent == 0:
-                break
-    return names
+@cache
+def defined_symbols(path: Path) -> frozenset[str]:
+    """Nombres cualificados que define el módulo: defs, clases, campos y constantes."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+
+    def visit(body: list[ast.stmt], prefix: str, in_class: bool) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qualified = prefix + node.name
+                names.add(qualified)
+                visit(node.body, qualified + ".", isinstance(node, ast.ClassDef))
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and (in_class or not prefix):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        names.add(prefix + target.id)
+
+    visit(tree.body, "", in_class=False)
+    return frozenset(names)
+
+
+def _resolves(symbol: str, names: frozenset[str]) -> bool:
+    if symbol in names:
+        return True
+    return "." not in symbol and any(n.endswith("." + symbol) for n in names)
 
 
 def check_file(doc: Path) -> list[str]:
     problems: list[str] = []
     text = doc.read_text(encoding="utf-8")
-    for label, rel_path, raw_line in _LINK.findall(text):
+
+    for label, rel_path, line_anchor in _LINK.findall(text):
+        where = f"{doc.name}: [{label}] → {rel_path}"
+        if line_anchor:
+            problems.append(f"{where}{line_anchor} cita por línea: referenciá por símbolo")
+            continue
         target = (doc.parent / rel_path).resolve()
-        line_no = int(raw_line)
         if not target.exists():
-            problems.append(f"{doc.name}: [{label}] → {rel_path} no existe")
+            problems.append(f"{where} no existe")
             continue
-        lines = target.read_text(encoding="utf-8").splitlines()
-        if line_no > len(lines):
-            problems.append(
-                f"{doc.name}: [{label}] → {rel_path}#L{line_no} fuera de rango "
-                f"({len(lines)} líneas)"
-            )
-            continue
+        names = defined_symbols(target)
+        for symbol in _SYMBOL.findall(label):
+            if symbol == target.name:
+                continue  # la etiqueta nombra el archivo, no un símbolo
+            if not _resolves(symbol, names):
+                problems.append(f"{where} no define '{symbol}'")
 
-        content = lines[line_no - 1]
-        if not content.strip():
-            problems.append(f"{doc.name}: [{label}] → {rel_path}#L{line_no} es una línea vacía")
-            continue
+    for ref in _LINE_REF.findall(text):
+        problems.append(f"{doc.name}: {ref} cita por línea: referenciá por símbolo")
 
-        if _LOCATION_LABEL.match(label):
-            continue  # etiqueta-ubicación: alcanza con que la línea exista
-        m = _SYMBOL_LABEL.match(label)
-        if m is None:
-            continue  # prosa ("docstring del módulo"): no hay símbolo que exigir
-
-        symbol = m.group(1).split(".")[-1]
-        if symbol in content or symbol in _enclosing_definitions(lines, line_no - 1):
+    for rel_path, node_path in _NODE_ID.findall(text):
+        target = REPO_ROOT / rel_path
+        if not target.exists():
+            problems.append(f"{doc.name}: `{rel_path}{node_path}` → {rel_path} no existe")
             continue
-        problems.append(
-            f"{doc.name}: [{label}] → {rel_path}#L{line_no} no menciona '{symbol}': "
-            f"{content.strip()[:60]}"
-        )
+        symbol = node_path.removeprefix("::").replace("::", ".")
+        if symbol not in defined_symbols(target):
+            problems.append(f"{doc.name}: `{rel_path}{node_path}` no define '{symbol}'")
+
     return problems
 
 
@@ -104,18 +115,21 @@ def main(argv: list[str]) -> int:
         problems.extend(check_file(doc))
 
     if problems:
-        print(f"Anclas rotas ({len(problems)}):", file=sys.stderr)
+        print(f"Referencias rotas ({len(problems)}):", file=sys.stderr)
         for p in problems:
             print(f"  {p}", file=sys.stderr)
         print(
-            "\nCorregilas apuntando a la línea correcta, o usá una etiqueta-ubicación "
-            "(`archivo.py:NN`) si el enlace apunta a propósito al cuerpo de algo.",
+            "\nCitá por símbolo: [`funcion`](../ruta/archivo.py) o "
+            "`tests/ruta/test_x.py::test_nombre`, sin números de línea.",
             file=sys.stderr,
         )
         return 1
 
-    checked = sum(len(_LINK.findall(d.read_text(encoding="utf-8"))) for d in docs)
-    print(f"{checked} anclas verificadas en {len(docs)} documento(s).")
+    checked = sum(
+        len(_LINK.findall(t)) + len(_NODE_ID.findall(t))
+        for t in (d.read_text(encoding="utf-8") for d in docs)
+    )
+    print(f"{checked} referencias verificadas en {len(docs)} documento(s).")
     return 0
 
 

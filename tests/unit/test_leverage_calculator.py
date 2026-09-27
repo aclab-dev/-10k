@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from backend.core.config import Environment, LeverageConfig, LeverageMode
+from backend.core.config import Environment, LeverageConfig, LeverageMode, LivePhase
 from backend.market_regime.schemas import PrimaryRegime
 from backend.volatility.leverage import (
     _REGIME_MULTIPLIERS,
@@ -70,8 +70,12 @@ class TestEnvCap:
         assert _env_cap(Environment.TESTNET, _DEFAULT_LEVERAGE_CONFIG) == 5
 
     def test_live_uses_initial_cap(self) -> None:
-        # LIVE usa el cap inicial (3x) — más conservador, sin phase tracking aún
+        # Sin live_phase explícito rige INITIAL → cap inicial (3x)
         assert _env_cap(Environment.LIVE, _DEFAULT_LEVERAGE_CONFIG) == 3
+
+    def test_live_absolute_phase_uses_absolute_cap(self) -> None:
+        cfg = _DEFAULT_LEVERAGE_CONFIG.model_copy(update={"live_phase": LivePhase.ABSOLUTE})
+        assert _env_cap(Environment.LIVE, cfg) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +143,7 @@ class TestEnvironmentCaps:
         assert result.env_cap == 5
 
     def test_live_env_cap_is_initial_not_absolute(self) -> None:
-        """Verifica que LIVE usa max_leverage_live_initial (3x), no el absoluto (5x).
-
-        El cap absoluto (5x) es la garantía de nivel inferior del Risk Engine.
-        Aquí siempre aplicamos 3x hasta que exista phase tracking LIVE.
-        """
+        """LIVE en fase INITIAL (default) usa max_leverage_live_initial (3x), no el absoluto."""
         result = compute_dynamic_leverage(
             _vol_assessment(leverage_cap=10),
             PrimaryRegime.TRENDING,
@@ -152,6 +152,17 @@ class TestEnvironmentCaps:
         )
         assert result.env_cap == 3
         assert result.suggested_leverage == 3
+
+    def test_live_absolute_phase_env_cap_is_absolute(self) -> None:
+        cfg = _DEFAULT_LEVERAGE_CONFIG.model_copy(update={"live_phase": LivePhase.ABSOLUTE})
+        result = compute_dynamic_leverage(
+            _vol_assessment(leverage_cap=10),
+            PrimaryRegime.TRENDING,
+            Environment.LIVE,
+            cfg,
+        )
+        assert result.env_cap == 5
+        assert result.suggested_leverage == 5
 
 
 # ---------------------------------------------------------------------------

@@ -11,9 +11,10 @@ from decimal import Decimal
 
 import pytest
 
-from backend.core.config import Environment, get_config
+from backend.core.config import Environment, LivePhase, get_config
 from backend.risk_engine.adjustments import compute_adjusted_leverage, compute_adjusted_margin
 from backend.risk_engine.checks import leverage_cap_for_env
+from tests.unit.conftest import config_with_live_phase
 
 # ---------------------------------------------------------------------------
 # compute_adjusted_margin
@@ -125,7 +126,7 @@ class TestComputeAdjustedLeverage:
         result = compute_adjusted_leverage(paper_cap, cfg, Environment.TESTNET)
         assert result == testnet_cap
 
-    # ---- LIVE (cap absoluto 5x por defecto) ----
+    # ---- LIVE (fase inicial por defecto: cap 3x) ----
 
     def test_live_below_cap_returns_original(self) -> None:
         cfg = _config()
@@ -134,15 +135,28 @@ class TestComputeAdjustedLeverage:
 
     def test_live_at_cap_returns_original(self) -> None:
         cfg = _config()
-        cap = cfg.leverage.max_leverage_live_absolute
+        cap = cfg.leverage.max_leverage_live_initial
         result = compute_adjusted_leverage(cap, cfg, Environment.LIVE)
         assert result == cap
 
     def test_live_above_cap_returns_cap(self) -> None:
         cfg = _config()
-        cap = cfg.leverage.max_leverage_live_absolute
+        cap = cfg.leverage.max_leverage_live_initial
         result = compute_adjusted_leverage(cap + 1, cfg, Environment.LIVE)
         assert result == cap
+
+    def test_live_initial_reduces_absolute_cap_to_initial(self) -> None:
+        """5x (válido en LIVE absoluto) se recorta a 3x en LIVE inicial."""
+        cfg = config_with_live_phase(LivePhase.INITIAL)
+        absolute = cfg.leverage.max_leverage_live_absolute
+        result = compute_adjusted_leverage(absolute, cfg, Environment.LIVE)
+        assert result == cfg.leverage.max_leverage_live_initial
+
+    def test_live_absolute_phase_uses_absolute_cap(self) -> None:
+        cfg = config_with_live_phase(LivePhase.ABSOLUTE)
+        cap = cfg.leverage.max_leverage_live_absolute
+        assert compute_adjusted_leverage(cap, cfg, Environment.LIVE) == cap
+        assert compute_adjusted_leverage(cap + 1, cfg, Environment.LIVE) == cap
 
     # ---- Invariantes ----
 
