@@ -6,7 +6,7 @@ del round-trip con las tasas reales del adapter antes de operar.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 
 import pytest
 
@@ -73,7 +73,7 @@ def test_net_rr_matches_formula_and_is_below_gross() -> None:
     reward = qty * _D("10000") - _D("25") * _D("0.0005") - qty * _D("105000") * _D("0.0005")
     risk = qty * _D("5000") + _D("25") * _D("0.0005") + qty * _D("90000") * _D("0.0005")
     assert est.gross_risk_reward == _D("2.0000")
-    assert est.net_risk_reward == (reward / risk).quantize(_D("0.0001"))
+    assert est.net_risk_reward == (reward / risk).quantize(_D("0.0001"), rounding=ROUND_FLOOR)
     assert est.net_risk_reward < est.gross_risk_reward
 
 

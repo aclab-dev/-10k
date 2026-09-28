@@ -111,12 +111,12 @@ _MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
 # Errores de negocio (BingXApiError, `code != 0`, y 4xx) nunca son retryable — se
 # propagan igual que antes de F16. place_order/cancel_order siguen siendo seguros ante
 # estos reintentos porque BingX dedupe por clientOrderID (ver docstring del módulo).
+_RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
+
 # Vigencia del cache de tasas de fee. Son de la cuenta (dependen del tier VIP):
 # cambian con el volumen operado, no entre ciclos. Una hora evita un request por
 # símbolo y ciclo sin quedar atado a un tier viejo por días.
 _FEE_RATES_TTL_SECONDS = 3600.0
-
-_RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
 
 
 def _to_bingx_symbol(symbol: str) -> str:
