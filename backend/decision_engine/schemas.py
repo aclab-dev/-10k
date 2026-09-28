@@ -162,6 +162,7 @@ class ModelDecision(BaseModel):
     Reglas de negocio obligatorias:
     - decision=NO_OPERAR → execute=False siempre
     - execute=True y decision=LONG/SHORT → stop_loss > 0 y take_profit > 0
+    - execute=True y decision=LONG/SHORT → margin_usdt > 0
     - margin_usdt ≤ 10 (límite absoluto; Risk Engine puede reducir más)
     - leverage ≤ 10 (máximo PAPER; Risk Engine aplica caps de entorno)
     - confidence ∈ [0.0, 1.0]
@@ -256,6 +257,20 @@ class ModelDecision(BaseModel):
                 raise ValueError("stop_loss > 0 requerido cuando execute=True")
             if self.take_profit <= 0:
                 raise ValueError("take_profit > 0 requerido cuando execute=True")
+        return self
+
+    @model_validator(mode="after")
+    def execute_requires_positive_margin(self) -> ModelDecision:
+        """Un trade ejecutable sin margen no describe ninguna orden.
+
+        `margin_usdt=0` es válido sólo en NO_OPERAR (no hay trade). Con
+        execute=True no hay notional sobre el que estimar slippage ni fees, y el
+        Risk Engine lo rechaza con ValueError en vez de un BLOCK auditado: se
+        corta acá, en el JSON Schema Guard, antes de que llegue al ciclo.
+        """
+        if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
+            if self.margin_usdt <= 0:
+                raise ValueError("margin_usdt > 0 requerido cuando execute=True")
         return self
 
     @model_validator(mode="after")
