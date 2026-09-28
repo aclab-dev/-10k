@@ -1144,3 +1144,59 @@ def test_get_fee_rates_wraps_response_without_data() -> None:
     adapter = _make_adapter({"/user/commissionRate": {"code": 0}})
     with pytest.raises(FeeRatesUnavailableError):
         adapter.get_fee_rates("BTCUSDT")
+
+
+_COMMISSION_BODY: dict[str, Any] = {
+    "code": 0,
+    "data": {"commission": {"takerCommissionRate": 0.0005, "makerCommissionRate": 0.0002}},
+}
+
+
+def _counting_fee_adapter(
+    responses: list[httpx.Response],
+) -> tuple[BingXAdapter, list[int]]:
+    """Adapter que devuelve `responses` en orden y cuenta los requests hechos."""
+    calls: list[int] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return responses[min(len(calls), len(responses)) - 1]
+
+    return _adapter_with_handler(handler), calls
+
+
+def test_get_fee_rates_is_cached_across_symbols() -> None:
+    """Las tasas son de la cuenta: un solo request para todos los símbolos del ciclo."""
+    adapter, calls = _counting_fee_adapter([httpx.Response(200, json=_COMMISSION_BODY)])
+    first = adapter.get_fee_rates("BTCUSDT")
+    second = adapter.get_fee_rates("ETHUSDT")
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_get_fee_rates_refetches_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter, calls = _counting_fee_adapter([httpx.Response(200, json=_COMMISSION_BODY)])
+    clock = [1000.0]
+    monkeypatch.setattr("backend.exchange_adapters.bingx_adapter.time.monotonic", lambda: clock[0])
+
+    adapter.get_fee_rates("BTCUSDT")
+    clock[0] += 3599.0
+    adapter.get_fee_rates("BTCUSDT")
+    assert len(calls) == 1
+    clock[0] += 1.0
+    adapter.get_fee_rates("BTCUSDT")
+    assert len(calls) == 2
+
+
+def test_get_fee_rates_does_not_cache_errors() -> None:
+    """Un fallo no queda cacheado: el siguiente ciclo vuelve a intentar."""
+    adapter, calls = _counting_fee_adapter(
+        [
+            httpx.Response(200, json={"code": 0}),
+            httpx.Response(200, json=_COMMISSION_BODY),
+        ]
+    )
+    with pytest.raises(FeeRatesUnavailableError):
+        adapter.get_fee_rates("BTCUSDT")
+    assert adapter.get_fee_rates("BTCUSDT").taker == Decimal("0.0005")
+    assert len(calls) == 2

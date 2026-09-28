@@ -111,6 +111,11 @@ _MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
 # Errores de negocio (BingXApiError, `code != 0`, y 4xx) nunca son retryable — se
 # propagan igual que antes de F16. place_order/cancel_order siguen siendo seguros ante
 # estos reintentos porque BingX dedupe por clientOrderID (ver docstring del módulo).
+# Vigencia del cache de tasas de fee. Son de la cuenta (dependen del tier VIP):
+# cambian con el volumen operado, no entre ciclos. Una hora evita un request por
+# símbolo y ciclo sin quedar atado a un tier viejo por días.
+_FEE_RATES_TTL_SECONDS = 3600.0
+
 _RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
 
 
@@ -170,6 +175,9 @@ class BingXAdapter(ExchangeAdapter):
         # Circuit breaker de transporte, compartido por todas las llamadas firmadas de
         # esta instancia (F16). Ver `is_retryable_bingx_error` sobre qué cuenta como fallo.
         self._circuit_breaker = CircuitBreaker()
+        # Tasas de fee de la cuenta + instante (time.monotonic) en que se leyeron.
+        # Sólo se cachea una lectura válida: un error nunca queda cacheado.
+        self._fee_rates_cache: tuple[FeeRates, float] | None = None
 
     @property
     def environment(self) -> Environment:
@@ -412,6 +420,15 @@ class BingXAdapter(ExchangeAdapter):
         # /quote/contracts son las públicas por defecto y pueden no ser las que
         # BingX termina cobrando. El endpoint es por cuenta, no por símbolo.
         #
+        # Como no dependen del símbolo, se cachean por instancia durante
+        # _FEE_RATES_TTL_SECONDS: el ciclo pide tasas para cada símbolo que
+        # evalúa, y sin cache serían un request idéntico por símbolo y ciclo.
+        now = time.monotonic()
+        if self._fee_rates_cache is not None:
+            rates, fetched_at = self._fee_rates_cache
+            if now - fetched_at < _FEE_RATES_TTL_SECONDS:
+                return rates
+
         # Un único try para request y parseo: cualquier falla —API, transporte,
         # cuerpo no JSON o sin `data`, campos ausentes, tasas fuera de rango— se
         # traduce al error agnóstico del contrato. Si se escapara otra excepción,
@@ -419,7 +436,7 @@ class BingXAdapter(ExchangeAdapter):
         try:
             data: dict[str, Any] = self._signed_get("/openApi/swap/v2/user/commissionRate", {})
             commission = data["commission"]
-            return FeeRates(
+            rates = FeeRates(
                 maker=Decimal(str(commission["makerCommissionRate"])),
                 taker=Decimal(str(commission["takerCommissionRate"])),
             )
@@ -436,6 +453,8 @@ class BingXAdapter(ExchangeAdapter):
             raise FeeRatesUnavailableError(
                 f"BingX no devolvió tasas de fee válidas ({type(exc).__name__})"
             ) from exc
+        self._fee_rates_cache = (rates, now)
+        return rates
 
     # ------------------------------------------------------------------
     # HTTP / firma
