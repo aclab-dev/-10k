@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from backend.core.config import AppConfig, get_config
+from backend.core.constants import MIN_NET_RISK_REWARD_FLOOR
 from backend.core.fees import FeeEstimate, FeeRates, estimate_fees_for_decision
 from backend.decision_engine.schemas import ModelDecision
 from backend.risk_engine.checks import CheckOutcome, check_fee_gate
@@ -104,7 +105,13 @@ def test_validate_approves_normal_trade_with_fee_in_reasons() -> None:
 
 
 def test_validate_blocks_trade_whose_edge_is_eaten_by_fees() -> None:
+    """Divergencia entre los dos RR netos: manda el del Risk Engine.
+
+    GPT declara un RR neto que pasa el Schema Guard, pero recalculado con las
+    tasas reales del adapter no llega al mínimo: el trade se bloquea igual.
+    """
     decision = _scalp_decision()
+    assert decision.net_risk_reward >= MIN_NET_RISK_REWARD_FLOOR
     result = _validate(decision, _fees(decision))
     assert result.decision == RiskDecision.BLOCK
     assert result.adjusted_parameters is None

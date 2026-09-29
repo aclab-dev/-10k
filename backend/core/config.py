@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 
+from backend.core.constants import MIN_NET_RISK_REWARD_FLOOR
+
 APP_VERSION = "0.1.0"
 
 _ALLOWED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"})
@@ -159,6 +161,20 @@ class RiskConfig(BaseModel):
     def margin_le_10(cls, v: float) -> float:
         if v > 10:
             raise ConfigError(f"risk.max_margin_per_trade_usdt={v} supera el limite de 10 USDT")
+        return v
+
+    @field_validator("min_net_risk_reward")
+    @classmethod
+    def net_rr_not_below_floor(cls, v: float) -> float:
+        # Por debajo del piso, el Schema Guard seguiría rechazando las decisiones
+        # de GPT que declaran menos de 1.5 aunque el Risk Engine las aceptaría:
+        # dos umbrales de RR neto que dicen cosas distintas. Ver
+        # MIN_NET_RISK_REWARD_FLOOR.
+        if v < MIN_NET_RISK_REWARD_FLOOR:
+            raise ConfigError(
+                f"risk.min_net_risk_reward={v} por debajo del piso del spec "
+                f"({MIN_NET_RISK_REWARD_FLOOR})"
+            )
         return v
 
     @field_validator("martingale_allowed")

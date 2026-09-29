@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.core.config import Environment, MarginType, PositionMode
+from backend.core.constants import MIN_NET_RISK_REWARD_FLOOR
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.market_regime.schemas import PrimaryRegime
 
@@ -275,9 +276,18 @@ class ModelDecision(BaseModel):
 
     @model_validator(mode="after")
     def execute_requires_minimum_rr(self) -> ModelDecision:
+        """Pre-filtro sobre el RR neto que *declara GPT*, con fees que estima él.
+
+        No es la verificación de riesgo: el Risk Engine recalcula el RR neto con
+        las tasas reales del adapter (`check_fee_gate`) y es el que decide. Un
+        GPT que declara 2.0 sobre un trade que en realidad da 0.5 pasa este
+        filtro y lo bloquea el Risk Engine.
+        """
         if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
-            if self.net_risk_reward < 1.5:
-                raise ValueError("net_risk_reward >= 1.5 requerido cuando execute=True")
+            if self.net_risk_reward < MIN_NET_RISK_REWARD_FLOOR:
+                raise ValueError(
+                    f"net_risk_reward >= {MIN_NET_RISK_REWARD_FLOOR} requerido cuando execute=True"
+                )
         return self
 
     @model_validator(mode="after")
