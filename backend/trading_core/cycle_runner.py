@@ -492,7 +492,9 @@ class CycleRunner:
         fee_estimate: FeeEstimate | None = None
         if is_estimable(gpt_decision):
             try:
-                fee_rates = self._execution_engine.get_fee_rates(symbol)
+                # En un thread: en un cache miss el adapter hace un request HTTP
+                # síncrono, que bloquearía el event loop mientras dura.
+                fee_rates = await asyncio.to_thread(self._execution_engine.get_fee_rates, symbol)
             except FeeRatesUnavailableError as exc:
                 log.warning("cycle_runner.fee_rates_unavailable", symbol=symbol, error=str(exc))
             else:

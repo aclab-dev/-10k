@@ -1307,6 +1307,31 @@ def test_process_symbol_persists_fee_estimate_in_risk_validation_reasons(
     assert "Fees proyectados" in validation.reasons["fee_gate"]
 
 
+def test_process_symbol_fetches_fee_rates_off_the_event_loop_thread(
+    heartbeat_file: Path, db_session: Session
+) -> None:
+    """El request HTTP de tasas no puede bloquear el event loop."""
+    snapshot = _make_snapshot().model_copy(update={"funding_rate": 0.0001})
+    runner, execution_engine = _make_pipeline_runner(db_session, heartbeat_file, snapshot)
+    threads: list[int] = []
+
+    def _rates(_symbol: str) -> FeeRates:
+        threads.append(threading.get_ident())
+        return FeeModel().rates
+
+    execution_engine.get_fee_rates.side_effect = _rates
+
+    async def _run() -> int:
+        loop_thread = threading.get_ident()
+        await runner._process_symbol(snapshot)  # type: ignore[attr-defined]
+        return loop_thread
+
+    loop_thread = asyncio.run(_run())
+
+    assert threads
+    assert loop_thread not in threads
+
+
 def test_process_symbol_blocks_with_audit_when_adapter_has_no_fee_rates(
     heartbeat_file: Path, db_session: Session
 ) -> None:
