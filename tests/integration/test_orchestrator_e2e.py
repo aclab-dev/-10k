@@ -60,6 +60,7 @@ from backend.storage.repositories.snapshots import (
 )
 from backend.storage.repositories.trades import OrderRepository, PositionRepository, TradeRepository
 from backend.trading_core.orchestrator import Orchestrator
+from tests.unit.conftest import fee_estimate_for
 
 _NOW = datetime.now(UTC)
 _SYMBOL = "BTCUSDT"
@@ -313,6 +314,7 @@ class TestOrchestratorE2E:
                 config=cfg,
                 funding_rate=0.0001,
                 open_positions_count=0,
+                fee_estimate=fee_estimate_for(decision),
             )
 
             assert risk_result.decision == RiskDecision.APPROVE
@@ -389,6 +391,7 @@ class TestOrchestratorE2E:
                 config=cfg,
                 funding_rate=0.0001,
                 open_positions_count=0,
+                fee_estimate=fee_estimate_for(decision),
             )
             assert risk_result.decision == RiskDecision.APPROVE
 
@@ -458,6 +461,7 @@ class TestOrchestratorE2E:
                 config=cfg_for_adjust,
                 funding_rate=0.0001,
                 open_positions_count=0,
+                fee_estimate=fee_estimate_for(decision),
             )
 
             assert risk_result.decision == RiskDecision.ADJUST_DOWN
@@ -512,6 +516,7 @@ class TestOrchestratorE2E:
                 config=cfg,
                 funding_rate=0.0001,
                 open_positions_count=0,
+                fee_estimate=fee_estimate_for(decision),
             )
 
             assert risk_result.decision == RiskDecision.NO_OPERAR
@@ -544,6 +549,7 @@ class TestOrchestratorE2E:
                 config=cfg,
                 funding_rate=0.0001,
                 open_positions_count=0,
+                fee_estimate=fee_estimate_for(decision),
             )
 
             assert risk_result.decision == RiskDecision.BLOCK

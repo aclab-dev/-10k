@@ -39,6 +39,7 @@ from backend.backtesting.fee_model import FeeModel
 from backend.backtesting.slippage_model import SlippageModel
 from backend.core.config import Environment, MarginType
 from backend.core.constants import QUANT
+from backend.core.fees import FeeRates
 from backend.core.funding import compute_funding_payment
 from backend.core.slippage import half_spread
 from backend.exchange_adapters.base import ExchangeAdapter
@@ -212,6 +213,11 @@ class PaperAdapter(ExchangeAdapter):
         if margin_type == MarginType.CROSS:
             raise ValueError("Cross margin está prohibido. Solo se permite ISOLATED.")
         _log.info("paper_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        # Las mismas tasas con las que se cobran los fills simulados: así el fee
+        # que proyecta el Risk Engine es exactamente el que PAPER termina cobrando.
+        return self._fee.rates
 
     def apply_funding(self, symbol: str, funding_rate: Decimal, mark_price: Decimal) -> Decimal:
         """Aplica el funding rate a la posición abierta en `symbol`.

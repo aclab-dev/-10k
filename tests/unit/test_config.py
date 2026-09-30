@@ -255,6 +255,17 @@ def test_blocks_cross_margin_in_risk(monkeypatch: pytest.MonkeyPatch) -> None:
         _load(monkeypatch, BOT__RISK__CROSS_MARGIN_ALLOWED="true")
 
 
+def test_blocks_min_net_risk_reward_below_spec_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El umbral del Risk Engine no puede quedar debajo del que filtra a GPT."""
+    with pytest.raises(Exception, match="min_net_risk_reward"):
+        _load(monkeypatch, BOT__RISK__MIN_NET_RISK_REWARD="1.2")
+
+
+def test_allows_min_net_risk_reward_above_spec_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _load(monkeypatch, BOT__RISK__MIN_NET_RISK_REWARD="2.0")
+    assert config.risk.min_net_risk_reward == 2.0
+
+
 def test_blocks_max_positions_above_3(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises((ConfigError, Exception)):
         _load(monkeypatch, BOT__TRADING__MAX_OPEN_POSITIONS_ALLOWED="4")

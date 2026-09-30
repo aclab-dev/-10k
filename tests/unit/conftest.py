@@ -25,7 +25,11 @@ from sqlalchemy.pool import StaticPool
 from backend.app.main import app
 from backend.auth.config import AuthCredentials, get_auth_credentials
 from backend.auth.hashing import hash_password
+from backend.backtesting.fee_model import FeeModel
 from backend.core.config import AppConfig, Environment, LivePhase, get_config
+from backend.core.fees import FeeEstimate, estimate_fees_for_decision
+from backend.core.slippage import is_estimable
+from backend.decision_engine.schemas import ModelDecision
 from backend.storage.database import Base, get_db
 from backend.storage.models import (
     AccountState,
@@ -44,6 +48,27 @@ TEST_TOKEN_TTL_SECONDS = 3600
 # scrypt cuesta ~64 MB y ~100 ms por derivación: hasheamos la password de test
 # una sola vez para todo el módulo en vez de una vez por test.
 _TEST_PASSWORD_HASH = hash_password(TEST_PASSWORD)
+
+
+def fee_estimate_for(decision: ModelDecision) -> FeeEstimate | None:
+    """Fee estimate que armaría el ciclo real para `decision`, con las tasas de PAPER.
+
+    None para decisiones no estimables, igual que `CycleRunner._process_symbol`,
+    y para las que un test arma saltándose el schema (`model_construct`) con SL,
+    TP o margen en 0: no describen un trade cuyo fee se pueda proyectar, y el
+    gate las recibe como None (fail-closed). Para tests que llaman a
+    `risk_engine.validate` y no miden el gate de fees.
+    """
+    if not is_estimable(decision):
+        return None
+    if decision.stop_loss <= 0 or decision.take_profit <= 0 or decision.margin_usdt <= 0:
+        return None
+    return estimate_fees_for_decision(
+        decision=decision,
+        margin_usdt=Decimal(str(decision.margin_usdt)),
+        leverage=decision.leverage,
+        rates=FeeModel().rates,
+    )
 
 
 def config_with_live_phase(phase: LivePhase, environment: Environment | None = None) -> AppConfig:

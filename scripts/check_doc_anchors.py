@@ -13,8 +13,15 @@ cambia, y este script la verifica con `ast`:
 - Enlace a código: `` [`check_funding_gate`](../backend/risk_engine/checks.py) ``.
   Cada símbolo entre backticks de la etiqueta tiene que estar definido en el
   archivo destino (función, clase, método, campo de clase o constante de
-  módulo). Un nombre cualificado (`RiskConfig.no_cross`) se resuelve exacto;
-  uno suelto, contra el nombre de módulo o el último componente.
+  módulo). Un nombre cualificado (`RiskConfig.no_cross`) se resuelve exacto.
+  Uno suelto se resuelve contra el nivel de módulo o, si no está ahí, contra
+  el último componente de un nombre cualificado — y tiene que ser único: si
+  dos clases definen `validate`, citar `validate` a secas es ambiguo y falla;
+  hay que cualificarlo (`RiskEngine.validate`).
+- Limitación: se verifica lo que va entre backticks. Una etiqueta que sólo
+  nombra el archivo (`` [`checks.py`](../backend/risk_engine/checks.py) ``) o
+  que cita en prosa, sin backticks, sólo prueba que el archivo existe. Para
+  que la cita sea verificable, nombrá el símbolo entre backticks.
 - Test: `` `tests/unit/test_config.py::test_rejects_cross` `` (node id de
   pytest). El archivo y cada nombre de la ruta tienen que existir.
 - Prohibido: `#L<n>` en un enlace y `` `archivo.py:<n>` `` en el texto.
@@ -67,10 +74,18 @@ def defined_symbols(path: Path) -> frozenset[str]:
     return frozenset(names)
 
 
-def _resolves(symbol: str, names: frozenset[str]) -> bool:
+def resolve(symbol: str, names: frozenset[str]) -> str | None:
+    """None si `symbol` resuelve a una única definición; si no, el motivo."""
     if symbol in names:
-        return True
-    return "." not in symbol and any(n.endswith("." + symbol) for n in names)
+        return None
+    if "." in symbol:
+        return f"no define '{symbol}'"
+    matches = sorted(n for n in names if n.endswith("." + symbol))
+    if not matches:
+        return f"no define '{symbol}'"
+    if len(matches) > 1:
+        return f"'{symbol}' es ambiguo ({', '.join(matches)}): cualificalo"
+    return None
 
 
 def check_file(doc: Path) -> list[str]:
@@ -90,8 +105,9 @@ def check_file(doc: Path) -> list[str]:
         for symbol in _SYMBOL.findall(label):
             if symbol == target.name:
                 continue  # la etiqueta nombra el archivo, no un símbolo
-            if not _resolves(symbol, names):
-                problems.append(f"{where} no define '{symbol}'")
+            problem = resolve(symbol, names)
+            if problem is not None:
+                problems.append(f"{where} {problem}")
 
     for ref in _LINE_REF.findall(text):
         problems.append(f"{doc.name}: {ref} cita por línea: referenciá por símbolo")

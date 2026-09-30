@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 
+from backend.core.constants import MIN_NET_RISK_REWARD_FLOOR
+
 APP_VERSION = "0.1.0"
 
 _ALLOWED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"})
@@ -51,6 +53,11 @@ class LivePhase(StrEnum):
 
     INITIAL usa max_leverage_live_initial (≤3x); ABSOLUTE usa max_leverage_live_absolute
     (≤5x). La promoción es manual (config/env var), nunca automática.
+
+    Gate de proceso, no de código: nada verifica que la cuenta haya operado en
+    LIVE a 3x antes de pasar a ABSOLUTE — no existe tracking de operaciones por
+    fase. Quien edita `leverage.live_phase` asume esa verificación, igual que la
+    firma de `docs/live_checklist.md` (regla 34).
     """
 
     INITIAL = "INITIAL"
@@ -161,6 +168,20 @@ class RiskConfig(BaseModel):
             raise ConfigError(f"risk.max_margin_per_trade_usdt={v} supera el limite de 10 USDT")
         return v
 
+    @field_validator("min_net_risk_reward")
+    @classmethod
+    def net_rr_not_below_floor(cls, v: float) -> float:
+        # Por debajo del piso, el Schema Guard seguiría rechazando las decisiones
+        # de GPT que declaran menos de 1.5 aunque el Risk Engine las aceptaría:
+        # dos umbrales de RR neto que dicen cosas distintas. Ver
+        # MIN_NET_RISK_REWARD_FLOOR.
+        if v < MIN_NET_RISK_REWARD_FLOOR:
+            raise ConfigError(
+                f"risk.min_net_risk_reward={v} por debajo del piso del spec "
+                f"({MIN_NET_RISK_REWARD_FLOOR})"
+            )
+        return v
+
     @field_validator("martingale_allowed")
     @classmethod
     def no_martingale(cls, v: bool) -> bool:
@@ -217,6 +238,10 @@ class LeverageConfig(BaseModel):
 
         En LIVE depende de la fase explícita: INITIAL → max_leverage_live_initial,
         ABSOLUTE → max_leverage_live_absolute.
+
+        "Fuente única" se refiere al valor del cap: todos los consumidores leen el
+        mismo número. Cuándo corresponde pasar de INITIAL a ABSOLUTE no lo decide
+        esta función ni ningún otro código (ver `LivePhase`).
         """
         if environment == Environment.PAPER:
             return self.max_leverage_paper

@@ -5,6 +5,7 @@ Métodos de lectura (tarjeta [98]):
   - get_position       →  GET /openApi/swap/v2/user/positions
   - get_open_orders    →  GET /openApi/swap/v2/trade/openOrders
   - get_order_status   →  GET /openApi/swap/v2/trade/order
+  - get_fee_rates      →  GET /openApi/swap/v2/user/commissionRate  (F17, regla 12)
 
 Métodos de escritura (tarjeta [99]):
   - place_order        →  POST   /openApi/swap/v2/trade/order
@@ -43,6 +44,7 @@ import structlog
 
 from backend.core.bingx_http import is_retryable_bingx_error
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRates, FeeRatesUnavailableError
 from backend.core.retry import (
     CircuitBreaker,
     CircuitBreakerOpenError,
@@ -111,6 +113,11 @@ _MAX_LEVERAGE_BY_ENV: dict[Environment, int] = {
 # estos reintentos porque BingX dedupe por clientOrderID (ver docstring del módulo).
 _RETRY_CONFIG = RetryConfig(max_attempts=4, base_delay_seconds=0.5, max_delay_seconds=8.0)
 
+# Vigencia del cache de tasas de fee. Son de la cuenta (dependen del tier VIP):
+# cambian con el volumen operado, no entre ciclos. Una hora evita un request por
+# símbolo y ciclo sin quedar atado a un tier viejo por días.
+_FEE_RATES_TTL_SECONDS = 3600.0
+
 
 def _to_bingx_symbol(symbol: str) -> str:
     """BTCUSDT → BTC-USDT (todos los símbolos permitidos terminan en USDT)."""
@@ -168,6 +175,9 @@ class BingXAdapter(ExchangeAdapter):
         # Circuit breaker de transporte, compartido por todas las llamadas firmadas de
         # esta instancia (F16). Ver `is_retryable_bingx_error` sobre qué cuenta como fallo.
         self._circuit_breaker = CircuitBreaker()
+        # Tasas de fee de la cuenta + instante (time.monotonic) en que se leyeron.
+        # Sólo se cachea una lectura válida: un error nunca queda cacheado.
+        self._fee_rates_cache: tuple[FeeRates, float] | None = None
 
     @property
     def environment(self) -> Environment:
@@ -404,6 +414,47 @@ class BingXAdapter(ExchangeAdapter):
             },
         )
         _log.info("bingx_adapter.margin_type_set", symbol=symbol, margin_type=margin_type)
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        # Tasas de la cuenta (dependen del tier VIP), no las del contrato: las de
+        # /quote/contracts son las públicas por defecto y pueden no ser las que
+        # BingX termina cobrando. El endpoint es por cuenta, no por símbolo.
+        #
+        # Como no dependen del símbolo, se cachean por instancia durante
+        # _FEE_RATES_TTL_SECONDS: el ciclo pide tasas para cada símbolo que
+        # evalúa, y sin cache serían un request idéntico por símbolo y ciclo.
+        now = time.monotonic()
+        if self._fee_rates_cache is not None:
+            rates, fetched_at = self._fee_rates_cache
+            if now - fetched_at < _FEE_RATES_TTL_SECONDS:
+                return rates
+
+        # Un único try para request y parseo: cualquier falla —API, transporte,
+        # cuerpo no JSON o sin `data`, campos ausentes, tasas fuera de rango— se
+        # traduce al error agnóstico del contrato. Si se escapara otra excepción,
+        # el ciclo haría rollback de la auditoría del símbolo.
+        try:
+            data: dict[str, Any] = self._signed_get("/openApi/swap/v2/user/commissionRate", {})
+            commission = data["commission"]
+            rates = FeeRates(
+                maker=Decimal(str(commission["makerCommissionRate"])),
+                taker=Decimal(str(commission["takerCommissionRate"])),
+            )
+        except (
+            BingXApiError,
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ArithmeticError,
+            ValueError,
+        ) as exc:
+            # Sólo el tipo de error: un HTTPStatusError lleva la URL firmada (ver
+            # _on_retry) y el resto podría arrastrar partes del payload.
+            raise FeeRatesUnavailableError(
+                f"BingX no devolvió tasas de fee válidas ({type(exc).__name__})"
+            ) from exc
+        self._fee_rates_cache = (rates, now)
+        return rates
 
     # ------------------------------------------------------------------
     # HTTP / firma

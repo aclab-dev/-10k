@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRates
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
     AccountState,
@@ -173,6 +174,9 @@ class ChaosAdapter(ExchangeAdapter):
 
     def set_margin_type(self, symbol: str, margin_type: MarginType) -> None:
         self._wrapped.set_margin_type(symbol, margin_type)
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        return self._apply("get_fee_rates", symbol, lambda: self._wrapped.get_fee_rates(symbol))
 
 
 class ChaosFetcher(DataFetcher):

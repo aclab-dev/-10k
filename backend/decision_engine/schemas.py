@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.core.config import Environment, MarginType, PositionMode
+from backend.core.constants import MIN_NET_RISK_REWARD_FLOOR
 from backend.market_data.schemas import ALLOWED_SYMBOLS
 from backend.market_regime.schemas import PrimaryRegime
 
@@ -162,6 +163,7 @@ class ModelDecision(BaseModel):
     Reglas de negocio obligatorias:
     - decision=NO_OPERAR → execute=False siempre
     - execute=True y decision=LONG/SHORT → stop_loss > 0 y take_profit > 0
+    - execute=True y decision=LONG/SHORT → margin_usdt > 0
     - margin_usdt ≤ 10 (límite absoluto; Risk Engine puede reducir más)
     - leverage ≤ 10 (máximo PAPER; Risk Engine aplica caps de entorno)
     - confidence ∈ [0.0, 1.0]
@@ -259,10 +261,33 @@ class ModelDecision(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def execute_requires_minimum_rr(self) -> ModelDecision:
+    def execute_requires_positive_margin(self) -> ModelDecision:
+        """Un trade ejecutable sin margen no describe ninguna orden.
+
+        `margin_usdt=0` es válido sólo en NO_OPERAR (no hay trade). Con
+        execute=True no hay notional sobre el que estimar slippage ni fees, y el
+        Risk Engine lo rechaza con ValueError en vez de un BLOCK auditado: se
+        corta acá, en el JSON Schema Guard, antes de que llegue al ciclo.
+        """
         if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
-            if self.net_risk_reward < 1.5:
-                raise ValueError("net_risk_reward >= 1.5 requerido cuando execute=True")
+            if self.margin_usdt <= 0:
+                raise ValueError("margin_usdt > 0 requerido cuando execute=True")
+        return self
+
+    @model_validator(mode="after")
+    def execute_requires_minimum_rr(self) -> ModelDecision:
+        """Pre-filtro sobre el RR neto que *declara GPT*, con fees que estima él.
+
+        No es la verificación de riesgo: el Risk Engine recalcula el RR neto con
+        las tasas reales del adapter (`check_fee_gate`) y es el que decide. Un
+        GPT que declara 2.0 sobre un trade que en realidad da 0.5 pasa este
+        filtro y lo bloquea el Risk Engine.
+        """
+        if self.execute and self.decision in (DecisionType.LONG, DecisionType.SHORT):
+            if self.net_risk_reward < MIN_NET_RISK_REWARD_FLOOR:
+                raise ValueError(
+                    f"net_risk_reward >= {MIN_NET_RISK_REWARD_FLOOR} requerido cuando execute=True"
+                )
         return self
 
     @model_validator(mode="after")

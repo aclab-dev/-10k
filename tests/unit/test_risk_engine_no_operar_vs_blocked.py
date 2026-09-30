@@ -40,6 +40,7 @@ from backend.decision_engine.schemas import (
 from backend.market_regime.schemas import PrimaryRegime
 from backend.risk_engine.engine import validate
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from tests.unit.conftest import fee_estimate_for
 
 # ---------------------------------------------------------------------------
 # Helpers de fixture
@@ -224,6 +225,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.decision == RiskDecision.NO_OPERAR
@@ -241,6 +243,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.adjusted_parameters is None
@@ -258,6 +261,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert len(result.reasons) >= 1
@@ -279,6 +283,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.aggregation_id == aggregation.aggregation_id
@@ -296,6 +301,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.symbol == "ETHUSDT"
@@ -315,6 +321,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.daily_loss_at_check_usdt == daily
@@ -334,6 +341,7 @@ class TestValidateNoOperar:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert isinstance(result, RiskValidationResult)
@@ -358,6 +366,7 @@ class TestValidateNoOperar:
             config=cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         # Debe ser NO_OPERAR, no BLOCK
@@ -387,6 +396,7 @@ class TestValidateBlocked:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.decision == RiskDecision.BLOCK
@@ -407,6 +417,7 @@ class TestValidateBlocked:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.adjusted_parameters is None
@@ -427,6 +438,7 @@ class TestValidateBlocked:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert len(result.reasons) >= 1
@@ -451,6 +463,7 @@ class TestNoOperarVsBlockDistinction:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.decision is not RiskDecision.BLOCK
@@ -472,6 +485,7 @@ class TestNoOperarVsBlockDistinction:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert result.decision is not RiskDecision.NO_OPERAR
@@ -491,6 +505,7 @@ class TestNoOperarVsBlockDistinction:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         reason_text = result.reasons.get("no_operar", "")
@@ -514,6 +529,7 @@ class TestNoOperarVsBlockDistinction:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         # La rule "daily_drawdown" debe estar en los reasons
@@ -536,6 +552,7 @@ class TestNoOperarVsBlockDistinction:
             cfg,
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
 
         assert "no_operar" not in result.reasons

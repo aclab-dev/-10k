@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend.connection_health.monitor import ConnectionHealthMonitor
 from backend.core.config import AppConfig
+from backend.core.fees import FeeEstimate, FeeRatesUnavailableError, estimate_fees_for_decision
 from backend.core.slippage import estimate_for_decision, is_estimable
 from backend.decision_engine.aggregator import DecisionAggregator
 from backend.decision_engine.aggregator_schemas import DecisionAggregationResult
@@ -482,6 +483,28 @@ class CycleRunner:
             else None
         )
 
+        # Fees proyectados pre-trade (F17, regla 12) con las tasas reales del
+        # adapter, sobre los mismos parámetros propuestos que el slippage. El RR
+        # neto no depende de margen ni leverage, así que un ADJUST_DOWN posterior
+        # no lo invalida. Sin estimación —el adapter no dio tasas, o la decisión
+        # no describe una orden— el gate recibe None y bloquea (fail-closed), y
+        # el BLOCK queda auditado en `risk_validations` como cualquier otro.
+        fee_estimate: FeeEstimate | None = None
+        if is_estimable(gpt_decision):
+            try:
+                # En un thread: en un cache miss el adapter hace un request HTTP
+                # síncrono, que bloquearía el event loop mientras dura.
+                fee_rates = await asyncio.to_thread(self._execution_engine.get_fee_rates, symbol)
+            except FeeRatesUnavailableError as exc:
+                log.warning("cycle_runner.fee_rates_unavailable", symbol=symbol, error=str(exc))
+            else:
+                fee_estimate = estimate_fees_for_decision(
+                    decision=gpt_decision,
+                    margin_usdt=Decimal(str(gpt_decision.margin_usdt)),
+                    leverage=gpt_decision.leverage,
+                    rates=fee_rates,
+                )
+
         # 8. Risk Engine — valida parámetros del trade con datos de pérdida reales
         last_trade = self._trade_repo.get_last_closed_trade(self._bot_run_id, symbol)
         # Anti-escalada de leverage compara contra el último trade de la cuenta,
@@ -503,6 +526,7 @@ class CycleRunner:
                 if positions_count_reliable
                 else None
             ),
+            fee_estimate=fee_estimate,
             slippage_estimate=slippage_estimate,
             last_account_trade_pnl_usdt=(
                 last_account_trade.net_pnl if last_account_trade else None

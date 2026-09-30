@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from backend.backtesting.fee_model import FeeModel
 from backend.core.config import Environment
+from backend.core.fees import FeeRates, estimate_fees_for_decision
 from backend.decision_engine.schemas import (
     BreakoutInterpretation,
     DecisionAggregatorSection,
@@ -424,6 +426,47 @@ class TestHistoricalReplayEngineRun:
         reasons = results[0].risk_result.reasons
         assert "slippage_estimate" in reasons
         assert "Slippage estimado pre-trade" in reasons["slippage_estimate"]
+
+    def test_run_registers_fee_estimate_with_paper_rates_by_default(self) -> None:
+        """Sin exchange, el replay proyecta fees con las tasas del simulador PAPER."""
+        row = MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        decision = _make_gpt_decision()
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(window, decision_provider=lambda s, q: decision)
+
+        expected = estimate_fees_for_decision(
+            decision,
+            Decimal(str(decision.margin_usdt)),
+            decision.leverage,
+            FeeModel().rates,
+        )
+        assert results[0].risk_result.reasons["fee_gate"] == expected.as_audit_reason()
+
+    def test_run_uses_fee_rates_passed_by_caller(self) -> None:
+        """Con tasas que se comen el edge, el replay bloquea igual que el ciclo real."""
+        row = MarketSnapshotRow(**_make_snapshot().to_db_kwargs(bot_run_id="bot-run-1"))
+        engine = HistoricalReplayEngine(session=MagicMock())
+        window = SnapshotWindow(
+            symbol="BTCUSDT",
+            period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            period_end=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        ruinous = FeeRates(maker=Decimal("0.05"), taker=Decimal("0.05"))
+
+        with patch.object(engine._loader, "load", return_value=[row]):
+            results = engine.run(
+                window, decision_provider=lambda s, q: _make_gpt_decision(), fee_rates=ruinous
+            )
+
+        assert results[0].risk_result.decision == RiskDecision.BLOCK
+        assert "RR neto de fees" in results[0].risk_result.reasons["fee_gate"]
 
     def test_run_empty_window_returns_empty_list(self) -> None:
         engine = HistoricalReplayEngine(session=MagicMock())

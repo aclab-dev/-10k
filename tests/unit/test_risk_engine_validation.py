@@ -42,6 +42,7 @@ from backend.risk_engine.checks import (
 )
 from backend.risk_engine.engine import validate
 from backend.risk_engine.schemas import RiskDecision, RiskValidationResult
+from tests.unit.conftest import fee_estimate_for
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -172,6 +173,7 @@ def _validate_neutral_funding(
         open_position_unrealized_pnl_usdt,
         funding_rate=funding_rate,
         open_positions_count=0,
+        fee_estimate=fee_estimate_for(decision),
     )
 
 
@@ -938,6 +940,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
+            fee_estimate=fee_estimate_for(decision),
         )
         assert result.decision == RiskDecision.BLOCK
         assert "anti_leverage_escalation" in result.reasons
@@ -955,6 +958,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
+            fee_estimate=fee_estimate_for(decision),
         )
         assert result.decision == RiskDecision.APPROVE
         assert "anti_leverage_escalation" in result.reasons
@@ -973,6 +977,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
+            fee_estimate=fee_estimate_for(decision),
         )
         assert result.decision == RiskDecision.BLOCK
         assert "8x" in result.reasons["anti_leverage_escalation"]
@@ -992,6 +997,7 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             open_positions_count=0,
             last_account_trade_pnl_usdt=Decimal("-2.0"),
             last_account_trade_leverage=5,
+            fee_estimate=fee_estimate_for(decision),
         )
         assert result.decision == RiskDecision.BLOCK
         assert "Escalada de leverage" in result.reasons["anti_leverage_escalation"]
@@ -1007,5 +1013,6 @@ class TestRiskEngineAntiLeverageEscalationIntegration:
             _config(),
             funding_rate=_NEUTRAL_FUNDING_RATE,
             open_positions_count=0,
+            fee_estimate=fee_estimate_for(decision),
         )
         assert result.decision == RiskDecision.APPROVE

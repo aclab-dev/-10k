@@ -13,6 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRates
 from backend.exchange_adapters.schemas import (
     AccountState,
     OrderRequest,
@@ -86,4 +87,18 @@ class ExchangeAdapter(ABC):
 
         Raises:
             ValueError: si margin_type es CROSS (cross margin está prohibido).
+        """
+
+    @abstractmethod
+    def get_fee_rates(self, symbol: str) -> FeeRates:
+        """Tasas de fee maker/taker vigentes para el símbolo en esta cuenta.
+
+        Las consume el gate de fees pre-trade del Risk Engine (F17, regla 12):
+        el fee proyectado tiene que salir del exchange real, no de una
+        constante.
+
+        Raises:
+            backend.core.fees.FeeRatesUnavailableError: ante error de API, red, timeout o payload
+                malformado. Nunca devolver un default: sin tasas no se opera, y
+                el ciclo convierte este error en un BLOCK auditado.
         """

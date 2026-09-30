@@ -8,6 +8,7 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 from backend.core.config import Environment, MarginType
+from backend.core.fees import FeeRates
 from backend.exchange_adapters.base import ExchangeAdapter
 from backend.exchange_adapters.schemas import (
     AccountState,
@@ -70,6 +71,9 @@ class _FakeAdapter(ExchangeAdapter):
         raise NotImplementedError
 
     def set_margin_type(self, symbol: str, margin_type: MarginType) -> None:
+        raise NotImplementedError
+
+    def get_fee_rates(self, symbol: str) -> FeeRates:
         raise NotImplementedError
 
 

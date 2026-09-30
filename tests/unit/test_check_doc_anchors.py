@@ -25,6 +25,14 @@ class Beta:
     def gamma(self) -> None:
         local = 1
         del local
+
+    def shared(self) -> None:
+        pass
+
+
+class Delta:
+    def shared(self) -> None:
+        pass
 '''
 
 
@@ -59,6 +67,20 @@ def test_accepts_module_constant(tmp_path: Path) -> None:
 def test_accepts_unqualified_member_name(tmp_path: Path) -> None:
     """`gamma` suelto resuelve contra `Beta.gamma`: la etiqueta puede omitir la clase."""
     doc = _fixture(tmp_path, "[`gamma`](../backend/sample.py)")
+    assert check_file(doc) == []
+
+
+def test_rejects_ambiguous_unqualified_member_name(tmp_path: Path) -> None:
+    """`shared` existe en `Beta` y en `Delta`: suelto no dice a cuál apunta la evidencia."""
+    doc = _fixture(tmp_path, "[`shared`](../backend/sample.py)")
+    problems = check_file(doc)
+    assert len(problems) == 1
+    assert "ambiguo" in problems[0]
+    assert "Beta.shared" in problems[0] and "Delta.shared" in problems[0]
+
+
+def test_accepts_qualified_name_that_would_be_ambiguous_unqualified(tmp_path: Path) -> None:
+    doc = _fixture(tmp_path, "[`Delta.shared`](../backend/sample.py)")
     assert check_file(doc) == []
 
 

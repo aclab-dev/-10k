@@ -301,6 +301,18 @@ class TestMarginHardCap:
         )
         assert d.margin_usdt == 0.0
 
+    @pytest.mark.parametrize(
+        "side",
+        [
+            {},
+            {"decision": "SHORT", "stop_loss": 100000.0, "take_profit": 85000.0},
+        ],
+    )
+    def test_margin_zero_rejected_when_execute_true(self, side: dict[str, object]) -> None:
+        """Sin margen no hay orden: se corta en el Schema Guard, no en el ciclo."""
+        with pytest.raises(ValidationError, match="margin_usdt > 0"):
+            _build(margin_usdt=0.0, **side)
+
 
 # ---------------------------------------------------------------------------
 # Caps de leverage por entorno
