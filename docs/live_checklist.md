@@ -5,9 +5,17 @@ de la Sección 3.6 del documento maestro esté efectivamente aplicada en el cód
 solo declarada en config o descripta en un doc), con evidencia de test cuando aplica.
 Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
-**Auditoría realizada:** 2026-09-15
-**Alcance:** las 34 reglas de la Sección 3.6, contra el estado del código en
-`develop` al momento de esta auditoría (commit `c1a26d0`).
+**Auditoría original:** 2026-09-15 (commit `c1a26d0`).
+**Última re-auditoría:** 2026-09-30 (commit `d8d740b`) — con los 7 gaps de la
+auditoría original ya cerrados ([160]-[166]), se releyó cada fila que había
+quedado en ❌ (#4, #12, #13, #14, #21, #28, #29) contra el código y los tests
+citados en `develop`. Ningún ítem retrocedió. `scripts/check_doc_anchors.py`
+corre en verde sobre este documento (0 referencias rotas — no se fija acá un
+conteo exacto porque cambia con cada edición del documento; correr el script
+para el número vigente); la suite completa (`pytest -m "not integration"`,
+todo en PASSED) y el smoke test end-to-end del kill switch ([124]) pasan
+contra un stack real reconstruido en HEAD.
+**Alcance:** las 34 reglas de la Sección 3.6.
 
 ## Cómo leer el estado
 
@@ -108,20 +116,29 @@ con la justificación de por qué no bloquean la firma pese a quedar mencionadas
 
 ## Estado de la firma
 
-**❌ NO firmado como apto para LIVE.**
+**✅ Firmado — con alcance acotado a esta auditoría de código, ver aclaración.**
 
-Este checklist queda archivado en `docs/` como la auditoría de referencia de la
-Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems ❌.
-La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
-abiertos violaría la regla que el documento existe para hacer cumplir.
+Agustín Cantero firmó este checklist el 2026-09-30 (commit `be0361c`, con la
+identidad git `AC Lab <aclab.dev@gmail.com>` — cuenta personal de Agustín,
+dueño del proyecto), confirmando que la re-auditoría de las 34 reglas de la
+Sección 3.6 (ver cabecera del documento) no tiene gaps de código abiertos
+(0/34 ❌).
 
-**Próximo paso:** con #12 resuelto (card Trello [161]) no quedan ítems ❌.
-Falta volver a correr esta auditoría completa y recién entonces decidir la
-firma — que es humana y no la hace este documento.
+**Esto no habilita LIVE por sí solo.** La regla 34 exige, además de este
+checklist firmado: replay histórico, PAPER estable, backtesting aprobado y
+**TESTNET estable**. TESTNET sigue sin wireado en código —
+[`Orchestrator._prepare_paper_context`](../backend/trading_core/orchestrator.py)
+rechaza con `NotImplementedError` cualquier `environment` que no sea `PAPER`,
+así que ese requisito de la regla 34 todavía no se puede ni empezar a
+cumplir. Esta firma cierra el sub-ítem "checklist de código auditado", no la
+regla 34 completa — no debe leerse como luz verde para avanzar a TESTNET o
+LIVE.
 
 ---
 
 _Auditoría: Claude Code (Sonnet 5), a pedido de Rodrigo Sánchez — 2026-09-15._
 _Actualización #13 (slippage) — 2026-09-21, card Trello [162]._
 _Actualización #12 (fees) — 2026-09-27, card Trello [161]._
-_Firma pendiente: **************\_\_\_\_************** — Fecha: **\_\_\_\_**_
+_Re-auditoría final: Claude Code (Sonnet 5), a pedido de Agustín Cantero —
+2026-09-30, commit `d8d740b`. Confirma 0/34 gaps de código._
+_Firma: **Agustín Cantero** — Fecha: **2026-09-30**_
