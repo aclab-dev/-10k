@@ -5,9 +5,16 @@ de la Sección 3.6 del documento maestro esté efectivamente aplicada en el cód
 solo declarada en config o descripta en un doc), con evidencia de test cuando aplica.
 Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
-**Auditoría realizada:** 2026-09-15
-**Alcance:** las 34 reglas de la Sección 3.6, contra el estado del código en
-`develop` al momento de esta auditoría (commit `c1a26d0`).
+**Auditoría original:** 2026-09-15 (commit `c1a26d0`).
+**Última re-auditoría:** 2026-10-01 (commit `d8d740b`) — con los 7 gaps de la
+auditoría original ya cerrados ([160]-[166]), se releyó cada fila que había
+quedado en ❌ (#4, #12, #13, #14, #21, #28, #29) contra el código y los tests
+citados en `develop`. Ningún ítem retrocedió. `scripts/check_doc_anchors.py`
+verifica las 134 referencias por símbolo de este documento contra el código
+actual (0 rotas); la suite completa (`pytest -m "not integration"`, 2891
+tests) y el smoke test end-to-end del kill switch ([124]) pasan contra un
+stack real reconstruido en HEAD.
+**Alcance:** las 34 reglas de la Sección 3.6.
 
 ## Cómo leer el estado
 
@@ -115,13 +122,20 @@ Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems �
 La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
 abiertos violaría la regla que el documento existe para hacer cumplir.
 
-**Próximo paso:** con #12 resuelto (card Trello [161]) no quedan ítems ❌.
-Falta volver a correr esta auditoría completa y recién entonces decidir la
-firma — que es humana y no la hace este documento.
+**Re-auditoría del 2026-10-01 (commit `d8d740b`, card Trello
+[F17-reaudit-live-checklist]):** con los 7 gaps cerrados, se corrió la
+auditoría completa de nuevo — 0/34 ítems en ❌, evidencia de las 7 filas
+reparadas verificada contra el código actual (ver arriba), anchors y suite de
+tests en verde (detalle en "Última re-auditoría" arriba). El documento queda
+**listo para firma**. Lo único pendiente es la decisión humana en sí: no la
+hace este documento ni quien lo audita.
 
 ---
 
 _Auditoría: Claude Code (Sonnet 5), a pedido de Rodrigo Sánchez — 2026-09-15._
 _Actualización #13 (slippage) — 2026-09-21, card Trello [162]._
 _Actualización #12 (fees) — 2026-09-27, card Trello [161]._
+_Re-auditoría final: Claude Code (Sonnet 5), a pedido de Agustín Cantero —
+2026-10-01, commit `d8d740b`. Confirma 0/34 gaps de código; documento listo
+para firma._
 _Firma pendiente: **************\_\_\_\_************** — Fecha: **\_\_\_\_**_
