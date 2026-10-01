@@ -6,7 +6,7 @@ solo declarada en config o descripta en un doc), con evidencia de test cuando ap
 Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 
 **Auditoría original:** 2026-09-15 (commit `c1a26d0`).
-**Última re-auditoría:** 2026-10-01 (commit `d8d740b`) — con los 7 gaps de la
+**Última re-auditoría:** 2026-09-30 (commit `d8d740b`) — con los 7 gaps de la
 auditoría original ya cerrados ([160]-[166]), se releyó cada fila que había
 quedado en ❌ (#4, #12, #13, #14, #21, #28, #29) contra el código y los tests
 citados en `develop`. Ningún ítem retrocedió. `scripts/check_doc_anchors.py`
@@ -118,7 +118,7 @@ con la justificación de por qué no bloquean la firma pese a quedar mencionadas
 
 **✅ Firmado — con alcance acotado a esta auditoría de código, ver aclaración.**
 
-Agustín Cantero firmó este checklist el 2026-10-01 (commit `be0361c`, con la
+Agustín Cantero firmó este checklist el 2026-09-30 (commit `be0361c`, con la
 identidad git `AC Lab <aclab.dev@gmail.com>` — cuenta personal de Agustín,
 dueño del proyecto), confirmando que la re-auditoría de las 34 reglas de la
 Sección 3.6 (ver cabecera del documento) no tiene gaps de código abiertos
@@ -140,5 +140,5 @@ _Auditoría: Claude Code (Sonnet 5), a pedido de Rodrigo Sánchez — 2026-09-15
 _Actualización #13 (slippage) — 2026-09-21, card Trello [162]._
 _Actualización #12 (fees) — 2026-09-27, card Trello [161]._
 _Re-auditoría final: Claude Code (Sonnet 5), a pedido de Agustín Cantero —
-2026-10-01, commit `d8d740b`. Confirma 0/34 gaps de código._
-_Firma: **Agustín Cantero** — Fecha: **2026-10-01**_
+2026-09-30, commit `d8d740b`. Confirma 0/34 gaps de código._
+_Firma: **Agustín Cantero** — Fecha: **2026-09-30**_
