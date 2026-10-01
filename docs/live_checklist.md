@@ -115,20 +115,27 @@ con la justificación de por qué no bloquean la firma pese a quedar mencionadas
 
 ## Estado de la firma
 
-**❌ NO firmado como apto para LIVE.**
+**✅ Firmado — con alcance acotado a esta auditoría de código, ver aclaración.**
 
-Este checklist queda archivado en `docs/` como la auditoría de referencia de la
-Sección 3.6, pero permanece explícitamente sin firma mientras existan ítems ❌.
-La regla 34 exige este documento firmado antes de LIVE — firmarlo con gaps
-abiertos violaría la regla que el documento existe para hacer cumplir.
+Agustín Cantero firmó este checklist el 2026-10-01 (commit `be0361c`),
+confirmando que la auditoría de las 34 reglas de la Sección 3.6 no tiene
+gaps de código abiertos (0/34 ❌).
+
+**Esto no habilita LIVE por sí solo.** La regla 34 exige, además de este
+checklist firmado: replay histórico, PAPER estable, backtesting aprobado y
+**TESTNET estable**. TESTNET sigue sin wireado en código —
+[`Orchestrator._prepare_paper_context`](../backend/trading_core/orchestrator.py)
+rechaza con `NotImplementedError` cualquier `environment` que no sea `PAPER`,
+así que ese requisito de la regla 34 todavía no se puede ni empezar a
+cumplir. Esta firma cierra el sub-ítem "checklist de código auditado", no la
+regla 34 completa — no debe leerse como luz verde para avanzar a TESTNET o
+LIVE.
 
 **Re-auditoría del 2026-10-01 (commit `d8d740b`, card Trello
 [F17-reaudit-live-checklist]):** con los 7 gaps cerrados, se corrió la
 auditoría completa de nuevo — 0/34 ítems en ❌, evidencia de las 7 filas
 reparadas verificada contra el código actual (ver arriba), anchors y suite de
-tests en verde (detalle en "Última re-auditoría" arriba). El documento queda
-**listo para firma**. Lo único pendiente es la decisión humana en sí: no la
-hace este documento ni quien lo audita.
+tests en verde (detalle en "Última re-auditoría" arriba).
 
 ---
 
