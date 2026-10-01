@@ -10,10 +10,11 @@ Es el gate de la regla 34: no se avanza a LIVE sin este checklist firmado.
 auditoría original ya cerrados ([160]-[166]), se releyó cada fila que había
 quedado en ❌ (#4, #12, #13, #14, #21, #28, #29) contra el código y los tests
 citados en `develop`. Ningún ítem retrocedió. `scripts/check_doc_anchors.py`
-verifica las 134 referencias por símbolo de este documento contra el código
-actual (0 rotas); la suite completa (`pytest -m "not integration"`, 2891
-tests) y el smoke test end-to-end del kill switch ([124]) pasan contra un
-stack real reconstruido en HEAD.
+corre en verde sobre este documento (0 referencias rotas — no se fija acá un
+conteo exacto porque cambia con cada edición del documento; correr el script
+para el número vigente); la suite completa (`pytest -m "not integration"`,
+todo en PASSED) y el smoke test end-to-end del kill switch ([124]) pasan
+contra un stack real reconstruido en HEAD.
 **Alcance:** las 34 reglas de la Sección 3.6.
 
 ## Cómo leer el estado
@@ -117,9 +118,11 @@ con la justificación de por qué no bloquean la firma pese a quedar mencionadas
 
 **✅ Firmado — con alcance acotado a esta auditoría de código, ver aclaración.**
 
-Agustín Cantero firmó este checklist el 2026-10-01 (commit `be0361c`),
-confirmando que la auditoría de las 34 reglas de la Sección 3.6 no tiene
-gaps de código abiertos (0/34 ❌).
+Agustín Cantero firmó este checklist el 2026-10-01 (commit `be0361c`, con la
+identidad git `AC Lab <aclab.dev@gmail.com>` — cuenta personal de Agustín,
+dueño del proyecto), confirmando que la re-auditoría de las 34 reglas de la
+Sección 3.6 (ver cabecera del documento) no tiene gaps de código abiertos
+(0/34 ❌).
 
 **Esto no habilita LIVE por sí solo.** La regla 34 exige, además de este
 checklist firmado: replay histórico, PAPER estable, backtesting aprobado y
@@ -131,18 +134,11 @@ cumplir. Esta firma cierra el sub-ítem "checklist de código auditado", no la
 regla 34 completa — no debe leerse como luz verde para avanzar a TESTNET o
 LIVE.
 
-**Re-auditoría del 2026-10-01 (commit `d8d740b`, card Trello
-[F17-reaudit-live-checklist]):** con los 7 gaps cerrados, se corrió la
-auditoría completa de nuevo — 0/34 ítems en ❌, evidencia de las 7 filas
-reparadas verificada contra el código actual (ver arriba), anchors y suite de
-tests en verde (detalle en "Última re-auditoría" arriba).
-
 ---
 
 _Auditoría: Claude Code (Sonnet 5), a pedido de Rodrigo Sánchez — 2026-09-15._
 _Actualización #13 (slippage) — 2026-09-21, card Trello [162]._
 _Actualización #12 (fees) — 2026-09-27, card Trello [161]._
 _Re-auditoría final: Claude Code (Sonnet 5), a pedido de Agustín Cantero —
-2026-10-01, commit `d8d740b`. Confirma 0/34 gaps de código; documento listo
-para firma._
-_Firma pendiente: **Agustín Cantero** — Fecha: **2026-10-01**_
+2026-10-01, commit `d8d740b`. Confirma 0/34 gaps de código._
+_Firma: **Agustín Cantero** — Fecha: **2026-10-01**_
