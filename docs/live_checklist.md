@@ -138,4 +138,4 @@ _Actualización #12 (fees) — 2026-09-27, card Trello [161]._
 _Re-auditoría final: Claude Code (Sonnet 5), a pedido de Agustín Cantero —
 2026-10-01, commit `d8d740b`. Confirma 0/34 gaps de código; documento listo
 para firma._
-_Firma pendiente: **************\_\_\_\_************** — Fecha: **\_\_\_\_**_
+_Firma pendiente: **Agustín Cantero** — Fecha: **2026-10-01**_
